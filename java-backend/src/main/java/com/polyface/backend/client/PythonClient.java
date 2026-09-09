@@ -45,7 +45,7 @@ public class PythonClient {
     }
 
     public JsonNode generate(String rawText, String sourceKind, String title,
-                             List<String> platforms, String toneOverride) {
+                             List<String> platforms, String toneOverride, JsonNode template) {
         ObjectNode body = mapper.createObjectNode();
         body.put("raw_text", rawText);
         body.put("source_kind", sourceKind == null ? "general" : sourceKind);
@@ -57,14 +57,14 @@ public class PythonClient {
         if (toneOverride != null) {
             body.put("tone_override", toneOverride);
         }
+        if (template != null && !template.isNull()) {
+            body.set("template", template);
+        }
         return post("/generate", body);
     }
 
-    public List<String> platforms() {
-        JsonNode resp = get("/platforms");
-        List<String> codes = new java.util.ArrayList<>();
-        resp.path("platforms").forEach(p -> codes.add(p.path("code").asText()));
-        return codes;
+    public JsonNode platforms() {
+        return get("/platforms");
     }
 
     private JsonNode post(String uri, ObjectNode body) {

@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Polyface · 同源万面</title>
+<style>
+  :root{
+    --bg:#f6f7fb; --card:#fff; --line:#e6e8f0; --ink:#1f2430; --sub:#6b7280;
+    --brand:#e74c3c; --brand2:#c0392b; --ok:#2ecc71; --warn:#f39c12; --chip:#fef3f2;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+  header{background:linear-gradient(120deg,#1f2430,#2c3e50);color:#fff;padding:14px 28px;display:flex;align-items:center;gap:14px}
+  header .logo{font-weight:800;font-size:20px}
+  header .logo span{color:#ff6b5e}
+  header .sub{opacity:.7;font-size:12px}
+  .mock-badge{margin-left:auto;background:#ff6b5e33;border:1px solid #ff6b5e;color:#ffd0cc;padding:3px 10px;border-radius:20px;font-size:12px}
+  main{display:grid;grid-template-columns:360px 1fr;gap:18px;padding:18px;max-width:1400px;margin:0 auto}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;box-shadow:0 1px 3px #0000000d}
+  h2{font-size:15px;margin:0 0 10px;color:var(--sub);font-weight:600}
+  textarea,input,select{width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 10px;font-size:14px;font-family:inherit;background:#fff}
+  textarea{resize:vertical;min-height:130px;line-height:1.6}
+  .row{display:flex;gap:8px;margin-top:8px}
+  .row>*{flex:1}
+  button{background:var(--brand);color:#fff;border:0;border-radius:8px;padding:9px 14px;font-size:14px;cursor:pointer;font-weight:600}
+  button:hover{background:var(--brand2)}
+  button.ghost{background:#fff;color:var(--brand);border:1px solid var(--brand)}
+  button.ghost:hover{background:#fef3f2}
+  button.sm{padding:4px 10px;font-size:12px}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .plats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px}
+  .plat{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:8px;padding:7px 10px;cursor:pointer;background:#fff;font-size:13px}
+  .plat input{width:auto}
+  .plat.checked{border-color:var(--brand);background:#fef3f2}
+  .status-line{font-size:12px;color:var(--sub);margin-top:8px;min-height:16px}
+  .facts{margin-top:8px;display:flex;flex-direction:column;gap:6px}
+  .fact{display:flex;align-items:flex-start;gap:8px;background:#fafbfe;border:1px solid var(--line);border-radius:8px;padding:7px 9px;font-size:12.5px;line-height:1.5}
+  .fact .ty{flex-shrink:0;font-size:10.5px;padding:1px 7px;border-radius:10px;margin-top:2px}
+  .ty.data{background:#e8f6ef;color:#1e8e4e}.ty.story{background:#e8f0fe;color:#2b5fd9}.ty.opinion{background:#fdf0e7;color:#c96a1a}
+  .core{background:#fef3f2;border:1px solid #f5c6c0;border-radius:8px;padding:8px 10px;font-size:13px;color:#7b241c}
+  .tmpl-box{margin-top:10px}
+  .tmpl-box summary{cursor:pointer;font-size:13px;color:var(--brand);font-weight:600}
+  .tmpl-box .inner{margin-top:8px;display:flex;flex-direction:column;gap:8px}
+  .res{margin-top:14px}
+  .plat-tab{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+  .plat-tab button{border-radius:20px;padding:5px 14px;font-size:13px;background:#eef0f6;color:#374151;border:0;font-weight:500}
+  .plat-tab button.on{background:var(--brand);color:#fff}
+  .draft-block h3{margin:0 0 6px;display:flex;align-items:center;gap:8px;font-size:15px}
+  .qa-badge{font-size:11px;padding:2px 8px;border-radius:10px}
+  .qa-pass{background:#e8f6ef;color:#1e8e4e}.qa-fail{background:#fef3f2;color:#c0392b}
+  .draft-block{margin-bottom:18px}
+  .preview{background:#0f1420;color:#e8ecf4;border-radius:10px;padding:12px;font-size:13.5px;line-height:1.8;white-space:pre-wrap;font-family:inherit}
+  .titles li{font-size:13.5px;margin-bottom:4px}
+  .tags{margin:6px 0}
+  .tag{display:inline-block;background:var(--chip);color:#b03a2e;border-radius:12px;padding:2px 9px;font-size:12px;margin:2px 4px 2px 0}
+  .meta{font-size:12px;color:var(--sub)}
+  .meta b{color:var(--ink)}
+  .qa-warn{background:#fff8e6;border:1px solid #f0dfae;color:#8a6d1a;border-radius:8px;padding:7px 9px;font-size:12px;margin-top:8px}
+  .clip{margin-top:10px;border:1px dashed #d5a3a3;border-radius:10px;padding:10px;background:#fffaf9}
+  .clip h4{margin:0 0 8px;color:#a93226;font-size:13px}
+  .scene{border-left:3px solid var(--brand);padding:4px 10px;margin-bottom:8px;font-size:12.5px;background:#fff}
+  .scene .sc-script{font-weight:600}
+  .scene .sc-meta{color:#8a6d1a;font-size:11.5px;margin-top:3px}
+  .copy-ok{color:var(--ok);font-size:12px;margin-left:6px}
+  .side-list{margin-top:8px}
+  .side-item{border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;margin-bottom:6px;cursor:pointer}
+  .side-item:hover{border-color:var(--brand)}
+  .empty{color:#9ca3af;font-size:13px;text-align:center;padding:40px 0}
+  .spinner{display:inline-block;width:12px;height:12px;border:2px solid #fff;border-top-color:transparent;border-radius:50%;animation:sp 0.7s linear infinite}
+  @keyframes sp{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">Polyface<span>·</span> 同源万面</div>
+  <div class="sub">一份素材进 · 千面出</div>
+  <div class="mock-badge" id="modeBadge">检测中…</div>
+</header>
+
+<main>
+  <!-- ============ 左栏：输入 ============ -->
+  <section>
+    <div class="card">
+      <h2>① 素材</h2>
+      <select id="kind">
+        <option value="长文">长文</option><option value="口播稿">口播稿</option>
+        <option value="大纲">大纲</option><option value="笔记">笔记</option><option value="general">其他</option>
+      </select>
+      <input id="title" placeholder="标题（可选）" style="margin-top:8px">
+      <textarea id="raw" placeholder="粘贴你的素材文本：一篇文章 / 口播稿 / 大纲 …"></textarea>
+      <div style="margin-top:10px">
+        <button id="btnAnalyze">解析素材</button>
+        <span class="status-line" id="analyzeStatus"></span>
+      </div>
+      <div id="analyzeResult"></div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h2>② 选择平台</h2>
+      <div class="plats" id="platList"></div>
+      <details class="tmpl-box">
+        <summary>使用我的内容模板（可选）</summary>
+        <div class="inner">
+          <input id="tplName" placeholder="模板名称，如：老张的干货开场">
+          <input id="tplVoice" placeholder="语气/人设，如：直接、不废话">
+          <input id="tplOpening" placeholder="固定开头句式，如：大家好，我是老张">
+          <textarea id="tplClosing" placeholder="固定结尾/互动句式" style="min-height:50px"></textarea>
+        </div>
+      </details>
+      <div style="margin-top:12px">
+        <button id="btnGenerate" disabled>🚀 一键生成多平台稿件</button>
+        <span class="status-line" id="genStatus"></span>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h2>素材历史</h2>
+      <div class="side-list" id="history"><div class="empty">暂无素材</div></div>
+    </div>
+  </section>
+
+  <!-- ============ 右栏：结果 ============ -->
+  <section>
+    <div class="card res">
+      <h2>③ 成稿审阅</h2>
+      <div id="resultArea"><div class="empty">解析素材并点击生成后，这里会展示各平台成稿 ✨</div></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => (s ?? "").toString().replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const platformNames = {};   // code -> 中文名
+let currentMaterialId = null;
+let drafts = [];
+let activePlat = null;
+
+async function j(method, url, body){
+  const opt = {method, headers:{}};
+  if(body){opt.headers["Content-Type"]="application/json"; opt.body=JSON.stringify(body);}
+  const r = await fetch(url, opt);
+  if(!r.ok){ let d="请求失败"; try{ d=(await r.json()).detail || d; }catch(e){} throw new Error(d); }
+  return r.json();
+}
+const copyText = async (text, btn) => {
+  try{ await navigator.clipboard.writeText(text); }catch(e){ /* 本地 http 可能无剪贴板权限 */ }
+  if(btn){ const old=btn.textContent; btn.textContent="✓ 已复制"; btn.classList.add("copy-ok");
+    setTimeout(()=>{btn.textContent=old; btn.classList.remove("copy-ok");},1400); }
+};
+
+async function init(){
+  const h = await j("GET","/health").catch(()=>null);
+  const p = await j("GET","/api/platforms").catch(()=>({platforms:[]}));
+  p.platforms.forEach(x=>{ platformNames[x.code]=x.name; });
+  $("modeBadge").textContent = h?.mock ? "离线演示模式 (mock)" : "真实 LLM";
+  renderPlats(p.platforms);
+  loadHistory();
+}
+function renderPlats(list){
+  $("platList").innerHTML = "";
+  list.forEach(p=>{
+    const label = document.createElement("label");
+    label.className="plat";
+    label.innerHTML = `<input type="checkbox" value="${esc(p.code)}"><span>${esc(p.name)}</span>`;
+    label.querySelector("input").addEventListener("change", ()=>{ label.classList.toggle("checked", label.querySelector("input").checked); updateGenBtn(); });
+    $("platList").appendChild(label);
+  });
+  if(list.length) $("platList").querySelector("input").checked = true;
+  updateGenBtn();
+}
+function selectedPlats(){ return [...document.querySelectorAll("#platList input:checked")].map(i=>i.value); }
+function updateGenBtn(){ $("btnGenerate").disabled = !(selectedPlats().length && currentMaterialId); }
+
+async function loadHistory(){
+  const list = await j("GET","/api/materials").catch(()=>[]);
+  const box = $("history");
+  if(!list.length){ box.innerHTML='<div class="empty">暂无素材</div>'; return; }
+  box.innerHTML = "";
+  list.forEach(m=>{
+    const d = document.createElement("div");
+    d.className="side-item";
+    d.innerHTML = `<b>#${m.id}</b> ${esc((m.core_message||"").slice(0,34))}…<br><span style="color:#9ca3af">${esc(m.created_at||"").slice(0,16)} · ${m.draft_count||0} 平台稿</span>`;
+    d.onclick = async ()=>{ currentMaterialId=m.id; loadHistoryHighlight(m.id); loadDraftsOfMaterial(m.id); };
+    box.appendChild(d);
+  });
+}
+function loadHistoryHighlight(id){
+  [...document.querySelectorAll(".side-item")].forEach(el=>{ el.style.borderColor = el.textContent.includes(`#${id}`) ? "var(--brand)" : ""; });
+}
+async function loadDraftsOfMaterial(id){
+  const m = await j("GET",`/api/materials/${id}`);
+  // 从 DB 读取历史稿只有摘要，不再重新生成
+  $("analyzeResult").innerHTML = `<div class="core">已加载素材 #${id}，历史稿 ${(m.drafts||[]).length} 份。</div>`;
+  drafts = (m.drafts||[]);
+  renderTabsFromDb(m.drafts, m);
+}
+
+$("btnAnalyze").onclick = async ()=>{
+  $("analyzeStatus").textContent = "解析中…";
+  $("analyzeStatus").style.color = "var(--sub)";
+  try{
+    const m = await j("POST","/api/materials",{ raw_text:$("raw").value, source_kind:$("kind").value, title:$("title").value||null });
+    currentMaterialId = m.id;
+    const s = m.structured;
+    let factsHtml = "";
+    (s.facts||[]).forEach(f=>{ factsHtml += `<div class="fact"><span class="ty ${esc(f.type)}">${esc(f.type)}</span><span>${esc(f.text)}</span></div>`; });
+    $("analyzeResult").innerHTML = `
+      <div class="core">💡 核心观点：${esc(s.core_message)}</div>
+      <div style="font-size:12px;color:var(--sub);margin-top:6px">语气：${esc(s.tone)} · 受众：${esc(s.audience)}</div>
+      <h2 style="margin-top:10px">事实清单（防幻觉依据）</h2>
+      <div class="facts">${factsHtml||'<div class="empty">无</div>'}</div>`;
+    updateGenBtn(); loadHistory();
+  }catch(e){ $("analyzeStatus").textContent="❌ "+e.message; $("analyzeStatus").style.color="var(--brand)"; }
+};
+
+function buildTemplate(){
+  const t = {
+    name: $("tplName").value||"我的模板",
+    voice: $("tplVoice").value,
+    opening: $("tplOpening").value,
+    closing: $("tplClosing").value,
+    structure: [], tag_style: "", taboo: []
+  };
+  const has = t.voice||t.opening||t.closing;
+  return has ? t : null;
+}
+
+$("btnGenerate").onclick = async ()=>{
+  const btn=$("btnGenerate"); btn.disabled=true; btn.innerHTML='<span class="spinner"></span> 生成中…';
+  $("genStatus").textContent="平台并行生成（brief→draft→qa）…"; $("genStatus").style.color="var(--sub)";
+  try{
+    const body = { platforms: selectedPlats(), tone_override:null, template: buildTemplate() };
+    const r = await j("POST", `/api/materials/${currentMaterialId}/generate`, body);
+    drafts = r.drafts || [];
+    $("genStatus").textContent = `✅ 完成（${r.used_mock?"mock":"真实"}）`;
+    $("genStatus").style.color = "var(--ok)";
+    renderTabsFromDb(r.drafts, null);
+    loadHistory();
+  }catch(e){
+    $("genStatus").textContent="❌ "+e.message; $("genStatus").style.color="var(--brand)";
+  } finally { btn.disabled=false; btn.innerHTML="🚀 一键生成多平台稿件"; }
+};
+
+function renderTabsFromDb(items){
+  activePlat = items.length? items[0].platform_code : null;
+  const tabs = $("resultArea");
+  if(!items.length){ tabs.innerHTML='<div class="empty">还没有稿件</div>'; return; }
+  let bar = '<div class="plat-tab">';
+  items.forEach(x=>{ bar += `<button data-code="${esc(x.platform_code)}" class="${x.platform_code===activePlat?'on':''}">${esc(x.platform_name)}</button>`; });
+  bar += '</div><div id="draftPanel"></div>';
+  tabs.innerHTML = bar;
+  tabs.querySelectorAll(".plat-tab button").forEach(b=> b.onclick=()=>{ activePlat=b.dataset.code;
+    tabs.querySelectorAll(".plat-tab button").forEach(x=>x.classList.toggle("on",x.dataset.code===activePlat));
+    paintDraft(items.find(x=>x.platform_code===activePlat)); });
+  paintDraft(items.find(x=>x.platform_code===activePlat));
+}
+
+function paintDraft(d){
+  if(!d) return;
+  const panel = $("draftPanel");
+  const draft = d.draft||{};
+  const qa = d.qa||{};
+  const statusBadge = d.status==="qa_passed" ? '<span class="qa-badge qa-pass">QA通过</span>' : '<span class="qa-badge qa-fail">需人工检查</span>';
+  const titles = (draft.titles||[]).map((t,i)=>`<li><b>${i===0?"主标题":"备选"}:</b> ${esc(t)}</li>`).join("");
+  const tags = (draft.tags||[]).map(t=>`<span class="tag">#${esc(t)}</span>`).join("");
+  const warns = (qa.warnings||[]).map(w=>`<div>⚠️ ${esc(w)}</div>`).join("");
+  const issues = (qa.issues||[]).map(w=>`<div>❌ ${esc(w)}</div>`).join("");
+  const cs = draft.clip_sheet;
+  let clipHtml="";
+  if(cs && cs.scenes && cs.scenes.length){
+    clipHtml = `<div class="clip"><h4>🎬 剪辑单（AI 剪辑 A 阶段）· ${esc(cs.intro_note||"")}</h4>`;
+    cs.scenes.forEach(s=>{ clipHtml += `<div class="scene"><div class="sc-script">${esc(s.seq)}. ${esc(s.script)}</div>
+      <div class="sc-meta">⏱ ${esc(s.duration_hint||"-")} · 🖼 ${esc(s.visual||"-")} · 🔠 ${esc(s.subtitle||"-")} · 🔊 ${esc(s.sound||"-")}</div></div>`; });
+    clipHtml += `<div style="font-size:12px;color:#a93226">BGM 建议：${esc(cs.bgm_hint||"-")}</div></div>`;
+  }
+  const fullCopy = `【${d.platform_name}】\n\n标题：${(draft.titles||[])[0]||""}\n\n${draft.body||""}\n\n标签：#${(draft.tags||[]).join(" #")}${draft.cover_suggestion?`\n\n封面文案：${draft.cover_suggestion}`:""}`;
+
+  panel.innerHTML = `
+    <div class="draft-block">
+      <h3>${esc(d.platform_name)} ${statusBadge}
+        <button class="ghost sm" style="margin-left:auto" data-copy>复制全文</button>
+      </h3>
+      ${(draft.titles||[]).length?`<ul class="titles">${titles}</ul>`:""}
+      <div class="tags">${tags}</div>
+      <div class="preview">${esc(draft.body||"(空)")}</div>
+      ${draft.cover_suggestion?`<div class="meta" style="margin-top:6px">🖼 封面/首屏：<b>${esc(draft.cover_suggestion)}</b></div>`:""}
+      ${draft.interaction_line?`<div class="meta">🗣 互动引导：<b>${esc(draft.interaction_line)}</b></div>`:""}
+      ${draft.rationale?`<div class="meta">🧬 改写说明：${esc(draft.rationale)}</div>`:""}
+      ${clipHtml}
+      ${warns?`<div class="qa-warn">${warns}</div>`:""}
+      ${issues?`<div class="qa-warn" style="border-color:#f0b4ab;color:#b03a2e">${issues}</div>`:""}
+    </div>`;
+  panel.querySelector("[data-copy]").onclick = e=>copyText(fullCopy, e.currentTarget);
+}
+
+init();
+</script>
+</body>
+</html>

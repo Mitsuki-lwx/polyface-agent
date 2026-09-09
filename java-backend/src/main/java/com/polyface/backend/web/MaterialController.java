@@ -46,7 +46,13 @@ public class MaterialController {
     }
 
     public record GenerateRequest(
-            @NotEmpty List<String> platforms, String tone_override) {
+            @NotEmpty List<String> platforms, String tone_override,
+            com.fasterxml.jackson.databind.JsonNode template) {
+    }
+
+    @GetMapping(value = "/api/platforms", produces = MediaType.APPLICATION_JSON_VALUE)
+    public JsonNode platforms() {
+        return python.platforms();
     }
 
     // ---------------- 素材 ----------------
@@ -132,7 +138,7 @@ public class MaterialController {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "material not found"));
         try {
             JsonNode genResp = python.generate(m.rawText(), m.sourceKind(), m.title(),
-                    req.platforms(), req.tone_override());
+                    req.platforms(), req.tone_override(), req.template());
             boolean mock = genResp.path("used_mock").asBoolean(false);
 
             ObjectNode out = mapper.createObjectNode();
