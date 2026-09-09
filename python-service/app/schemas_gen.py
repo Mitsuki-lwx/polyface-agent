@@ -1,4 +1,4 @@
-"""生成阶段数据模型：brief（平台策略）/ draft（成稿）/ qa（质检）。"""
+"""生成阶段数据模型：brief（平台策略）/ draft（成稿）/ clip_sheet（剪辑单）/ qa（质检）。"""
 from pydantic import BaseModel, Field
 
 
@@ -12,6 +12,37 @@ class Brief(BaseModel):
     rationale: str = Field(default="", description="为什么这么改写(参考平台DNA)")
 
 
+class UserTemplate(BaseModel):
+    """用户提供的内容模板（用户级覆盖层，ADR-014）。
+
+    优先级高于平台 DNA 的结构/风格部分；平台 limits/红线 仍由 QA 强制执行。
+    """
+    name: str = Field(default="我的模板", description="模板名称")
+    voice: str = Field(default="", description="语气/人设偏好")
+    opening: str = Field(default="", description="固定开头句式(可选)")
+    structure: list[str] = Field(default_factory=list, description="正文结构要点")
+    closing: str = Field(default="", description="固定结尾/互动句式(可选)")
+    tag_style: str = Field(default="", description="标签风格偏好(可选)")
+    taboo: list[str] = Field(default_factory=list, description="我不想要的内容(可选)")
+
+
+class ClipScene(BaseModel):
+    """剪辑单中的单个分镜。"""
+    seq: int = Field(..., description="分镜序号(从1开始)")
+    duration_hint: str = Field(default="", description="建议时长，如 '8s'/'前3秒'")
+    script: str = Field(..., description="该分镜口播/字幕内容")
+    visual: str = Field(default="", description="画面建议(实拍/图文/数据展示等)")
+    subtitle: str = Field(default="", description="字幕断句建议")
+    sound: str = Field(default="", description="声音/BGM/音效备注")
+
+
+class ClipSheet(BaseModel):
+    """视频平台成稿附带的剪辑执行单（AI 剪辑 A 阶段，FR-50）。"""
+    intro_note: str = Field(default="", description="剪辑要点总说明")
+    scenes: list[ClipScene] = Field(default_factory=list, description="分镜列表")
+    bgm_hint: str = Field(default="", description="BGM 风格建议")
+
+
 class DraftPayload(BaseModel):
     """单平台可发布成稿。"""
     titles: list[str] = Field(..., min_length=1, description="主标题+备选(含不同标题策略)")
@@ -20,6 +51,7 @@ class DraftPayload(BaseModel):
     cover_suggestion: str = Field(default="", description="封面文案/首屏钩子建议")
     interaction_line: str = Field(default="", description="互动引导语")
     rationale: str = Field(default="", description="改写说明:踩了哪些平台机制")
+    clip_sheet: ClipSheet | None = Field(default=None, description="视频平台剪辑单(仅 video_native 平台)")
 
 
 class QaReport(BaseModel):
@@ -42,10 +74,11 @@ class GenerateRequest(BaseModel):
     title: str | None = None
     platforms: list[str] = Field(default_factory=lambda: ["xhs"], description="目标平台代码列表")
     tone_override: str | None = Field(None, description="可选：覆盖素材语气")
+    template: UserTemplate | None = Field(None, description="可选：用户内容模板(ADR-014)")
 
 
 class GenerateResponse(BaseModel):
-    """素材 → N 平台成稿（brief+draft+qa 全链路）。"""
+    """素材 → N 平台成稿（brief+draft+clip+qa 全链路）。"""
     structured: dict = Field(..., description="素材理解结果(含事实清单)")
     drafts: list[PlatformDraft]
     used_mock: bool

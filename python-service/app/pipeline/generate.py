@@ -1,13 +1,15 @@
-"""多平台成稿管线：brief(策略) → draft(成稿) → qa(质量门)。
+"""多平台成稿管线：brief(策略) → draft(成稿) → [clip_sheet(剪辑单)] → qa(质量门)。
 
 - mock 模式：规则化生成，保证无 Key 可离线演示与测试
 - 真实模式：调用平台化 LLM；qa 失败可带反馈重写一轮
 - 事实约束：qa 会校验正文新增数字/断言是否在素材事实清单中有依据
+- 用户模板(ADR-014)：UserTemplate 注入 brief/draft/clip，优先级高于 DNA 结构部分
 """
 from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from concurrent.futures import ThreadPoolExecutor
 
@@ -15,12 +17,23 @@ from .. import dna as dna_lib
 from .. import llm
 from ..pipeline.understand import run_understand
 from ..schemas import AnalyzeRequest, StructuredMaterial
-from ..schemas_gen import Brief, DraftPayload, GenerateRequest, PlatformDraft, QaReport
+from ..schemas_gen import (
+    Brief,
+    ClipScene,
+    ClipSheet,
+    DraftPayload,
+    GenerateRequest,
+    PlatformDraft,
+    QaReport,
+    UserTemplate,
+)
 from .prompts import (
     BRIEF_SYSTEM,
+    CLIP_SYSTEM,
     DRAFT_SYSTEM,
     QA_SYSTEM,
     build_brief_prompt,
+    build_clip_prompt,
     build_draft_prompt,
     build_qa_prompt,
 )
@@ -28,6 +41,7 @@ from .prompts import (
 logger = logging.getLogger(__name__)
 
 _NUM_RE = re.compile(r"\d+(?:\.\d+)?(?:[%％万kK亿])?\b|\d{2,}")
+_EMOJI_LEAD = re.compile(r"^[\U0001F300-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF]+[\s·:：]*")
 
 
 def _clip(text: str, n: int) -> str:
@@ -36,7 +50,8 @@ def _clip(text: str, n: int) -> str:
 
 
 # ---------------------------------------------------------------- brief
-def run_brief(code: str, dna: dict, mat: StructuredMaterial, tone_override: str | None) -> Brief:
+def run_brief(code: str, dna: dict, mat: StructuredMaterial, tone_override: str | None,
+              template: UserTemplate | None = None) -> Brief:
     if llm.is_mock():
         structure = " → ".join(dna.get("structure_template", ["开头抛结论", "展开细节", "结尾互动"]))
         tag_dir = [t for t in (dna.get("tags") or {}).get("mock", ["干货"])]
@@ -48,8 +63,9 @@ def run_brief(code: str, dna: dict, mat: StructuredMaterial, tone_override: str 
             tag_direction=tag_dir,
             rationale=f"mock策略: 参考平台[{dna.get('name')}]的结构模板与标签方向",
         )
+    tpl = template.model_dump() if template else None
     data = llm.chat_json(
-        build_brief_prompt(dna, mat, tone_override), system=BRIEF_SYSTEM, temperature=0.7
+        build_brief_prompt(dna, mat, tone_override, tpl), system=BRIEF_SYSTEM, temperature=0.7
     )
     return Brief(
         platform_code=code,
@@ -62,16 +78,24 @@ def run_brief(code: str, dna: dict, mat: StructuredMaterial, tone_override: str 
 
 
 # ---------------------------------------------------------------- draft
-def _mock_draft(code: str, dna: dict, mat: StructuredMaterial, brief: Brief) -> DraftPayload:
+def _mock_draft(code: str, dna: dict, mat: StructuredMaterial, brief: Brief,
+                template: UserTemplate | None = None) -> DraftPayload:
     facts = mat.facts[:5]
-    body_lines = [
-        f"先说结论：{_clip(mat.core_message, 80)}",
-        "",
-    ]
-    for i, f in enumerate(facts, 1):
+    body_lines = []
+    # 用户模板优先级：opening 覆盖默认开头（ADR-014）
+    if template and template.opening:
+        body_lines.append(template.opening)
+    else:
+        body_lines.append(f"先说结论：{_clip(mat.core_message, 80)}")
+    body_lines.append("")
+    for f in facts:
         marker = {"data": "📊", "story": "📖", "opinion": "💡"}.get(f.type, "·")
         body_lines.append(f"{marker} {f.text}")
-    body_lines += ["", "觉得有用就收藏，下次需要直接翻出来看～"]
+    if template and template.closing:
+        body_lines.append("")
+        body_lines.append(template.closing)
+    else:
+        body_lines += ["", "觉得有用就收藏，下次需要直接翻出来看～"]
     tags = (brief.tag_direction or ["干货"])[:6]
     titles = [
         _clip(mat.core_message, 18),
@@ -83,7 +107,8 @@ def _mock_draft(code: str, dna: dict, mat: StructuredMaterial, brief: Brief) -> 
         tags=tags,
         cover_suggestion=_clip(mat.core_message, 16),
         interaction_line="你们平时会复盘吗？评论区聊聊～",
-        rationale=f"mock成稿: {dna.get('name')}风格=结论前置+清单式干货+收藏引导",
+        rationale=f"mock成稿: {dna.get('name')}风格=结论前置+清单式干货+收藏引导"
+        + ("（已应用我的模板）" if template else ""),
     )
 
 
@@ -93,11 +118,13 @@ def run_draft(
     mat: StructuredMaterial,
     brief: Brief,
     feedback: str | None = None,
+    template: UserTemplate | None = None,
 ) -> DraftPayload:
     if llm.is_mock():
-        return _mock_draft(code, dna, mat, brief)
+        return _mock_draft(code, dna, mat, brief, template)
+    tpl = template.model_dump() if template else None
     data = llm.chat_json(
-        build_draft_prompt(dna, mat, brief, feedback), system=DRAFT_SYSTEM, temperature=0.8
+        build_draft_prompt(dna, mat, brief, feedback, tpl), system=DRAFT_SYSTEM, temperature=0.8
     )
     return DraftPayload(
         titles=[str(t).strip() for t in (data.get("titles") or []) if str(t).strip()][:3],
@@ -106,6 +133,59 @@ def run_draft(
         cover_suggestion=str(data.get("cover_suggestion", "")).strip(),
         interaction_line=str(data.get("interaction_line", "")).strip(),
         rationale=str(data.get("rationale", "")).strip(),
+    )
+
+
+# ---------------------------------------------------------------- clip_sheet（FR-50, A阶段）
+def _mock_clip_sheet(dna: dict, draft: DraftPayload) -> ClipSheet:
+    """按正文行拆分成简单分镜（mock）。"""
+    raw_lines = [ln.strip() for ln in draft.body.splitlines() if ln.strip()]
+    scenes: list[ClipScene] = []
+    visuals = ["实拍口播(近景)", "插对应图文/数据画面", "实操/清单特写", "口播+转场", "结尾画面"]
+    for i, line in enumerate(raw_lines, start=1):
+        script = _EMOJI_LEAD.sub("", line).strip()
+        if not script:
+            continue
+        secs = max(2, math.ceil(len(script) / 4))
+        scenes.append(ClipScene(
+            seq=i,
+            duration_hint=f"约{secs}s",
+            script=script,
+            visual=visuals[i % len(visuals)],
+            subtitle=script[:40] if len(script) > 40 else script,
+            sound="人声口播为主" + ("，BGM 垫底" if i == 1 else ""),
+        ))
+    bgm = "轻快 BGM" if dna.get("code") == "douyin" else "轻量 BGM，突出人声"
+    return ClipSheet(intro_note="按口播逐句剪，保留换气停顿；前3秒务必是钩子。",
+                     scenes=scenes, bgm_hint=bgm)
+
+
+def run_clip_sheet(dna: dict, mat: StructuredMaterial, draft: DraftPayload,
+                   template: UserTemplate | None = None) -> ClipSheet | None:
+    """视频平台(video_native)成稿 → 剪辑单。非视频平台返回 None。"""
+    if not dna.get("video_native"):
+        return None
+    if llm.is_mock():
+        return _mock_clip_sheet(dna, draft)
+    tpl = template.model_dump() if template else None
+    data = llm.chat_json(build_clip_prompt(dna, draft, mat, tpl),
+                         system=CLIP_SYSTEM, temperature=0.5)
+    scenes = []
+    for s in data.get("scenes") or []:
+        if not isinstance(s, dict) or not str(s.get("script", "")).strip():
+            continue
+        scenes.append(ClipScene(
+            seq=int(s.get("seq", len(scenes) + 1)),
+            duration_hint=str(s.get("duration_hint", "")).strip(),
+            script=str(s.get("script", "")).strip(),
+            visual=str(s.get("visual", "")).strip(),
+            subtitle=str(s.get("subtitle", "")).strip(),
+            sound=str(s.get("sound", "")).strip(),
+        ))
+    return ClipSheet(
+        intro_note=str(data.get("intro_note", "")).strip(),
+        scenes=scenes,
+        bgm_hint=str(data.get("bgm_hint", "")).strip(),
     )
 
 
@@ -164,17 +244,23 @@ def run_qa(dna: dict, draft: DraftPayload, mat: StructuredMaterial) -> QaReport:
 
 
 # ---------------------------------------------------------------- orchestrator
-def _generate_one(code: str, mat: StructuredMaterial, tone_override: str | None) -> PlatformDraft:
+def _generate_one(code: str, mat: StructuredMaterial, tone_override: str | None,
+                  template: UserTemplate | None = None) -> PlatformDraft:
     dna = dna_lib.load_dna(code)
-    brief = run_brief(code, dna, mat, tone_override)
-    draft = run_draft(code, dna, mat, brief)
+    brief = run_brief(code, dna, mat, tone_override, template)
+    draft = run_draft(code, dna, mat, brief, template=template)
     qa = run_qa(dna, draft, mat)
 
     # 真实模式下 QA 未通过 → 带反馈重写一轮
     if not qa.passed and not llm.is_mock():
         feedback = "；".join(qa.issues)
-        draft = run_draft(code, dna, mat, brief, feedback=feedback)
+        draft = run_draft(code, dna, mat, brief, feedback=feedback, template=template)
         qa = run_qa(dna, draft, mat)
+
+    # 视频平台：成稿后附剪辑单（A 阶段）
+    clip = run_clip_sheet(dna, mat, draft, template)
+    if clip is not None:
+        draft = draft.model_copy(update={"clip_sheet": clip})
 
     return PlatformDraft(
         platform_code=code,
@@ -186,7 +272,7 @@ def _generate_one(code: str, mat: StructuredMaterial, tone_override: str | None)
 
 
 def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
-    """全链路：素材理解 → 每平台 brief/draft/qa（平台并行）。"""
+    """全链路：素材理解 → 每平台 brief/draft/clip/qa（平台并行）。"""
     used_mock = llm.is_mock()
     a_req = AnalyzeRequest(raw_text=req.raw_text, source_kind=req.source_kind, title=req.title)
     structured, _ = run_understand(a_req)
@@ -201,7 +287,7 @@ def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
     results: list[PlatformDraft] = []
     with ThreadPoolExecutor(max_workers=min(4, len(req.platforms))) as ex:
         futures = [
-            ex.submit(_generate_one, code, structured, req.tone_override)
+            ex.submit(_generate_one, code, structured, req.tone_override, req.template)
             for code in req.platforms
         ]
         for f in futures:

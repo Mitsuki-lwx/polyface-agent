@@ -52,7 +52,8 @@ BRIEF_SYSTEM = (
 )
 
 
-def build_brief_prompt(dna: dict, structured, tone_override: str | None) -> str:
+def build_brief_prompt(dna: dict, structured, tone_override: str | None,
+                       template: dict | None = None) -> str:
     payload = {
         "platform": {"code": dna["code"], "name": dna["name"]},
         "platform_dna": {
@@ -71,6 +72,8 @@ def build_brief_prompt(dna: dict, structured, tone_override: str | None) -> str:
             "facts": [f.text for f in structured.facts],
         },
     }
+    if template:
+        payload["user_template"] = template
     return json.dumps(payload, ensure_ascii=False, indent=1)
 
 
@@ -93,7 +96,8 @@ DRAFT_SYSTEM = (
 )
 
 
-def build_draft_prompt(dna: dict, structured, brief, feedback: str | None = None) -> str:
+def build_draft_prompt(dna: dict, structured, brief, feedback: str | None = None,
+                       template: dict | None = None) -> str:
     payload = {
         "platform": {"code": dna["code"], "name": dna["name"]},
         "platform_dna": {
@@ -113,6 +117,8 @@ def build_draft_prompt(dna: dict, structured, brief, feedback: str | None = None
         },
         "material_facts": [f.text for f in structured.facts],
     }
+    if template:
+        payload["user_template"] = template
     prompt = json.dumps(payload, ensure_ascii=False, indent=1)
     if feedback:
         prompt += f"\n\n【上一轮 QA 未通过，请针对性修改后重写】\n{feedback}"
@@ -147,5 +153,39 @@ def build_qa_prompt(dna: dict, draft, structured) -> str:
         "facts": [f.text for f in structured.facts],
         "draft": draft.model_dump(),
     }
+    return json.dumps(payload, ensure_ascii=False, indent=1)
+
+
+# ============================================================ 剪辑单(clip_sheet, FR-50)
+CLIP_SYSTEM = (
+    "你是短视频剪辑指导。根据成稿与平台DNA，把成稿拆成分镜级的剪辑执行单，"
+    "供博主照单剪辑。只输出一个 JSON 对象：\n"
+    "{\n"
+    '  "intro_note": "剪辑要点一句话",\n'
+    '  "scenes": [\n'
+    '    {"seq":1, "duration_hint":"8s", "script":"本段口播", "visual":"画面建议",'
+    ' "subtitle":"字幕断句", "sound":"BGM/音效备注"}\n'
+    "  ],\n"
+    '  "bgm_hint": "BGM风格建议"\n'
+    "}\n"
+    "要求：scenes 覆盖全文且顺序连贯；script 只使用成稿内容；"
+    "visual 仅给拍摄/素材建议，不要建议生成素材中没有的内容。"
+)
+
+
+def build_clip_prompt(dna: dict, draft, structured, template: dict | None = None) -> str:
+    payload = {
+        "platform": {"code": dna["code"], "name": dna["name"]},
+        "platform_dna": {
+            "content_forms": dna.get("content_forms", []),
+            "style": dna.get("style", []),
+            "viral_logic": dna.get("viral_logic", []),
+        },
+        "facts": [f.text for f in structured.facts],
+        "draft_body": draft.body,
+        "draft_rationale": draft.rationale,
+    }
+    if template:
+        payload["user_template"] = template
     return json.dumps(payload, ensure_ascii=False, indent=1)
 
