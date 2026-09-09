@@ -1,0 +1,40 @@
+# ===== secrets & local config =====
+.env
+.env.*
+!.env.example
+*.local
+
+# ===== runtime data (local-first, never commit) =====
+data/
+*.db
+*.sqlite*
+*.log
+logs/
+
+# ===== python =====
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
+
+# ===== java =====
+target/
+*.class
+.mvn/wrapper/maven-wrapper.jar
+
+# ===== web / node =====
+node_modules/
+web/dist/
+
+# ===== IDE / OS =====
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db

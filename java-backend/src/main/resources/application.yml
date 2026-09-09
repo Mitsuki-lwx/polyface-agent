@@ -1,0 +1,16 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: polyface-backend
+  jackson:
+    default-property-inclusion: non_null
+
+polyface:
+  llm:
+    base-url: http://127.0.0.1:8000   # Python LLM 服务
+
+logging:
+  level:
+    com.polyface: INFO
