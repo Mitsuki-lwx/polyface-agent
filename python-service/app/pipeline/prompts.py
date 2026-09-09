@@ -6,6 +6,8 @@
 - 语言保持与素材一致（默认中文）
 """
 
+import json
+
 UNDERSTAND_SYSTEM = (
     "你是一名资深自媒体内容分析师。你的任务是从用户提供的素材中提炼结构化信息，"
     "只允许输出一个 JSON 对象，不要输出任何其他文字、解释或 markdown。\n"
@@ -33,3 +35,117 @@ def build_understand_prompt(raw_text: str, source_kind: str, title: str | None) 
     parts.append("素材全文：")
     parts.append(raw_text)
     return "\n".join(parts)
+
+
+# ============================================================ 平台策略(brief)
+BRIEF_SYSTEM = (
+    "你是资深跨平台内容运营。根据给定【平台DNA】与【素材理解】，"
+    "为把素材改写成该平台内容制定一份策略。只输出一个 JSON 对象：\n"
+    "{\n"
+    '  "angle": "内容切入角度(一句话)",\n'
+    '  "hooks": ["钩子1(标题/开头可用)", "钩子2"],\n'
+    '  "structure_plan": "正文结构规划(步骤化)",\n'
+    '  "tag_direction": ["话题标签方向1", "方向2"],\n'
+    '  "rationale": "为什么这样改写，引用平台DNA的关键点"\n'
+    "}\n"
+    "要求：策略必须贴合平台调性与爆款机制；钩子要有冲突/悬念/数字/共鸣力。"
+)
+
+
+def build_brief_prompt(dna: dict, structured, tone_override: str | None) -> str:
+    payload = {
+        "platform": {"code": dna["code"], "name": dna["name"]},
+        "platform_dna": {
+            "style": dna.get("style", []),
+            "structure_template": dna.get("structure_template", []),
+            "title_rules": dna.get("title_rules", []),
+            "tags": dna.get("tags", {}),
+            "limits": dna.get("limits", {}),
+            "viral_logic": dna.get("viral_logic", []),
+            "hooks": dna.get("hooks", []),
+        },
+        "material": {
+            "core_message": structured.core_message,
+            "tone": tone_override or structured.tone,
+            "audience": structured.audience,
+            "facts": [f.text for f in structured.facts],
+        },
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=1)
+
+
+# ============================================================ 成稿(draft)
+DRAFT_SYSTEM = (
+    "你是某平台的资深博主，正在把一份素材改写为该平台的原创内容。\n"
+    "硬性要求：\n"
+    "1. 严格遵守【平台DNA】：风格、结构模板、标题规则、标签规则、字数上限。\n"
+    "2. 事实红线：只能使用【素材事实清单】中出现的信息；禁止编造数字、数据、头衔、经历细节。\n"
+    "3. 不是翻译/搬运，而是按平台调性重写：改语气、改结构、改标题、补互动钩子。\n"
+    "只输出一个 JSON 对象：\n"
+    "{\n"
+    '  "titles": ["主标题", "备选2", "备选3"],\n'
+    '  "body": "正文(含平台化排版:分段/换行/emoji适度)",\n'
+    '  "tags": ["标签1", "标签2"],\n'
+    '  "cover_suggestion": "封面文案或首屏钩子",\n'
+    '  "interaction_line": "文末互动引导语",\n'
+    '  "rationale": "为什么这样写(对应哪些爆款机制)"\n'
+    "}\n"
+)
+
+
+def build_draft_prompt(dna: dict, structured, brief, feedback: str | None = None) -> str:
+    payload = {
+        "platform": {"code": dna["code"], "name": dna["name"]},
+        "platform_dna": {
+            "content_forms": dna.get("content_forms", []),
+            "style": dna.get("style", []),
+            "structure_template": dna.get("structure_template", []),
+            "title_rules": dna.get("title_rules", []),
+            "tags": dna.get("tags", {}),
+            "limits": dna.get("limits", {}),
+            "viral_logic": dna.get("viral_logic", []),
+        },
+        "brief": {
+            "angle": brief.angle,
+            "hooks": brief.hooks,
+            "structure_plan": brief.structure_plan,
+            "tag_direction": brief.tag_direction,
+        },
+        "material_facts": [f.text for f in structured.facts],
+    }
+    prompt = json.dumps(payload, ensure_ascii=False, indent=1)
+    if feedback:
+        prompt += f"\n\n【上一轮 QA 未通过，请针对性修改后重写】\n{feedback}"
+    return prompt
+
+
+# ============================================================ 质量门(qa)
+QA_SYSTEM = (
+    "你是平台内容质检编辑。请对照【平台DNA】与【素材事实清单】审查给定成稿，"
+    "只输出一个 JSON 对象：\n"
+    "{\n"
+    '  "passed": true/false,\n'
+    '  "issues": ["必须修复的问题(未通过时必填)", "..."],\n'
+    '  "warnings": ["非阻断提醒", "..."]\n'
+    "}\n"
+    "重点检查：\n"
+    "1) 是否含素材中不存在的断言/数字/头衔(幻觉) → 命中则 passed=false；\n"
+    "2) 是否贴合平台风格与结构模板；3) 标题是否有吸引力、是否超长；"
+    "4) 字数与标签是否在上限内。"
+)
+
+
+def build_qa_prompt(dna: dict, draft, structured) -> str:
+    payload = {
+        "platform": {"code": dna["code"], "name": dna["name"]},
+        "platform_dna": {
+            "style": dna.get("style", []),
+            "title_rules": dna.get("title_rules", []),
+            "limits": dna.get("limits", {}),
+            "viral_logic": dna.get("viral_logic", []),
+        },
+        "facts": [f.text for f in structured.facts],
+        "draft": draft.model_dump(),
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=1)
+
