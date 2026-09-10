@@ -139,7 +139,30 @@ ALTER TABLE draft ADD COLUMN template_version INTEGER;
 导入规则：
 - 校验 `polyface_templates` 版本字段，缺失/不匹配 → 400
 - 逐条创建为**我的模板**（`builtin=0`）
-- 同名策略：追加后缀 `(导入)`，不覆盖既有
+- **同名冲突：不自动决策，交由用户判断。**
+  - 请求可带 `on_conflict`：`skip`（跳过同名，保留既有）/ `overwrite`（用导入内容覆盖同名）/ `keep_both`（都保留，新条目名称加 `(导入)` 后缀）
+  - 若检测到同名冲突且**未带** `on_conflict` → 返回 **409** + 冲突清单；前端弹窗询问用户后，再带所选策略重新提交
+  - 无冲突时直接导入，返回 200
+
+#### 导入请求体
+
+```json
+{
+  "templates": [ { "name": "...", "voice": "...", "...": "..." } ],
+  "on_conflict": "skip | overwrite | keep_both"
+}
+```
+
+#### 冲突响应（409）
+
+```json
+{
+  "detail": "存在同名模板，请选择处理方式",
+  "conflicts": [
+    { "name": "结论前置·清单体", "existing_id": 1, "existing_builtin": true }
+  ]
+}
+```
 
 #### 错误响应
 
@@ -149,6 +172,7 @@ ALTER TABLE draft ADD COLUMN template_version INTEGER;
 | 删除内置模板 | 409 | `{"detail":"内置模板不可删除，请使用「复制为我的」"}` |
 | name 为空 | 400 | 校验错误 |
 | 导入格式非法 | 400 | `{"detail":"invalid template file"}` |
+| 导入遇同名且未指定策略 | 409 | `{"detail":"存在同名模板，请选择处理方式","conflicts":[...]}` |
 
 ### 3.2 生成接口改造（FR-64）
 

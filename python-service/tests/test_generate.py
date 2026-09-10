@@ -183,3 +183,29 @@ def test_profile_and_retro_compose_clean():
     r2_draft = r2.json()["drafts"][0]["draft"]
     assert "已对齐创作者领域" not in r2_draft["rationale"]
     assert "已应用" not in r2_draft["rationale"]
+
+
+# ============ M5: 模板进入真实模式 prompt payload（FR-64 / checklist E5） ============
+
+def test_template_carried_into_brief_and_draft_prompts():
+    """真实模式：用户模板字段必须进入 brief/draft 的 prompt payload。"""
+    from app import dna as dna_lib
+    from app.pipeline.prompts import build_brief_prompt, build_draft_prompt
+    from app.schemas_gen import Brief
+
+    d = dna_lib.load_dna("xhs")
+    mat = _structured()
+    tpl = {"name": "E2E模板", "voice": "直接", "opening": "【开头】",
+           "structure": ["S1"], "closing": "【结尾】", "tag_style": "短", "taboo": ["AI味"]}
+    brief = Brief(platform_code="xhs", angle="a", hooks=["h"],
+                  structure_plan="sp", tag_direction=["t"], rationale="r")
+
+    bp = build_brief_prompt(d, mat, None, tpl)
+    dp = build_draft_prompt(d, mat, brief, None, tpl)
+    for prompt in (bp, dp):
+        assert "user_template" in prompt
+        assert "E2E模板" in prompt
+        assert "【开头】" in prompt and "【结尾】" in prompt
+
+    # 不传模板时不应出现该字段（保持向后兼容）
+    assert "user_template" not in build_brief_prompt(d, mat, None, None)

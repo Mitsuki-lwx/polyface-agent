@@ -33,7 +33,7 @@ public class Store {
 
     public record DraftRow(long id, long materialId, String platformCode, String platformName,
                            String briefJson, String payloadJson, String qaJson, String status,
-                           String createdAt) {
+                           String createdAt, Long templateId, Integer templateVersion) {
     }
 
     /** 发布后录入的效果指标（FR-30）。 */
@@ -49,6 +49,13 @@ public class Store {
     /** 复盘建议日志（FR-31/33，可由自动聚合写入 + 人工接受/忽略）。 */
     public record RetroRow(long id, String kind, String platformCode, String domain,
                            String insight, String createdAt) {
+    }
+
+    /** 用户模板（FR-62）：kind=content（内容模板）/ clip（成片模板，M5 预留）。 */
+    public record TemplateRow(long id, String kind, String name, String voice, String opening,
+                              String structureJson, String closing, String tagStyle, String tabooJson,
+                              boolean builtin, Long originId, int version,
+                              String createdAt, String updatedAt) {
     }
 
     private final String jdbcUrl;
@@ -90,7 +97,8 @@ public class Store {
                 "CREATE TABLE IF NOT EXISTS draft ("
                         + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
                         + "material_id INTEGER NOT NULL, platform_code TEXT NOT NULL, platform_name TEXT,"
-                        + "brief_json TEXT, payload_json TEXT, qa_json TEXT, status TEXT, created_at TEXT)",
+                        + "brief_json TEXT, payload_json TEXT, qa_json TEXT, status TEXT, created_at TEXT,"
+                        + "template_id INTEGER, template_version INTEGER)",
                 // FR-30 发布后回填：播放/赞/藏/评 + 发布日期 + 备注
                 "CREATE TABLE IF NOT EXISTS effect_metrics ("
                         + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -106,14 +114,49 @@ public class Store {
                 "CREATE TABLE IF NOT EXISTS retrospect_log ("
                         + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
                         + "kind TEXT, platform_code TEXT, domain TEXT,"
-                        + "insight TEXT NOT NULL, created_at TEXT)"
+                        + "insight TEXT NOT NULL, created_at TEXT)",
+                // FR-62 用户模板（内容模板；clip 为成片模板预留）
+                "CREATE TABLE IF NOT EXISTS template ("
+                        + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                        + "kind TEXT NOT NULL DEFAULT 'content',"
+                        + "name TEXT NOT NULL, voice TEXT, opening TEXT,"
+                        + "structure_json TEXT, closing TEXT, tag_style TEXT, taboo_json TEXT,"
+                        + "builtin INTEGER NOT NULL DEFAULT 0, origin_id INTEGER,"
+                        + "version INTEGER NOT NULL DEFAULT 1,"
+                        + "created_at TEXT, updated_at TEXT)"
         };
         try (Connection c = DriverManager.getConnection(jdbcUrl); Statement st = c.createStatement()) {
             for (String sql : statements) {
                 st.execute(sql);
             }
+            ensureDraftTemplateColumns(c);
         }
         log.info("SQLite schema ready");
+    }
+
+    /**
+     * 老库补列：draft.template_id / draft.template_version。
+     * SQLite 的 ADD COLUMN 不幂等（重复执行报 duplicate column），故先查 PRAGMA 再决定。
+     */
+    private void ensureDraftTemplateColumns(Connection c) throws java.sql.SQLException {
+        java.util.Set<String> cols = new java.util.HashSet<>();
+        try (Statement st = c.createStatement(); ResultSet rs = st.executeQuery("PRAGMA table_info(draft)")) {
+            while (rs.next()) {
+                cols.add(rs.getString("name"));
+            }
+        }
+        if (!cols.contains("template_id")) {
+            try (Statement st = c.createStatement()) {
+                st.execute("ALTER TABLE draft ADD COLUMN template_id INTEGER");
+                log.info("migrated: draft.template_id added");
+            }
+        }
+        if (!cols.contains("template_version")) {
+            try (Statement st = c.createStatement()) {
+                st.execute("ALTER TABLE draft ADD COLUMN template_version INTEGER");
+                log.info("migrated: draft.template_version added");
+            }
+        }
     }
 
     // ---------------- material ----------------
@@ -178,10 +221,19 @@ public class Store {
     }
 
     // ---------------- draft ----------------
+    /** 兼容旧调用：不记录模板来源。 */
     public long insertDraft(long materialId, String platformCode, String platformName,
                             String briefJson, String payloadJson, String qaJson, String status) {
-        String sql = "INSERT INTO draft(material_id, platform_code, platform_name, brief_json, payload_json, qa_json, status, created_at) "
-                + "VALUES(?,?,?,?,?,?,?,?)";
+        return insertDraft(materialId, platformCode, platformName, briefJson, payloadJson, qaJson,
+                status, null, null);
+    }
+
+    /** FR-64：同时记录所用模板 id 与版本号（可追溯）。 */
+    public long insertDraft(long materialId, String platformCode, String platformName,
+                            String briefJson, String payloadJson, String qaJson, String status,
+                            Long templateId, Integer templateVersion) {
+        String sql = "INSERT INTO draft(material_id, platform_code, platform_name, brief_json, payload_json, qa_json, status, created_at, template_id, template_version) "
+                + "VALUES(?,?,?,?,?,?,?,?,?,?)";
         try (Connection c = open();
              PreparedStatement ps = c.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
             ps.setLong(1, materialId);
@@ -192,6 +244,16 @@ public class Store {
             ps.setString(6, qaJson);
             ps.setString(7, status);
             ps.setString(8, LocalDateTime.now().toString());
+            if (templateId == null) {
+                ps.setNull(9, java.sql.Types.INTEGER);
+            } else {
+                ps.setLong(9, templateId);
+            }
+            if (templateVersion == null) {
+                ps.setNull(10, java.sql.Types.INTEGER);
+            } else {
+                ps.setInt(10, templateVersion);
+            }
             ps.executeUpdate();
             try (ResultSet rs = ps.getGeneratedKeys()) {
                 return rs.next() ? rs.getLong(1) : -1L;
@@ -201,18 +263,29 @@ public class Store {
         }
     }
 
+    private static final String DRAFT_COLS =
+            "id, material_id, platform_code, platform_name, brief_json, payload_json, qa_json, status, created_at, template_id, template_version";
+
+    private DraftRow mapDraft(ResultSet rs) throws java.sql.SQLException {
+        long tid = rs.getLong("template_id");
+        Long templateId = rs.wasNull() ? null : tid;
+        int tv = rs.getInt("template_version");
+        Integer templateVersion = rs.wasNull() ? null : tv;
+        return new DraftRow(rs.getLong("id"), rs.getLong("material_id"),
+                rs.getString("platform_code"), rs.getString("platform_name"),
+                rs.getString("brief_json"), rs.getString("payload_json"),
+                rs.getString("qa_json"), rs.getString("status"), rs.getString("created_at"),
+                templateId, templateVersion);
+    }
+
     public List<DraftRow> draftsByMaterial(long materialId) {
-        String sql = "SELECT id, material_id, platform_code, platform_name, brief_json, payload_json, qa_json, status, created_at "
-                + "FROM draft WHERE material_id=? ORDER BY id";
+        String sql = "SELECT " + DRAFT_COLS + " FROM draft WHERE material_id=? ORDER BY id";
         List<DraftRow> out = new ArrayList<>();
         try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setLong(1, materialId);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    out.add(new DraftRow(rs.getLong("id"), rs.getLong("material_id"),
-                            rs.getString("platform_code"), rs.getString("platform_name"),
-                            rs.getString("brief_json"), rs.getString("payload_json"),
-                            rs.getString("qa_json"), rs.getString("status"), rs.getString("created_at")));
+                    out.add(mapDraft(rs));
                 }
             }
         } catch (java.sql.SQLException e) {
@@ -222,16 +295,12 @@ public class Store {
     }
 
     public Optional<DraftRow> getDraft(long id) {
-        String sql = "SELECT id, material_id, platform_code, platform_name, brief_json, payload_json, qa_json, status, created_at "
-                + "FROM draft WHERE id=?";
+        String sql = "SELECT " + DRAFT_COLS + " FROM draft WHERE id=?";
         try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setLong(1, id);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
-                    return Optional.of(new DraftRow(rs.getLong("id"), rs.getLong("material_id"),
-                            rs.getString("platform_code"), rs.getString("platform_name"),
-                            rs.getString("brief_json"), rs.getString("payload_json"),
-                            rs.getString("qa_json"), rs.getString("status"), rs.getString("created_at")));
+                    return Optional.of(mapDraft(rs));
                 }
             }
             return Optional.empty();
@@ -392,5 +461,171 @@ public class Store {
             throw new RuntimeException("listRetros failed", e);
         }
         return out;
+    }
+
+    // ---------------- template (FR-62) ----------------
+    private static final String TEMPLATE_COLS =
+            "id, kind, name, voice, opening, structure_json, closing, tag_style, taboo_json, "
+                    + "builtin, origin_id, version, created_at, updated_at";
+
+    private TemplateRow mapTemplate(ResultSet rs) throws java.sql.SQLException {
+        long oid = rs.getLong("origin_id");
+        Long originId = rs.wasNull() ? null : oid;
+        return new TemplateRow(
+                rs.getLong("id"), rs.getString("kind"), rs.getString("name"),
+                rs.getString("voice"), rs.getString("opening"), rs.getString("structure_json"),
+                rs.getString("closing"), rs.getString("tag_style"), rs.getString("taboo_json"),
+                rs.getInt("builtin") == 1, originId, rs.getInt("version"),
+                rs.getString("created_at"), rs.getString("updated_at"));
+    }
+
+    public long insertTemplate(String kind, String name, String voice, String opening,
+                               String structureJson, String closing, String tagStyle, String tabooJson,
+                               boolean builtin, Long originId, int version) {
+        String sql = "INSERT INTO template(kind, name, voice, opening, structure_json, closing, tag_style, "
+                + "taboo_json, builtin, origin_id, version, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)";
+        String now = LocalDateTime.now().toString();
+        try (Connection c = open();
+             PreparedStatement ps = c.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+            ps.setString(1, kind == null || kind.isBlank() ? "content" : kind);
+            ps.setString(2, name);
+            ps.setString(3, voice);
+            ps.setString(4, opening);
+            ps.setString(5, structureJson);
+            ps.setString(6, closing);
+            ps.setString(7, tagStyle);
+            ps.setString(8, tabooJson);
+            ps.setInt(9, builtin ? 1 : 0);
+            if (originId == null) {
+                ps.setNull(10, java.sql.Types.INTEGER);
+            } else {
+                ps.setLong(10, originId);
+            }
+            ps.setInt(11, Math.max(1, version));
+            ps.setString(12, now);
+            ps.setString(13, now);
+            ps.executeUpdate();
+            try (ResultSet rs = ps.getGeneratedKeys()) {
+                return rs.next() ? rs.getLong(1) : -1L;
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("insertTemplate failed", e);
+        }
+    }
+
+    public Optional<TemplateRow> getTemplate(long id) {
+        String sql = "SELECT " + TEMPLATE_COLS + " FROM template WHERE id=?";
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setLong(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return Optional.of(mapTemplate(rs));
+                }
+            }
+            return Optional.empty();
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("getTemplate failed", e);
+        }
+    }
+
+    /** 列表：内置在前，我的在后；再按 id 升序。kind 为空则不过滤。 */
+    public List<TemplateRow> listTemplates(String kind) {
+        boolean filter = kind != null && !kind.isBlank();
+        String sql = "SELECT " + TEMPLATE_COLS + " FROM template "
+                + (filter ? "WHERE kind=? " : "")
+                + "ORDER BY builtin DESC, id ASC";
+        List<TemplateRow> out = new ArrayList<>();
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            if (filter) {
+                ps.setString(1, kind);
+            }
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(mapTemplate(rs));
+                }
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("listTemplates failed", e);
+        }
+        return out;
+    }
+
+    /** 按名称精确查找（导入冲突检测用）；重名时取 id 最小的一条。 */
+    public Optional<TemplateRow> findTemplateByName(String name) {
+        String sql = "SELECT " + TEMPLATE_COLS + " FROM template WHERE name=? ORDER BY id ASC LIMIT 1";
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, name);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return Optional.of(mapTemplate(rs));
+                }
+            }
+            return Optional.empty();
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("findTemplateByName failed", e);
+        }
+    }
+
+    /** 编辑模板：version 自增，updated_at 刷新。返回是否命中。 */
+    public boolean updateTemplate(long id, String name, String voice, String opening,
+                                  String structureJson, String closing, String tagStyle, String tabooJson) {
+        String sql = "UPDATE template SET name=?, voice=?, opening=?, structure_json=?, closing=?, "
+                + "tag_style=?, taboo_json=?, version=version+1, updated_at=? WHERE id=?";
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, name);
+            ps.setString(2, voice);
+            ps.setString(3, opening);
+            ps.setString(4, structureJson);
+            ps.setString(5, closing);
+            ps.setString(6, tagStyle);
+            ps.setString(7, tabooJson);
+            ps.setString(8, LocalDateTime.now().toString());
+            ps.setLong(9, id);
+            return ps.executeUpdate() > 0;
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("updateTemplate failed", e);
+        }
+    }
+
+    /** 覆盖同名模板内容（导入 on_conflict=overwrite）：不改 builtin，version 自增。 */
+    public boolean overwriteTemplateByName(String name, String voice, String opening,
+                                           String structureJson, String closing, String tagStyle,
+                                           String tabooJson) {
+        String sql = "UPDATE template SET voice=?, opening=?, structure_json=?, closing=?, "
+                + "tag_style=?, taboo_json=?, version=version+1, updated_at=? WHERE name=? AND builtin=0";
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, voice);
+            ps.setString(2, opening);
+            ps.setString(3, structureJson);
+            ps.setString(4, closing);
+            ps.setString(5, tagStyle);
+            ps.setString(6, tabooJson);
+            ps.setString(7, LocalDateTime.now().toString());
+            ps.setString(8, name);
+            return ps.executeUpdate() > 0;
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("overwriteTemplateByName failed", e);
+        }
+    }
+
+    /** 删除模板（调用方负责拒绝 builtin）。 */
+    public boolean deleteTemplate(long id) {
+        String sql = "DELETE FROM template WHERE id=?";
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setLong(1, id);
+            return ps.executeUpdate() > 0;
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("deleteTemplate failed", e);
+        }
+    }
+
+    public int countBuiltinTemplates() {
+        String sql = "SELECT COUNT(*) FROM template WHERE builtin=1";
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            return rs.next() ? rs.getInt(1) : 0;
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("countBuiltinTemplates failed", e);
+        }
     }
 }

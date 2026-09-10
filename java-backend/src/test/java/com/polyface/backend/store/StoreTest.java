@@ -126,4 +126,113 @@ class StoreTest {
         store.insertRetro(null, "zhihu", null, "中性建议");
         assertThat(store.listRetros(10).get(0).kind()).isEqualTo("neutral");
     }
+
+    // ==================== M5: 模板管理（FR-62 / FR-64） ====================
+
+    @Test
+    void templateCrudAndVersionBump() {
+        Store store = newStore();
+        long id = store.insertTemplate("content", "我的开场", "直接", "大家好", "[\"先结论\",\"给证据\"]",
+                "关注我", "短标签", "[\"不要AI味\"]", false, null, 1);
+        assertThat(id).isGreaterThan(0);
+
+        var t = store.getTemplate(id);
+        assertThat(t).isPresent();
+        assertThat(t.get().name()).isEqualTo("我的开场");
+        assertThat(t.get().structureJson()).contains("先结论");
+        assertThat(t.get().version()).isEqualTo(1);
+        assertThat(t.get().builtin()).isFalse();
+
+        // 编辑 → version +1
+        boolean ok = store.updateTemplate(id, "我的开场2", "更直接", "你好", "[]", "", "", "[]");
+        assertThat(ok).isTrue();
+        var t2 = store.getTemplate(id);
+        assertThat(t2.get().version()).isEqualTo(2);
+        assertThat(t2.get().name()).isEqualTo("我的开场2");
+        assertThat(t2.get().createdAt()).isEqualTo(t.get().createdAt()); // created 不变
+
+        // 不存在 id 更新返回 false
+        assertThat(store.updateTemplate(99999, "x", "", "", "[]", "", "", "[]")).isFalse();
+        assertThat(store.getTemplate(99999)).isEmpty();
+
+        // 删除
+        assertThat(store.deleteTemplate(id)).isTrue();
+        assertThat(store.getTemplate(id)).isEmpty();
+    }
+
+    @Test
+    void templateListOrderAndFindByName() {
+        Store store = newStore();
+        long a = store.insertTemplate("content", "AAA", "", "", "[]", "", "", "[]", false, null, 1);
+        long b = store.insertTemplate("content", "BBB", "", "", "[]", "", "", "[]", true, null, 1);
+        long c = store.insertTemplate("content", "CCC", "", "", "[]", "", "", "[]", false, null, 1);
+
+        var all = store.listTemplates(null);
+        assertThat(all).hasSize(3);
+        // 内置在前
+        assertThat(all.get(0).id()).isEqualTo(b);
+        assertThat(all.get(0).builtin()).isTrue();
+        assertThat(all.get(1).id()).isEqualTo(a);
+        assertThat(all.get(2).id()).isEqualTo(c);
+
+        // kind 过滤
+        assertThat(store.listTemplates("content")).hasSize(3);
+        assertThat(store.listTemplates("clip")).isEmpty();
+
+        // 同名查找
+        assertThat(store.findTemplateByName("BBB")).isPresent();
+        assertThat(store.findTemplateByName("ZZZ")).isEmpty();
+
+        // 内置计数
+        assertThat(store.countBuiltinTemplates()).isEqualTo(1);
+    }
+
+    @Test
+    void templateOverwriteByNameOnlyAffectsMine() {
+        Store store = newStore();
+        // 我的模板：可被覆盖
+        store.insertTemplate("content", "同名", "旧声音", "", "[]", "", "", "[]", false, null, 1);
+        boolean ok = store.overwriteTemplateByName("同名", "新声音", "", "[]", "", "", "[]");
+        assertThat(ok).isTrue();
+        var mine = store.findTemplateByName("同名").orElseThrow();
+        assertThat(mine.voice()).isEqualTo("新声音");
+        assertThat(mine.version()).isEqualTo(2);
+
+        // 内置模板：overwrite 不生效（红线：内置只读）
+        long bId = store.insertTemplate("content", "内置名", "原生", "", "[]", "", "", "[]", true, null, 1);
+        boolean ok2 = store.overwriteTemplateByName("内置名", "被改", "", "[]", "", "", "[]");
+        assertThat(ok2).isFalse();
+        var builtin = store.getTemplate(bId).orElseThrow();
+        assertThat(builtin.voice()).isEqualTo("原生"); // 未被改动
+        assertThat(builtin.version()).isEqualTo(1);
+    }
+
+    @Test
+    void draftStoresTemplateVersion() {
+        Store store = newStore();
+        long mid = store.insertMaterial("素材", "长文", null, "core", "tone", "aud", "[]");
+        long tplId = store.insertTemplate("content", "模板A", "", "", "[]", "", "", "[]", false, null, 1);
+        store.updateTemplate(tplId, "模板A", "", "", "[]", "", "", "[]"); // version -> 2
+
+        long d1 = store.insertDraft(mid, "xhs", "小红书", "{}", "{}", "{}", "qa_passed", tplId, 2);
+        long d2 = store.insertDraft(mid, "douyin", "抖音", "{}", "{}", "{}", "qa_passed"); // 旧签名 → null
+
+        var row1 = store.getDraft(d1).orElseThrow();
+        assertThat(row1.templateId()).isEqualTo(tplId);
+        assertThat(row1.templateVersion()).isEqualTo(2);
+
+        var row2 = store.getDraft(d2).orElseThrow();
+        assertThat(row2.templateId()).isNull();
+        assertThat(row2.templateVersion()).isNull();
+    }
+
+    @Test
+    void schemaMigrationIsIdempotent() {
+        // 同一 data-dir 二次构造 Store（触发二次 initSchema）不应抛异常
+        Store first = newStore();
+        first.insertTemplate("content", "seed-check", "", "", "[]", "", "", "[]", true, null, 1);
+        Store second = newStore(); // 再次 initSchema：template 表已存在、draft 列已存在
+        assertThat(second.countBuiltinTemplates()).isEqualTo(1);
+        assertThat(second.getProfile()).isEmpty(); // 其他表无副作用
+    }
 }

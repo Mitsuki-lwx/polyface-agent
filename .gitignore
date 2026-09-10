@@ -6,9 +6,11 @@
 
 # ===== runtime data (local-first, never commit) =====
 data/
+data-*/
 *.db
 *.sqlite*
 *.log
+*.err
 logs/
 
 # ===== python =====

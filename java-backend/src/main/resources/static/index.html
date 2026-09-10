@@ -114,8 +114,12 @@
     <div class="card" style="margin-top:14px">
       <h2>② 选择平台</h2>
       <div class="plats" id="platList"></div>
+      <div style="margin-top:10px">
+        <div style="font-size:12px;color:var(--sub);margin-bottom:4px">内容模板（来自模板库）</div>
+        <select id="tplSelect"><option value="">不使用模板（仅平台 DNA）</option></select>
+      </div>
       <details class="tmpl-box">
-        <summary>使用我的内容模板（可选）</summary>
+        <summary>临时模板（不保存，仅本次生成）</summary>
         <div class="inner">
           <input id="tplName" placeholder="模板名称，如：老张的干货开场">
           <input id="tplVoice" placeholder="语气/人设，如：直接、不废话">
@@ -142,6 +146,17 @@
       <input id="profAudience" placeholder="目标受众（职场新人 / 宝妈 / 大学生 …）" style="margin-top:6px">
       <textarea id="profAvoid" placeholder="不想出现的内容（堆砌AI词 / 标题党 / 不专业表述 …）" style="margin-top:6px;min-height:50px"></textarea>
       <div style="margin-top:8px"><button id="btnProfileSave" class="ghost sm">保存画像</button> <span class="status-line" id="profStatus"></span></div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h2>⑤ 模板库 <span style="font-weight:400;color:var(--sub);font-size:11px" id="tplMeta"></span></h2>
+      <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+        <button class="ghost sm" id="btnTplNew">+ 新建模板</button>
+        <button class="ghost sm" id="btnTplExport">导出 JSON</button>
+        <button class="ghost sm" id="btnTplImport">导入 JSON</button>
+        <input type="file" id="tplImportFile" accept=".json,application/json" style="display:none">
+      </div>
+      <div class="side-list" id="tplList"><div class="empty">加载中…</div></div>
     </div>
   </section>
 
@@ -181,6 +196,41 @@
   </div>
 </div>
 
+<!-- ============ 模板编辑弹窗 ============ -->
+<div id="modalTpl" style="display:none;position:fixed;inset:0;background:#00000055;z-index:99">
+  <div style="background:#fff;max-width:560px;margin:40px auto;padding:22px;border-radius:14px;box-shadow:0 8px 24px #00000022;max-height:80vh;overflow:auto">
+    <h3 style="margin:0 0 14px" id="tplModalTitle">新建模板</h3>
+    <input id="tfName" placeholder="模板名称（必填）">
+    <input id="tfVoice" placeholder="语气 / 人设，如：直接、不废话" style="margin-top:6px">
+    <input id="tfOpening" placeholder="固定开头句式（可选）" style="margin-top:6px">
+    <textarea id="tfStructure" placeholder="正文结构要点（每行一条）" style="margin-top:6px;min-height:60px"></textarea>
+    <input id="tfClosing" placeholder="固定结尾 / 互动句式（可选）" style="margin-top:6px">
+    <input id="tfTagStyle" placeholder="标签风格偏好（可选）" style="margin-top:6px">
+    <textarea id="tfTaboo" placeholder="不想要的内容（每行一条，可选）" style="margin-top:6px;min-height:50px"></textarea>
+    <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
+      <button class="ghost sm" id="btnTplCancel">取消</button>
+      <button class="sm" id="btnTplSave">保存</button>
+    </div>
+    <div class="status-line" id="tplStatus" style="margin-top:8px"></div>
+  </div>
+</div>
+
+<!-- ============ 导入冲突弹窗（由用户裁决） ============ -->
+<div id="modalConflict" style="display:none;position:fixed;inset:0;background:#00000055;z-index:100">
+  <div style="background:#fff;max-width:520px;margin:60px auto;padding:22px;border-radius:14px;box-shadow:0 8px 24px #00000022">
+    <h3 style="margin:0 0 10px">⚠️ 存在同名模板</h3>
+    <div style="font-size:13px;color:var(--sub);margin-bottom:10px">以下模板与你的模板库重名，请选择处理方式：</div>
+    <div id="conflictList" style="margin-bottom:14px;font-size:13px"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+      <button class="ghost sm" id="btnConflictCancel">取消导入</button>
+      <button class="ghost sm" data-strategy="skip">跳过同名</button>
+      <button class="ghost sm" data-strategy="overwrite">覆盖同名</button>
+      <button class="sm" data-strategy="keep_both">都保留</button>
+    </div>
+    <div class="status-line" id="conflictStatus" style="margin-top:8px"></div>
+  </div>
+</div>
+
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => (s ?? "").toString().replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -211,6 +261,8 @@ async function init(){
   loadHistory();
   loadProfile();
   bindM4Handlers();
+  bindM5Handlers();
+  loadTemplates();
   refreshRetro();
 }
 function renderPlats(list){
@@ -286,7 +338,13 @@ $("btnGenerate").onclick = async ()=>{
   const btn=$("btnGenerate"); btn.disabled=true; btn.innerHTML='<span class="spinner"></span> 生成中…';
   $("genStatus").textContent="平台并行生成（brief→draft→qa）…"; $("genStatus").style.color="var(--sub)";
   try{
-    const body = { platforms: selectedPlats(), tone_override:null, template: buildTemplate() };
+    const sel = $("tplSelect").value;
+    const body = {
+      platforms: selectedPlats(),
+      tone_override: null,
+      template_id: sel ? +sel : null,
+      template: sel ? null : buildTemplate()
+    };
     const r = await j("POST", `/api/materials/${currentMaterialId}/generate`, body);
     drafts = r.drafts || [];
     $("genStatus").textContent = `✅ 完成（${r.used_mock?"mock":"真实"}）`;
@@ -493,7 +551,215 @@ function bindM4Handlers(){
   $("btnRecordEffect").onclick = ()=> openEffectModal(null);
 }
 
-// 给每条 draft 卡片添加"录入效果"按钮（在 paintDraft 调用前 hook）
+// ============ M5: 模板库管理（FR-62）+ 生成页模板选择（FR-64） ============
+let templates = [];
+let tplMap = {};
+let editingTplId = null;
+let pendingImport = null;
+
+async function loadTemplates(){
+  try{
+    const r = await j("GET","/api/templates");
+    templates = r.templates || [];
+  }catch(e){ templates = []; }
+  tplMap = {};
+  templates.forEach(t=>{ tplMap[t.id] = t; });
+  renderTplList();
+  fillTplSelect();
+}
+
+function tplItemHtml(t){
+  const badge = t.builtin ? '<span class="tag" style="background:#eef0f6;color:#374151">内置</span>' : '';
+  const del = t.builtin ? "" : `<button class="ghost sm" data-tpl-act="del" data-id="${t.id}">删除</button>`;
+  const sdesc = (t.structure||[]).join(" → ");
+  return `<div class="side-item" style="cursor:default">
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+      <b>${esc(t.name)}</b><span class="tag">v${t.version}</span>${badge}
+    </div>
+    <div style="color:#9ca3af;margin-top:3px">${esc((t.opening||"").slice(0,26))}${sdesc?" · "+esc(sdesc.slice(0,32)):""}</div>
+    <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
+      <button class="ghost sm" data-tpl-act="edit" data-id="${t.id}">编辑</button>
+      <button class="ghost sm" data-tpl-act="dup" data-id="${t.id}">复制为我的</button>
+      ${del}
+    </div>
+  </div>`;
+}
+
+function renderTplList(){
+  const box = $("tplList");
+  if(!templates.length){ box.innerHTML='<div class="empty">暂无模板</div>'; return; }
+  const builtin = templates.filter(t=>t.builtin);
+  const mine = templates.filter(t=>!t.builtin);
+  let html = "";
+  if(builtin.length){
+    html += `<div style="font-size:11px;color:var(--sub);margin:4px 0">内置模板</div>`;
+    builtin.forEach(t=> html += tplItemHtml(t));
+  }
+  if(mine.length){
+    html += `<div style="font-size:11px;color:var(--sub);margin:8px 0 4px">我的模板</div>`;
+    mine.forEach(t=> html += tplItemHtml(t));
+  }
+  box.innerHTML = html;
+  box.querySelectorAll("[data-tpl-act]").forEach(el=>{
+    el.onclick = ()=>{
+      const id = +el.dataset.id, act = el.dataset.tplAct;
+      if(act==="edit") openTplModal(id);
+      else if(act==="dup") duplicateTpl(id);
+      else if(act==="del") deleteTpl(id);
+    };
+  });
+  $("tplMeta").textContent = `${templates.length} 个（内置 ${builtin.length} / 我的 ${mine.length}）`;
+}
+
+function fillTplSelect(){
+  const sel = $("tplSelect");
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">不使用模板（仅平台 DNA）</option>';
+  const group = (label, arr)=>{
+    if(!arr.length) return;
+    const og = document.createElement("optgroup");
+    og.label = label;
+    arr.forEach(t=>{
+      const o = document.createElement("option");
+      o.value = t.id;
+      o.textContent = `${t.name} v${t.version}`;
+      og.appendChild(o);
+    });
+    sel.appendChild(og);
+  };
+  group("内置模板", templates.filter(t=>t.builtin));
+  group("我的模板", templates.filter(t=>!t.builtin));
+  if(cur) sel.value = cur;
+}
+
+function openTplModal(id){
+  editingTplId = id || null;
+  const t = id ? tplMap[id] : null;
+  $("tplModalTitle").textContent = id ? `编辑模板 #${id}` : "新建模板";
+  $("tfName").value = t?.name || "";
+  $("tfVoice").value = t?.voice || "";
+  $("tfOpening").value = t?.opening || "";
+  $("tfStructure").value = (t?.structure||[]).join("\n");
+  $("tfClosing").value = t?.closing || "";
+  $("tfTagStyle").value = t?.tag_style || "";
+  $("tfTaboo").value = (t?.taboo||[]).join("\n");
+  $("tplStatus").textContent = "";
+  $("modalTpl").style.display = "block";
+}
+
+function tplFormBody(){
+  const lines = v => v.split("\n").map(s=>s.trim()).filter(Boolean);
+  return {
+    kind: "content",
+    name: $("tfName").value.trim(),
+    voice: $("tfVoice").value,
+    opening: $("tfOpening").value,
+    structure: lines($("tfStructure").value),
+    closing: $("tfClosing").value,
+    tag_style: $("tfTagStyle").value,
+    taboo: lines($("tfTaboo").value),
+  };
+}
+
+async function duplicateTpl(id){
+  try{ await j("POST",`/api/templates/${id}/duplicate`); await loadTemplates(); }
+  catch(e){ alert("复制失败："+e.message); }
+}
+
+async function deleteTpl(id){
+  const t = tplMap[id];
+  if(!confirm(`确认删除模板「${t?t.name:id}」？`)) return;
+  try{ await j("DELETE",`/api/templates/${id}`); await loadTemplates(); }
+  catch(e){ alert("删除失败："+e.message); }
+}
+
+async function exportTemplates(){
+  try{
+    const data = await j("GET","/api/templates/export");
+    const blob = new Blob([JSON.stringify(data,null,2)], {type:"application/json"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `polyface-templates-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(a.href);
+  }catch(e){ alert("导出失败："+e.message); }
+}
+
+/** 导入：遇同名 409 → 交给用户裁决（skip / overwrite / keep_both） */
+async function doImport(payload, strategy){
+  const body = Object.assign({}, payload);
+  if(strategy) body.on_conflict = strategy;
+  const r = await fetch("/api/templates/import", {
+    method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)
+  });
+  if(r.status === 409){
+    const data = await r.json();
+    showConflictModal(payload, data.conflicts || []);
+    return;
+  }
+  if(!r.ok){
+    let d = "导入失败";
+    try{ d = (await r.json()).detail || d; }catch(e){}
+    throw new Error(d);
+  }
+  const data = await r.json();
+  await loadTemplates();
+  $("tplMeta").textContent =
+    `导入完成 · 新增 ${data.imported} / 覆盖 ${data.overwritten} / 跳过 ${data.skipped} / 都保留 ${data.kept_both}`;
+}
+
+function showConflictModal(payload, conflicts){
+  pendingImport = payload;
+  $("conflictList").innerHTML = conflicts.map(c=>
+    `<div style="padding:6px 9px;border:1px solid var(--line);border-radius:8px;margin-bottom:5px">
+       <b>${esc(c.name)}</b>
+       <span style="color:var(--sub);font-size:12px">（已存在 #${c.existing_id}${c.existing_builtin?" · 内置":""}）</span>
+     </div>`).join("");
+  $("conflictStatus").textContent = "";
+  $("modalConflict").style.display = "block";
+}
+
+function bindM5Handlers(){
+  $("btnTplNew").onclick = ()=> openTplModal(null);
+  $("btnTplExport").onclick = exportTemplates;
+  $("btnTplImport").onclick = ()=> $("tplImportFile").click();
+  $("tplImportFile").onchange = async (ev)=>{
+    const f = ev.target.files[0];
+    if(f){
+      try{
+        const payload = JSON.parse(await f.text());
+        await doImport(payload, null);
+      }catch(e){ alert(e.message); }
+    }
+    ev.target.value = "";
+  };
+  $("btnTplCancel").onclick = ()=> $("modalTpl").style.display="none";
+  $("btnTplSave").onclick = async ()=>{
+    const b = tplFormBody();
+    if(!b.name){ $("tplStatus").textContent="❌ 模板名称必填"; $("tplStatus").style.color="var(--brand)"; return; }
+    $("tplStatus").textContent="保存中…"; $("tplStatus").style.color="var(--sub)";
+    try{
+      if(editingTplId) await j("PUT",`/api/templates/${editingTplId}`, b);
+      else await j("POST","/api/templates", b);
+      $("modalTpl").style.display="none";
+      await loadTemplates();
+    }catch(e){ $("tplStatus").textContent="❌ "+e.message; $("tplStatus").style.color="var(--brand)"; }
+  };
+  $("btnConflictCancel").onclick = ()=>{ $("modalConflict").style.display="none"; pendingImport=null; };
+  document.querySelectorAll("#modalConflict [data-strategy]").forEach(el=>{
+    el.onclick = async ()=>{
+      if(!pendingImport) return;
+      $("conflictStatus").textContent="导入中…"; $("conflictStatus").style.color="var(--sub)";
+      try{
+        await doImport(pendingImport, el.dataset.strategy);
+        $("modalConflict").style.display="none";
+        pendingImport = null;
+      }catch(e){ $("conflictStatus").textContent="❌ "+e.message; $("conflictStatus").style.color="var(--brand)"; }
+    };
+  });
+}
+
+// 给每条 draft 卡片添加"录入效果"按钮 + 模板来源标记
 const _origPaintDraft = paintDraft;
 paintDraft = function(d){
   _origPaintDraft(d);
@@ -501,6 +767,16 @@ paintDraft = function(d){
   if(!panel || !d || !d.id) return;
   const blk = panel.querySelector(".draft-block h3");
   if(!blk) return;
+  if(d.template_id){
+    const t = tplMap[d.template_id];
+    const span = document.createElement("span");
+    span.className = "meta";
+    span.style.marginLeft = "8px";
+    span.textContent = t
+      ? `🧩 模板：${t.name} v${d.template_version}`
+      : `🧩 模板已删除（#${d.template_id} v${d.template_version}）`;
+    blk.appendChild(span);
+  }
   const btn = document.createElement("button");
   btn.className="ghost sm"; btn.style.marginLeft="6px"; btn.textContent="📈 录效果";
   btn.onclick = ()=> openEffectModal(d.id);

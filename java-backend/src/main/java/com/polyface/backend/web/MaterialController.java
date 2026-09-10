@@ -47,6 +47,7 @@ public class MaterialController {
 
     public record GenerateRequest(
             @NotEmpty List<String> platforms, String tone_override,
+            Long template_id,
             com.fasterxml.jackson.databind.JsonNode template) {
     }
 
@@ -136,6 +137,19 @@ public class MaterialController {
                                              @Valid @RequestBody GenerateRequest req) {
         Store.MaterialRow m = store.getMaterial(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "material not found"));
+
+        // FR-64：template_id 优先于内联 template；模板来源随稿存档（id + version）
+        JsonNode effectiveTemplate = req.template();
+        Long tplId = null;
+        Integer tplVer = null;
+        if (req.template_id() != null) {
+            Store.TemplateRow t = store.getTemplate(req.template_id())
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "template not found"));
+            effectiveTemplate = TemplateMapper.toUserTemplate(t);
+            tplId = t.id();
+            tplVer = t.version();
+        }
+
         try {
             // FR-33 复盘回写：自动拉画像 + 复盘建议，注入 Python 提示词
             com.fasterxml.jackson.databind.node.ObjectNode pyBody = mapper.createObjectNode();
@@ -145,8 +159,8 @@ public class MaterialController {
             var arr = pyBody.putArray("platforms");
             req.platforms().forEach(arr::add);
             if (req.tone_override() != null) pyBody.put("tone_override", req.tone_override());
-            if (req.template() != null && !req.template().isNull()) {
-                pyBody.set("template", req.template());
+            if (effectiveTemplate != null && !effectiveTemplate.isNull()) {
+                pyBody.set("template", effectiveTemplate);
             }
             // 创作者画像（FR-32→FR-33）
             store.getProfile().ifPresent(p -> {
@@ -171,6 +185,10 @@ public class MaterialController {
             ObjectNode out = mapper.createObjectNode();
             out.put("material_id", id);
             out.put("used_mock", mock);
+            if (tplId != null) {
+                out.put("template_id", tplId);
+                out.put("template_version", tplVer);
+            }
             ArrayNode draftsOut = out.putArray("drafts");
 
             JsonNode pyDrafts = genResp.path("drafts");
@@ -185,7 +203,7 @@ public class MaterialController {
                         pd.path("brief").toString(),
                         pd.path("draft").toString(),
                         pd.path("qa").toString(),
-                        status);
+                        status, tplId, tplVer);
 
                 ObjectNode d = draftsOut.addObject();
                 d.put("id", draftId);
@@ -193,11 +211,16 @@ public class MaterialController {
                 d.put("platform_code", code);
                 d.put("platform_name", name);
                 d.put("status", status);
+                if (tplId != null) {
+                    d.put("template_id", tplId);
+                    d.put("template_version", tplVer);
+                }
                 d.set("brief", pd.path("brief"));
                 d.set("draft", pd.path("draft"));
                 d.set("qa", pd.path("qa"));
             }
-            log.info("material {} generated {} drafts", id, pyDrafts.size());
+            log.info("material {} generated {} drafts (template={} v{})",
+                    id, pyDrafts.size(), tplId, tplVer);
             return ResponseEntity.ok(out);
         } catch (Exception ex) {
             log.error("generate failed", ex);
@@ -217,6 +240,10 @@ public class MaterialController {
         out.put("platform_name", d.platformName());
         out.put("status", d.status());
         out.put("created_at", d.createdAt());
+        if (d.templateId() != null) {
+            out.put("template_id", d.templateId());
+            out.put("template_version", d.templateVersion());
+        }
         try {
             out.set("brief", mapper.readTree(d.briefJson()));
             out.set("draft", mapper.readTree(d.payloadJson()));
@@ -236,6 +263,10 @@ public class MaterialController {
             n.put("platform_name", d.platformName());
             n.put("status", d.status());
             n.put("created_at", d.createdAt());
+            if (d.templateId() != null) {
+                n.put("template_id", d.templateId());
+                n.put("template_version", d.templateVersion());
+            }
         }
         return arr;
     }
