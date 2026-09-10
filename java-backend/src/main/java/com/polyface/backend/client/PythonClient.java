@@ -72,6 +72,11 @@ public class PythonClient {
         return get("/platforms");
     }
 
+    /** Python 服务健康状态（含 mock/model，供前端徽章正确显示运行模式）。 */
+    public JsonNode health() {
+        return get("/health");
+    }
+
     private JsonNode post(String uri, Object body) {
         return client.post()
                 .uri(uri)
