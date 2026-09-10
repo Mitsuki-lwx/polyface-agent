@@ -24,24 +24,31 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.polyface.backend.client.PythonClient;
 import com.polyface.backend.store.Store;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 
 /**
- * 模板管理 API（FR-62）：新建/编辑/复制/删除/列表/详情/导出/导入。
- * 冲突不自动决策：导入遇同名且未指定策略 → 409 + 冲突清单，交由用户判断。
+ * 模板管理 API（FR-62）+ 示例学习（FR-63）。
+ * - CRUD：新建/编辑/复制/删除/列表/详情/导出/导入；导入冲突不自动决策（409 + 冲突清单）
+ * - 学习：示例文本 → 草稿模板（status=draft），须人工 activate 后才可用于生成
  */
 @RestController
 public class TemplateController {
 
+    /** 示例文本最短长度：太短无法拆出结构。 */
+    private static final int MIN_SAMPLE_CHARS = 50;
+
     private static final Logger log = LoggerFactory.getLogger(TemplateController.class);
     private final Store store;
+    private final PythonClient python;
     private final ObjectMapper mapper = new ObjectMapper();
 
-    public TemplateController(Store store) {
+    public TemplateController(Store store, PythonClient python) {
         this.store = store;
+        this.python = python;
     }
 
     // ---------------- DTO ----------------
@@ -56,15 +63,89 @@ public class TemplateController {
             List<String> taboo) {
     }
 
+    public record LearnBody(String sample_text, String source_note) {
+    }
+
     // ---------------- 列表 ----------------
+    /**
+     * 列表。status 默认 {@code active}（安全默认，符合 UC-16：草稿不进生成选项）。
+     * 传 {@code all} 返回全部（模板库管理界面用）。
+     */
     @GetMapping(value = "/api/templates", produces = MediaType.APPLICATION_JSON_VALUE)
-    public JsonNode list(@RequestParam(required = false) String kind) {
+    public JsonNode list(@RequestParam(required = false) String kind,
+                         @RequestParam(required = false, defaultValue = "active") String status) {
+        String statusFilter = "all".equalsIgnoreCase(status) || status == null || status.isBlank()
+                ? null : status;
         ObjectNode out = mapper.createObjectNode();
         ArrayNode arr = out.putArray("templates");
-        for (Store.TemplateRow t : store.listTemplates(kind)) {
+        for (Store.TemplateRow t : store.listTemplates(kind, statusFilter)) {
             arr.add(TemplateMapper.toJson(t));
         }
         return out;
+    }
+
+    // ---------------- FR-63 示例学习 ----------------
+    /**
+     * 示例文本 → 拆解为草稿模板。
+     * 产物 status=draft，**不会**出现在生成页选择器；须调用 activate 确认启用。
+     * 不保存示例原文，只落拆解结果 + source_note。
+     */
+    @PostMapping(value = "/api/templates/learn", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<JsonNode> learn(@RequestBody LearnBody body) {
+        String sample = body == null ? null : body.sample_text();
+        if (sample == null || sample.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "示例文本不能为空");
+        }
+        String text = sample.trim();
+        if (text.length() < MIN_SAMPLE_CHARS) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "示例文本过短，至少 " + MIN_SAMPLE_CHARS + " 字才能拆解出结构");
+        }
+
+        JsonNode resp;
+        try {
+            resp = python.learn(text, body.source_note());
+        } catch (Exception ex) {
+            log.error("learn failed", ex);
+            throw new GlobalExceptionHandler.LlmUnavailableException(ex.getMessage());
+        }
+
+        JsonNode learned = resp.path("template");
+        String sourceNote = body.source_note() == null ? null : body.source_note().trim();
+        long id = store.insertTemplate(
+                "content",
+                learned.path("name").asText("学习：示例"),
+                learned.path("voice").asText(""),
+                learned.path("opening").asText(""),
+                learned.path("structure").toString(),
+                learned.path("closing").asText(""),
+                learned.path("tag_style").asText(""),
+                learned.path("taboo").toString(),
+                false, null, 1,
+                "draft",                       // 关键：一律草稿态（ADR-014 / UC-16）
+                sourceNote);
+
+        Store.TemplateRow row = requireTemplate(id);
+        ObjectNode out = TemplateMapper.toJson(row);
+        out.put("used_mock", resp.path("used_mock").asBoolean(false));
+        out.put("rationale", learned.path("rationale").asText(""));
+        log.info("template learned id={} name={} structure={} (status=draft)",
+                id, row.name(), learned.path("structure").size());
+        return ResponseEntity.status(HttpStatus.CREATED).body(out);
+    }
+
+    /** 确认启用：草稿 → active（此后才可用于生成）。 */
+    @PostMapping(value = "/api/templates/{id}/activate", produces = MediaType.APPLICATION_JSON_VALUE)
+    public JsonNode activate(@PathVariable long id) {
+        Store.TemplateRow t = requireTemplate(id);
+        if (t.builtin()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "内置模板无需启用");
+        }
+        if (!"active".equals(t.status())) {
+            store.activateTemplate(id);
+            log.info("template activated id={} name={}", id, t.name());
+        }
+        return TemplateMapper.toJson(requireTemplate(id));
     }
 
     // ---------------- 新建 ----------------
@@ -130,13 +211,17 @@ public class TemplateController {
     }
 
     // ---------------- 导出 ----------------
+    /**
+     * 导出**已启用**模板（用户资产视角：草稿是待确认的中间态，不纳入备份）。
+     * 条目不含本机标识（id/builtin/origin_id），便于跨机器共享。
+     */
     @GetMapping(value = "/api/templates/export", produces = MediaType.APPLICATION_JSON_VALUE)
     public JsonNode export() {
         ObjectNode out = mapper.createObjectNode();
         out.put("polyface_templates", 1);
         out.put("exported_at", LocalDateTime.now().toString());
         ArrayNode arr = out.putArray("templates");
-        for (Store.TemplateRow t : store.listTemplates(null)) {
+        for (Store.TemplateRow t : store.listTemplates(null, "active")) {
             arr.add(TemplateMapper.toExportJson(t));
         }
         return out;

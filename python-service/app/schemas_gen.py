@@ -87,3 +87,27 @@ class GenerateResponse(BaseModel):
     structured: dict = Field(..., description="素材理解结果(含事实清单)")
     drafts: list[PlatformDraft]
     used_mock: bool
+
+
+# ============================================================ 示例学习(FR-63)
+class LearnRequest(BaseModel):
+    """示例学习请求：喂一段自有示例文本，拆解出模板参数。"""
+    sample_text: str = Field(..., min_length=1, description="示例正文（Java 侧保证 ≥50 字）")
+    source_note: str | None = Field(None, description="示例来源备注，如 '9月小红书爆款'（不存原文）")
+
+
+class LearnedTemplate(BaseModel):
+    """拆解产物（草稿模板参数）。只归纳结构，不复述示例内容。"""
+    name: str = Field(..., description="建议模板名（由服务端按来源备注生成）")
+    voice: str = Field(default="", description="语气/人设")
+    opening: str = Field(default="", description="开头句式(<=40字)")
+    structure: list[str] = Field(default_factory=list, description="正文结构要点(短语, 3~6 条)")
+    closing: str = Field(default="", description="结尾/互动句式(<=40字)")
+    tag_style: str = Field(default="", description="标签风格描述(可空)")
+    taboo: list[str] = Field(default_factory=list, description="避雷项(可空)")
+    rationale: str = Field(default="", description="拆解依据说明，供用户核对")
+
+
+class LearnResponse(BaseModel):
+    template: LearnedTemplate
+    used_mock: bool

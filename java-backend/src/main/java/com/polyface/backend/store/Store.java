@@ -51,10 +51,16 @@ public class Store {
                            String insight, String createdAt) {
     }
 
-    /** 用户模板（FR-62）：kind=content（内容模板）/ clip（成片模板，M5 预留）。 */
+    /**
+     * 用户模板（FR-62 / FR-63）。
+     * kind=content（内容模板）/ clip（成片模板，M5 预留）。
+     * status=draft（示例学习拆解出的草稿，待人工确认）/ active（已启用，可用于生成）。
+     * sourceNote=示例来源备注（FR-63，不存示例原文）。
+     */
     public record TemplateRow(long id, String kind, String name, String voice, String opening,
                               String structureJson, String closing, String tagStyle, String tabooJson,
                               boolean builtin, Long originId, int version,
+                              String status, String sourceNote,
                               String createdAt, String updatedAt) {
     }
 
@@ -116,6 +122,7 @@ public class Store {
                         + "kind TEXT, platform_code TEXT, domain TEXT,"
                         + "insight TEXT NOT NULL, created_at TEXT)",
                 // FR-62 用户模板（内容模板；clip 为成片模板预留）
+                // FR-63 新增 status（draft|active）与 source_note（示例学习来源备注）
                 "CREATE TABLE IF NOT EXISTS template ("
                         + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
                         + "kind TEXT NOT NULL DEFAULT 'content',"
@@ -123,6 +130,7 @@ public class Store {
                         + "structure_json TEXT, closing TEXT, tag_style TEXT, taboo_json TEXT,"
                         + "builtin INTEGER NOT NULL DEFAULT 0, origin_id INTEGER,"
                         + "version INTEGER NOT NULL DEFAULT 1,"
+                        + "status TEXT NOT NULL DEFAULT 'active', source_note TEXT,"
                         + "created_at TEXT, updated_at TEXT)"
         };
         try (Connection c = DriverManager.getConnection(jdbcUrl); Statement st = c.createStatement()) {
@@ -130,8 +138,34 @@ public class Store {
                 st.execute(sql);
             }
             ensureDraftTemplateColumns(c);
+            ensureTemplateStatusColumns(c);
         }
         log.info("SQLite schema ready");
+    }
+
+    /**
+     * 老库补列：template.status / template.source_note（FR-63）。
+     * 存量模板一律视为 active，保持既有行为不变。
+     */
+    private void ensureTemplateStatusColumns(Connection c) throws java.sql.SQLException {
+        java.util.Set<String> cols = new java.util.HashSet<>();
+        try (Statement st = c.createStatement(); ResultSet rs = st.executeQuery("PRAGMA table_info(template)")) {
+            while (rs.next()) {
+                cols.add(rs.getString("name"));
+            }
+        }
+        if (!cols.contains("status")) {
+            try (Statement st = c.createStatement()) {
+                st.execute("ALTER TABLE template ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
+                log.info("migrated: template.status added");
+            }
+        }
+        if (!cols.contains("source_note")) {
+            try (Statement st = c.createStatement()) {
+                st.execute("ALTER TABLE template ADD COLUMN source_note TEXT");
+                log.info("migrated: template.source_note added");
+            }
+        }
     }
 
     /**
@@ -466,24 +500,38 @@ public class Store {
     // ---------------- template (FR-62) ----------------
     private static final String TEMPLATE_COLS =
             "id, kind, name, voice, opening, structure_json, closing, tag_style, taboo_json, "
-                    + "builtin, origin_id, version, created_at, updated_at";
+                    + "builtin, origin_id, version, status, source_note, created_at, updated_at";
 
     private TemplateRow mapTemplate(ResultSet rs) throws java.sql.SQLException {
         long oid = rs.getLong("origin_id");
         Long originId = rs.wasNull() ? null : oid;
+        String status = rs.getString("status");
         return new TemplateRow(
                 rs.getLong("id"), rs.getString("kind"), rs.getString("name"),
                 rs.getString("voice"), rs.getString("opening"), rs.getString("structure_json"),
                 rs.getString("closing"), rs.getString("tag_style"), rs.getString("taboo_json"),
                 rs.getInt("builtin") == 1, originId, rs.getInt("version"),
+                status == null || status.isBlank() ? "active" : status,
+                rs.getString("source_note"),
                 rs.getString("created_at"), rs.getString("updated_at"));
     }
 
+    /** 兼容旧调用：默认 status=active、无来源备注。 */
     public long insertTemplate(String kind, String name, String voice, String opening,
                                String structureJson, String closing, String tagStyle, String tabooJson,
                                boolean builtin, Long originId, int version) {
+        return insertTemplate(kind, name, voice, opening, structureJson, closing, tagStyle, tabooJson,
+                builtin, originId, version, "active", null);
+    }
+
+    /** FR-63：可指定 status（draft|active）与 source_note。 */
+    public long insertTemplate(String kind, String name, String voice, String opening,
+                               String structureJson, String closing, String tagStyle, String tabooJson,
+                               boolean builtin, Long originId, int version,
+                               String status, String sourceNote) {
         String sql = "INSERT INTO template(kind, name, voice, opening, structure_json, closing, tag_style, "
-                + "taboo_json, builtin, origin_id, version, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)";
+                + "taboo_json, builtin, origin_id, version, status, source_note, created_at, updated_at) "
+                + "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
         String now = LocalDateTime.now().toString();
         try (Connection c = open();
              PreparedStatement ps = c.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
@@ -502,8 +550,10 @@ public class Store {
                 ps.setLong(10, originId);
             }
             ps.setInt(11, Math.max(1, version));
-            ps.setString(12, now);
-            ps.setString(13, now);
+            ps.setString(12, status == null || status.isBlank() ? "active" : status);
+            ps.setString(13, sourceNote);
+            ps.setString(14, now);
+            ps.setString(15, now);
             ps.executeUpdate();
             try (ResultSet rs = ps.getGeneratedKeys()) {
                 return rs.next() ? rs.getLong(1) : -1L;
@@ -528,16 +578,35 @@ public class Store {
         }
     }
 
-    /** 列表：内置在前，我的在后；再按 id 升序。kind 为空则不过滤。 */
+    /** 列表：不过滤状态（返回全部）。 */
     public List<TemplateRow> listTemplates(String kind) {
-        boolean filter = kind != null && !kind.isBlank();
+        return listTemplates(kind, null);
+    }
+
+    /**
+     * 列表查询：内置在前，我的在后；再按 id 升序。
+     *
+     * @param kind   类型过滤，null/空 表示不按 kind 过滤
+     * @param status 状态过滤：{@code active} / {@code draft}；null 表示**不过滤**（返回全部）
+     */
+    public List<TemplateRow> listTemplates(String kind, String status) {
+        List<String> conds = new ArrayList<>();
+        List<String> args = new ArrayList<>();
+        if (kind != null && !kind.isBlank()) {
+            conds.add("kind=?");
+            args.add(kind);
+        }
+        if (status != null && !status.isBlank()) {
+            conds.add("status=?");
+            args.add(status);
+        }
         String sql = "SELECT " + TEMPLATE_COLS + " FROM template "
-                + (filter ? "WHERE kind=? " : "")
+                + (conds.isEmpty() ? "" : "WHERE " + String.join(" AND ", conds) + " ")
                 + "ORDER BY builtin DESC, id ASC";
         List<TemplateRow> out = new ArrayList<>();
         try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
-            if (filter) {
-                ps.setString(1, kind);
+            for (int i = 0; i < args.size(); i++) {
+                ps.setString(i + 1, args.get(i));
             }
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
@@ -548,6 +617,18 @@ public class Store {
             throw new RuntimeException("listTemplates failed", e);
         }
         return out;
+    }
+
+    /** FR-63：草稿 → 启用（仅 draft 会被更新，用于幂等判定）。 */
+    public boolean activateTemplate(long id) {
+        String sql = "UPDATE template SET status='active', updated_at=? WHERE id=? AND status<>'active'";
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, LocalDateTime.now().toString());
+            ps.setLong(2, id);
+            return ps.executeUpdate() > 0;
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("activateTemplate failed", e);
+        }
     }
 
     /** 按名称精确查找（导入冲突检测用）；重名时取 id 最小的一条。 */

@@ -38,6 +38,8 @@ public final class TemplateMapper {
             n.put("origin_id", t.originId());
         }
         n.put("version", t.version());
+        n.put("status", t.status());
+        n.put("source_note", nullSafe(t.sourceNote()));
         n.put("created_at", nullSafe(t.createdAt()));
         n.put("updated_at", nullSafe(t.updatedAt()));
         return n;

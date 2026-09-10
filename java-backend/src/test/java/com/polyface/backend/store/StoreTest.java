@@ -230,9 +230,66 @@ class StoreTest {
     void schemaMigrationIsIdempotent() {
         // 同一 data-dir 二次构造 Store（触发二次 initSchema）不应抛异常
         Store first = newStore();
-        first.insertTemplate("content", "seed-check", "", "", "[]", "", "", "[]", true, null, 1);
-        Store second = newStore(); // 再次 initSchema：template 表已存在、draft 列已存在
+        first.insertTemplate("content", "seed-check", "", "", "[]", "", "", "[]",
+                true, null, 1, "draft", "学习来源");
+        Store second = newStore(); // 再次 initSchema：template 表已存在、status/source_note 列已存在
         assertThat(second.countBuiltinTemplates()).isEqualTo(1);
         assertThat(second.getProfile()).isEmpty(); // 其他表无副作用
+        // 二次迁移后 FR-63 字段未丢失
+        var row = second.listTemplates(null).get(0);
+        assertThat(row.status()).isEqualTo("draft");
+        assertThat(row.sourceNote()).isEqualTo("学习来源");
+    }
+
+    // ==================== FR-63: 模板状态与启用 ====================
+
+    @Test
+    void templateDefaultsToActive() {
+        Store store = newStore();
+        long id = store.insertTemplate("content", "默认态", "", "", "[]", "", "", "[]",
+                false, null, 1);
+        var row = store.getTemplate(id).orElseThrow();
+        assertThat(row.status()).isEqualTo("active");
+        assertThat(row.sourceNote()).isNull();
+    }
+
+    @Test
+    void templateStatusFilter() {
+        Store store = newStore();
+        long activeId = store.insertTemplate("content", "已启用", "", "", "[]", "", "", "[]",
+                false, null, 1);
+        long draftId = store.insertTemplate("content", "草稿", "", "", "[]", "", "", "[]",
+                false, null, 1, "draft", "示例备注");
+
+        // 不过滤 → 全部
+        assertThat(store.listTemplates(null)).hasSize(2);
+        // status=active
+        assertThat(store.listTemplates(null, "active"))
+                .extracting(Store.TemplateRow::id).containsExactly(activeId);
+        // status=draft
+        assertThat(store.listTemplates(null, "draft"))
+                .extracting(Store.TemplateRow::id).containsExactly(draftId);
+
+        var draft = store.getTemplate(draftId).orElseThrow();
+        assertThat(draft.status()).isEqualTo("draft");
+        assertThat(draft.sourceNote()).isEqualTo("示例备注");
+    }
+
+    @Test
+    void activateDraftTemplate() {
+        Store store = newStore();
+        long id = store.insertTemplate("content", "草稿转正", "", "", "[]", "", "", "[]",
+                false, null, 1, "draft", null);
+        assertThat(store.listTemplates(null, "active")).isEmpty();
+
+        assertThat(store.activateTemplate(id)).isTrue();
+        assertThat(store.getTemplate(id).orElseThrow().status()).isEqualTo("active");
+        assertThat(store.listTemplates(null, "draft")).isEmpty();
+        assertThat(store.listTemplates(null, "active")).hasSize(1);
+
+        // 幂等：已 active 再调用返回 false（无行被更新）
+        assertThat(store.activateTemplate(id)).isFalse();
+        // 不存在
+        assertThat(store.activateTemplate(99999)).isFalse();
     }
 }

@@ -7,9 +7,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import dna, llm
 from .config import get_settings
 from .pipeline.generate import generate
+from .pipeline.learn import run_learn
 from .pipeline.understand import run_understand
 from .schemas import AnalyzeRequest, AnalyzeResponse
-from .schemas_gen import GenerateRequest, GenerateResponse
+from .schemas_gen import (
+    GenerateRequest,
+    GenerateResponse,
+    LearnRequest,
+    LearnResponse,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("polyface-llm")
@@ -57,3 +63,10 @@ def do_generate(req: GenerateRequest) -> GenerateResponse:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return GenerateResponse(structured=structured_dict, drafts=drafts, used_mock=used_mock)
+
+
+@app.post("/learn", response_model=LearnResponse)
+def do_learn(req: LearnRequest) -> LearnResponse:
+    """示例学习（FR-63）：示例文本 → 模板参数（草稿，须人工确认后启用）。"""
+    learned, used_mock = run_learn(req)
+    return LearnResponse(template=learned, used_mock=used_mock)

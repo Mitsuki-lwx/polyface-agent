@@ -212,3 +212,33 @@ def build_clip_prompt(dna: dict, draft, structured, template: dict | None = None
         payload["user_template"] = template
     return json.dumps(payload, ensure_ascii=False, indent=1)
 
+
+# ============================================================ 示例学习(learn, FR-63)
+LEARN_SYSTEM = (
+    "你是内容结构分析师。分析用户提供的示例文本，拆解出可复用的写作模板参数，"
+    "供该用户日后复用同一套写作套路。只输出一个 JSON 对象：\n"
+    "{\n"
+    '  "voice": "语气/人设（如：真诚分享 / 理性干货 / 犀利观点）",\n'
+    '  "opening": "开头句式（归纳其手法，<=40字）",\n'
+    '  "structure": ["正文结构要点1", "要点2"],\n'
+    '  "closing": "结尾/互动句式（<=40字）",\n'
+    '  "tag_style": "标签风格描述（无则空字符串）",\n'
+    '  "taboo": [],\n'
+    '  "rationale": "拆解依据（一句话说明为何这样归纳）"\n'
+    "}\n"
+    "硬性要求：\n"
+    "1. 只归纳『可复用的结构套路』，禁止复述示例中的具体内容、数字、人名、事件；\n"
+    "2. structure 用短语概括（每条 <=15 字，3~6 条，按出现顺序），不要抄整句；\n"
+    "3. 若某项无法判断，给空字符串或空数组，不要编造。"
+)
+
+
+def build_learn_prompt(sample_text: str, source_note: str | None = None) -> str:
+    payload = {
+        "task": "拆解示例文本的写作结构，产出可复用的模板参数",
+        "sample_text": sample_text,
+    }
+    if source_note:
+        payload["source_note"] = source_note
+    return json.dumps(payload, ensure_ascii=False, indent=1)
+

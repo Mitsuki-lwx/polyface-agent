@@ -151,6 +151,7 @@
     <div class="card" style="margin-top:14px">
       <h2>⑤ 模板库 <span style="font-weight:400;color:var(--sub);font-size:11px" id="tplMeta"></span></h2>
       <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+        <button class="ghost sm" id="btnTplLearn">✨ 从示例学习</button>
         <button class="ghost sm" id="btnTplNew">+ 新建模板</button>
         <button class="ghost sm" id="btnTplExport">导出 JSON</button>
         <button class="ghost sm" id="btnTplImport">导入 JSON</button>
@@ -228,6 +229,24 @@
       <button class="sm" data-strategy="keep_both">都保留</button>
     </div>
     <div class="status-line" id="conflictStatus" style="margin-top:8px"></div>
+  </div>
+</div>
+
+<!-- ============ 示例学习弹窗（FR-63） ============ -->
+<div id="modalLearn" style="display:none;position:fixed;inset:0;background:#00000055;z-index:100">
+  <div style="background:#fff;max-width:600px;margin:40px auto;padding:22px;border-radius:14px;box-shadow:0 8px 24px #00000022;max-height:82vh;overflow:auto">
+    <h3 style="margin:0 0 10px">✨ 从示例学习模板</h3>
+    <div style="font-size:12px;color:var(--sub);line-height:1.6;margin-bottom:12px">
+      粘贴一篇你自己的爆款 / 范例正文，AI 会拆解它的写作结构，生成一个<b>草稿模板</b>，你核对确认后才可用于生成。
+      <br>仅用于归纳结构，<b>不会保存示例原文</b>；请只使用自有或已获授权的示例。
+    </div>
+    <textarea id="learnSample" placeholder="粘贴示例正文（至少 50 字）" style="min-height:160px"></textarea>
+    <input id="learnNote" placeholder="来源备注（可选），如：9月小红书爆款" style="margin-top:8px">
+    <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
+      <button class="ghost sm" id="btnLearnCancel">取消</button>
+      <button class="sm" id="btnLearnSubmit">开始拆解</button>
+    </div>
+    <div class="status-line" id="learnStatus" style="margin-top:8px"></div>
   </div>
 </div>
 
@@ -559,7 +578,7 @@ let pendingImport = null;
 
 async function loadTemplates(){
   try{
-    const r = await j("GET","/api/templates");
+    const r = await j("GET","/api/templates?status=all");
     templates = r.templates || [];
   }catch(e){ templates = []; }
   tplMap = {};
@@ -569,30 +588,44 @@ async function loadTemplates(){
 }
 
 function tplItemHtml(t){
+  const isDraft = t.status === "draft";
   const badge = t.builtin ? '<span class="tag" style="background:#eef0f6;color:#374151">内置</span>' : '';
-  const del = t.builtin ? "" : `<button class="ghost sm" data-tpl-act="del" data-id="${t.id}">删除</button>`;
+  const draftBadge = isDraft ? '<span class="tag" style="background:#faeeda;color:#854f0b">草稿 · 待确认</span>' : '';
   const sdesc = (t.structure||[]).join(" → ");
+  const src = t.source_note ? `<div style="color:#9ca3af;margin-top:3px">来源：${esc(t.source_note)}</div>` : "";
+  let actions = `<button class="ghost sm" data-tpl-act="edit" data-id="${t.id}">编辑</button>`;
+  if(isDraft){
+    actions += `<button class="sm" data-tpl-act="activate" data-id="${t.id}">确认启用</button>`
+             + `<button class="ghost sm" data-tpl-act="del" data-id="${t.id}">丢弃</button>`;
+  } else {
+    actions += `<button class="ghost sm" data-tpl-act="dup" data-id="${t.id}">复制为我的</button>`;
+    if(!t.builtin) actions += `<button class="ghost sm" data-tpl-act="del" data-id="${t.id}">删除</button>`;
+  }
+  const hint = isDraft
+    ? `<div style="font-size:11px;color:#854f0b;margin-top:5px">AI 拆解结果，请核对后启用</div>` : "";
   return `<div class="side-item" style="cursor:default">
     <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-      <b>${esc(t.name)}</b><span class="tag">v${t.version}</span>${badge}
+      <b>${esc(t.name)}</b><span class="tag">v${t.version}</span>${badge}${draftBadge}
     </div>
     <div style="color:#9ca3af;margin-top:3px">${esc((t.opening||"").slice(0,26))}${sdesc?" · "+esc(sdesc.slice(0,32)):""}</div>
-    <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
-      <button class="ghost sm" data-tpl-act="edit" data-id="${t.id}">编辑</button>
-      <button class="ghost sm" data-tpl-act="dup" data-id="${t.id}">复制为我的</button>
-      ${del}
-    </div>
+    ${src}${hint}
+    <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">${actions}</div>
   </div>`;
 }
 
 function renderTplList(){
   const box = $("tplList");
   if(!templates.length){ box.innerHTML='<div class="empty">暂无模板</div>'; return; }
+  const drafts = templates.filter(t=>t.status==="draft");
   const builtin = templates.filter(t=>t.builtin);
-  const mine = templates.filter(t=>!t.builtin);
+  const mine = templates.filter(t=>!t.builtin && t.status!=="draft");
   let html = "";
+  if(drafts.length){
+    html += `<div style="font-size:11px;color:#854f0b;margin:4px 0">草稿（待确认）</div>`;
+    drafts.forEach(t=> html += tplItemHtml(t));
+  }
   if(builtin.length){
-    html += `<div style="font-size:11px;color:var(--sub);margin:4px 0">内置模板</div>`;
+    html += `<div style="font-size:11px;color:var(--sub);margin:8px 0 4px">内置模板</div>`;
     builtin.forEach(t=> html += tplItemHtml(t));
   }
   if(mine.length){
@@ -606,15 +639,17 @@ function renderTplList(){
       if(act==="edit") openTplModal(id);
       else if(act==="dup") duplicateTpl(id);
       else if(act==="del") deleteTpl(id);
+      else if(act==="activate") activateTpl(id);
     };
   });
-  $("tplMeta").textContent = `${templates.length} 个（内置 ${builtin.length} / 我的 ${mine.length}）`;
+  $("tplMeta").textContent = `共 ${templates.length} 个（草稿 ${drafts.length} / 内置 ${builtin.length} / 我的 ${mine.length}）`;
 }
 
 function fillTplSelect(){
   const sel = $("tplSelect");
   const cur = sel.value;
   sel.innerHTML = '<option value="">不使用模板（仅平台 DNA）</option>';
+  const actives = templates.filter(t=>t.status==="active");   // UC-16：草稿不进生成选项
   const group = (label, arr)=>{
     if(!arr.length) return;
     const og = document.createElement("optgroup");
@@ -627,8 +662,8 @@ function fillTplSelect(){
     });
     sel.appendChild(og);
   };
-  group("内置模板", templates.filter(t=>t.builtin));
-  group("我的模板", templates.filter(t=>!t.builtin));
+  group("内置模板", actives.filter(t=>t.builtin));
+  group("我的模板", actives.filter(t=>!t.builtin));
   if(cur) sel.value = cur;
 }
 
@@ -668,9 +703,22 @@ async function duplicateTpl(id){
 
 async function deleteTpl(id){
   const t = tplMap[id];
-  if(!confirm(`确认删除模板「${t?t.name:id}」？`)) return;
+  const isDraft = t && t.status === "draft";
+  const msg = isDraft
+    ? `确认丢弃草稿「${t.name}」？丢弃后不可恢复（可重新学习）。`
+    : `确认删除模板「${t?t.name:id}」？`;
+  if(!confirm(msg)) return;
   try{ await j("DELETE",`/api/templates/${id}`); await loadTemplates(); }
-  catch(e){ alert("删除失败："+e.message); }
+  catch(e){ alert((isDraft?"丢弃失败：":"删除失败：")+e.message); }
+}
+
+/** FR-63：草稿 → 确认启用（此后才出现在生成页选择器）。 */
+async function activateTpl(id){
+  const t = tplMap[id];
+  try{
+    await j("POST",`/api/templates/${id}/activate`);
+    await loadTemplates();
+  }catch(e){ alert("启用失败："+e.message); }
 }
 
 async function exportTemplates(){
@@ -719,8 +767,50 @@ function showConflictModal(payload, conflicts){
   $("modalConflict").style.display = "block";
 }
 
+/** FR-63：示例学习弹窗 */
+function openLearnModal(){
+  $("learnSample").value = "";
+  $("learnNote").value = "";
+  $("learnStatus").textContent = "";
+  $("modalLearn").style.display = "block";
+}
+
+async function submitLearn(){
+  const sample = $("learnSample").value.trim();
+  if(!sample){
+    $("learnStatus").textContent = "❌ 请先粘贴示例正文";
+    $("learnStatus").style.color = "var(--brand)";
+    return;
+  }
+  if(sample.length < 50){
+    $("learnStatus").textContent = `❌ 示例过短（${sample.length} 字），至少 50 字才能拆出结构`;
+    $("learnStatus").style.color = "var(--brand)";
+    return;
+  }
+  const btn = $("btnLearnSubmit");
+  btn.disabled = true;
+  $("learnStatus").textContent = "拆解中…";
+  $("learnStatus").style.color = "var(--sub)";
+  try{
+    await j("POST","/api/templates/learn",{
+      sample_text: sample,
+      source_note: $("learnNote").value.trim() || null
+    });
+    $("modalLearn").style.display = "none";
+    await loadTemplates();
+    const box = $("tplList");
+    if(box) box.scrollIntoView({ block: "center" });
+  }catch(e){
+    $("learnStatus").textContent = "❌ " + e.message;
+    $("learnStatus").style.color = "var(--brand)";
+  } finally { btn.disabled = false; }
+}
+
 function bindM5Handlers(){
   $("btnTplNew").onclick = ()=> openTplModal(null);
+  $("btnTplLearn").onclick = ()=> openLearnModal();
+  $("btnLearnCancel").onclick = ()=> $("modalLearn").style.display="none";
+  $("btnLearnSubmit").onclick = submitLearn;
   $("btnTplExport").onclick = exportTemplates;
   $("btnTplImport").onclick = ()=> $("tplImportFile").click();
   $("tplImportFile").onchange = async (ev)=>{

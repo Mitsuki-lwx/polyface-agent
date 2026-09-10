@@ -77,6 +77,16 @@ public class PythonClient {
         return get("/health");
     }
 
+    /** 示例学习（FR-63）：示例文本 → 模板参数（草稿）。 */
+    public JsonNode learn(String sampleText, String sourceNote) {
+        ObjectNode body = mapper.createObjectNode();
+        body.put("sample_text", sampleText);
+        if (sourceNote != null && !sourceNote.isBlank()) {
+            body.put("source_note", sourceNote);
+        }
+        return post("/learn", body);
+    }
+
     private JsonNode post(String uri, Object body) {
         return client.post()
                 .uri(uri)
