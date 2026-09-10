@@ -69,6 +69,21 @@
   .empty{color:#9ca3af;font-size:13px;text-align:center;padding:40px 0}
   .spinner{display:inline-block;width:12px;height:12px;border:2px solid #fff;border-top-color:transparent;border-radius:50%;animation:sp 0.7s linear infinite}
   @keyframes sp{to{transform:rotate(360deg)}}
+  /* 复盘报告 */
+  .retro-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:6px}
+  .retro-card{border:1px solid var(--line);border-radius:10px;padding:10px;background:#fafbfe}
+  .retro-card h4{margin:0 0 4px;font-size:12px;color:var(--sub);font-weight:600}
+  .retro-card .big{font-size:22px;font-weight:700;color:var(--brand)}
+  .retro-card .sub{font-size:12px;color:var(--sub)}
+  .retro-rank{display:flex;flex-direction:column;gap:6px;margin-top:6px}
+  .retro-rank .row{display:flex;justify-content:space-between;padding:6px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff}
+  .retro-rank .row b{color:var(--brand)}
+  .retro-insights{margin-top:10px;display:flex;flex-direction:column;gap:6px}
+  .retro-insights .ins{font-size:13px;padding:8px 10px;border-radius:8px;border-left:3px solid var(--brand);background:#fff8e6;color:#7b241c}
+  .retro-insights .ins.bad{border-left-color:#c0392b;background:#fef3f2;color:#7b241c}
+  .retro-insights .ins.good{border-left-color:#2ecc71;background:#e8f6ef;color:#1e8e4e}
+  .retro-insights .ins.neutral{border-left-color:var(--sub);background:#eef0f6;color:#374151}
+  .plat-tab button.rec{background:#fef3f2;color:var(--brand)}
 </style>
 </head>
 <body>
@@ -118,16 +133,53 @@
       <h2>素材历史</h2>
       <div class="side-list" id="history"><div class="empty">暂无素材</div></div>
     </div>
+
+    <div class="card" style="margin-top:14px">
+      <h2>④ 创作者画像 <span style="font-weight:400;color:var(--sub);font-size:11px" id="profMeta"></span></h2>
+      <div style="font-size:12px;color:var(--sub);margin-bottom:8px">为 AI 提供"我是谁 / 我做什么 / 给谁看 / 不要什么"，影响 brief 与成稿风格</div>
+      <input id="profVoice" placeholder="品牌声音（理性干货 / 真诚种草 / 犀利观点 …）">
+      <input id="profDomain" placeholder="领域（自由职业 / 母婴 / 数码 …）" style="margin-top:6px">
+      <input id="profAudience" placeholder="目标受众（职场新人 / 宝妈 / 大学生 …）" style="margin-top:6px">
+      <textarea id="profAvoid" placeholder="不想出现的内容（堆砌AI词 / 标题党 / 不专业表述 …）" style="margin-top:6px;min-height:50px"></textarea>
+      <div style="margin-top:8px"><button id="btnProfileSave" class="ghost sm">保存画像</button> <span class="status-line" id="profStatus"></span></div>
+    </div>
   </section>
 
   <!-- ============ 右栏：结果 ============ -->
   <section>
     <div class="card res">
-      <h2>③ 成稿审阅</h2>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <button id="tabReview" class="ghost sm on">③ 成稿审阅</button>
+        <button id="tabRetro" class="ghost sm">📊 复盘报告</button>
+        <button id="btnRecordEffect" class="sm" style="margin-left:auto">📈 录入效果</button>
+      </div>
       <div id="resultArea"><div class="empty">解析素材并点击生成后，这里会展示各平台成稿 ✨</div></div>
+      <div id="retroArea" style="display:none"></div>
     </div>
   </section>
 </main>
+
+<!-- ============ 效果录入弹窗 ============ -->
+<div id="modalEffect" style="display:none;position:fixed;inset:0;background:#00000055;z-index:99">
+  <div style="background:#fff;max-width:520px;margin:60px auto;padding:22px;border-radius:14px;box-shadow:0 8px 24px #00000022">
+    <h3 style="margin:0 0 14px">📈 录入发布效果</h3>
+    <div style="font-size:12px;color:var(--sub);margin-bottom:10px">关联到具体稿件（按 ID）。所有字段除"关联稿件"外可选。</div>
+    <select id="efDraft"><option value="">选择关联稿件…</option></select>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+      <input id="efViews" type="number" min="0" placeholder="播放量">
+      <input id="efLikes" type="number" min="0" placeholder="点赞">
+      <input id="efFavs"  type="number" min="0" placeholder="收藏">
+      <input id="efComments" type="number" min="0" placeholder="评论">
+    </div>
+    <input id="efPosted" type="date" style="margin-top:8px">
+    <textarea id="efNote" placeholder="备注（可选，如：发布首日 / 推了首页）" style="margin-top:8px;min-height:50px"></textarea>
+    <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
+      <button class="ghost sm" id="btnEfCancel">取消</button>
+      <button class="sm" id="btnEfSave">保存</button>
+    </div>
+    <div class="status-line" id="efStatus" style="margin-top:8px"></div>
+  </div>
+</div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -157,6 +209,9 @@ async function init(){
   $("modeBadge").textContent = h?.mock ? "离线演示模式 (mock)" : "真实 LLM";
   renderPlats(p.platforms);
   loadHistory();
+  loadProfile();
+  bindM4Handlers();
+  refreshRetro();
 }
 function renderPlats(list){
   $("platList").innerHTML = "";
@@ -294,6 +349,163 @@ function paintDraft(d){
     </div>`;
   panel.querySelector("[data-copy]").onclick = e=>copyText(fullCopy, e.currentTarget);
 }
+
+// ============ M4: 创作者画像 / 复盘报告 / 效果录入 ============
+
+async function loadProfile(){
+  const p = await j("GET","/api/profile").catch(()=>null);
+  if(!p) return;
+  $("profVoice").value = p.brand_voice || "";
+  $("profDomain").value = p.domain || "";
+  $("profAudience").value = p.audience || "";
+  $("profAvoid").value = p.avoid || "";
+  $("profMeta").textContent = p.exists ? `已保存 · ${(p.updated_at||"").slice(0,16)}` : "（未设置）";
+}
+
+$("btnProfileSave").onclick = async ()=>{
+  $("profStatus").textContent="保存中…"; $("profStatus").style.color="var(--sub)";
+  try{
+    const r = await j("PUT","/api/profile",{
+      brand_voice: $("profVoice").value,
+      domain: $("profDomain").value,
+      audience: $("profAudience").value,
+      avoid: $("profAvoid").value,
+    });
+    $("profStatus").textContent = "✅ 已保存";
+    $("profStatus").style.color = "var(--ok)";
+    $("profMeta").textContent = `已保存 · ${(r.updated_at||"").slice(0,16)}`;
+  }catch(e){ $("profStatus").textContent="❌ "+e.message; $("profStatus").style.color="var(--brand)"; }
+};
+
+// Tab 切换
+function switchTab(which){
+  const isReview = which === "review";
+  $("tabReview").classList.toggle("on", isReview);
+  $("tabRetro").classList.toggle("on", !isReview);
+  $("resultArea").style.display = isReview ? "" : "none";
+  $("retroArea").style.display = isReview ? "none" : "";
+  if(!isReview) refreshRetro();
+}
+
+async function refreshRetro(){
+  const box = $("retroArea");
+  box.innerHTML = '<div class="empty">加载中…</div>';
+  try{
+    const r = await j("GET","/api/retrospect");
+    if(!r.ready){
+      box.innerHTML = `<div class="empty">${esc(r.guidance)}</div>
+        <div style="margin-top:10px;font-size:12px;color:var(--sub)">去"成稿审阅"页，对每条稿件点 📈 录入效果 即可开始积累复盘数据。</div>`;
+      return;
+    }
+    let html = `<div class="retro-grid">`;
+    html += retroCard("样本量", `${r.sample_size}`, "条效果数据");
+    const top = r.platform_ranking?.[0];
+    if(top) html += retroCard("最佳平台", `${esc(top.platformCode)}`, `平均互动 ${(+top.avg_engagement).toFixed(0)}`);
+    const totalEng = (r.top_performers||[]).reduce((s,x)=>s+(x.engagement||0),0);
+    html += retroCard("Top 3 互动合计", `${totalEng}`, "高表现稿件");
+    html += `</div>`;
+
+    if(r.platform_ranking?.length){
+      html += `<h2 style="margin-top:14px">🏆 平台效果排行</h2><div class="retro-rank">`;
+      r.platform_ranking.forEach((p,i)=>{
+        html += `<div class="row"><span>${i+1}. <b>${esc(p.platform_code)}</b> · ${p.count} 篇</span>
+          <span>均播 ${(+p.avg_views).toFixed(0)} · 均赞 ${(+p.avg_likes).toFixed(0)} · 互动 ${(+p.avg_engagement).toFixed(0)}</span></div>`;
+      });
+      html += `</div>`;
+    }
+
+    if(r.top_performers?.length){
+      html += `<h2 style="margin-top:14px">🔥 高表现稿件</h2>`;
+      r.top_performers.forEach(d=>{
+        html += `<div class="retro-card"><h4>${esc(d.platform_name)} · 稿件 #${d.draft_id}</h4>
+          <div class="big">互动 ${d.engagement}</div>
+          <div class="sub">${esc((d.material_core||"").slice(0,40))}…</div>
+          <div class="sub">播放 ${d.views} · 赞 ${d.likes} · 藏 ${d.favs} · 评 ${d.comments}</div></div>`;
+      });
+    }
+
+    if(r.underperformers?.length){
+      html += `<h2 style="margin-top:14px">⚠️ 低表现稿件（避雷信号）</h2>`;
+      r.underperformers.forEach(d=>{
+        html += `<div class="retro-card"><h4>${esc(d.platform_name)} · 稿件 #${d.draft_id}</h4>
+          <div class="big" style="color:#9ca3af">互动 ${d.engagement}</div>
+          <div class="sub">${esc((d.material_core||"").slice(0,40))}…</div>
+          <div class="sub">播放 ${d.views} · 赞 ${d.likes} · 藏 ${d.favs} · 评 ${d.comments}</div></div>`;
+      });
+    }
+
+    if(r.insights?.length){
+      html += `<h2 style="margin-top:14px">💡 复盘建议</h2><div class="retro-insights">`;
+      r.insights.forEach(i=>{ html += `<div class="ins ${esc(i.kind)}">${esc(i.insight)}</div>`; });
+      html += `</div>`;
+    }
+
+    box.innerHTML = html;
+  }catch(e){ box.innerHTML = `<div class="empty">❌ ${esc(e.message)}</div>`; }
+}
+
+function retroCard(label, big, sub){
+  return `<div class="retro-card"><h4>${esc(label)}</h4><div class="big">${esc(big)}</div><div class="sub">${esc(sub||"")}</div></div>`;
+}
+
+// 效果录入 modal
+async function openEffectModal(presetDraftId){
+  $("efDraft").innerHTML = '<option value="">选择关联稿件…</option>';
+  try{
+    const mats = await j("GET","/api/materials");
+    for(const m of mats){
+      const drafts = await j("GET",`/api/materials/${m.id}`);
+      for(const d of (drafts.drafts||[])){
+        const opt = document.createElement("option");
+        opt.value = d.id;
+        opt.textContent = `#${d.id} · ${d.platform_name} · ${(m.core_message||"").slice(0,30)}`;
+        if(presetDraftId && +presetDraftId === d.id) opt.selected = true;
+        $("efDraft").appendChild(opt);
+      }
+    }
+  }catch(e){ /* ignore */ }
+  $("efViews").value=""; $("efLikes").value=""; $("efFavs").value=""; $("efComments").value="";
+  $("efPosted").value=""; $("efNote").value=""; $("efStatus").textContent="";
+  $("modalEffect").style.display = "block";
+}
+$("btnEfCancel").onclick = ()=> $("modalEffect").style.display = "none";
+$("btnEfSave").onclick = async ()=>{
+  const did = +($("efDraft").value);
+  if(!did){ $("efStatus").textContent="❌ 请先选择关联稿件"; $("efStatus").style.color="var(--brand)"; return; }
+  $("efStatus").textContent="保存中…"; $("efStatus").style.color="var(--sub)";
+  try{
+    await j("POST",`/api/drafts/${did}/effect`,{
+      views: +($("efViews").value||0),
+      likes: +($("efLikes").value||0),
+      favs:  +($("efFavs").value||0),
+      comments: +($("efComments").value||0),
+      posted_at: $("efPosted").value || null,
+      note: $("efNote").value || null,
+    });
+    $("efStatus").textContent="✅ 已录入"; $("efStatus").style.color="var(--ok)";
+    setTimeout(()=>{ $("modalEffect").style.display="none"; refreshRetro(); }, 700);
+  }catch(e){ $("efStatus").textContent="❌ "+e.message; $("efStatus").style.color="var(--brand)"; }
+};
+
+function bindM4Handlers(){
+  $("tabReview").onclick = ()=> switchTab("review");
+  $("tabRetro").onclick = ()=> switchTab("retro");
+  $("btnRecordEffect").onclick = ()=> openEffectModal(null);
+}
+
+// 给每条 draft 卡片添加"录入效果"按钮（在 paintDraft 调用前 hook）
+const _origPaintDraft = paintDraft;
+paintDraft = function(d){
+  _origPaintDraft(d);
+  const panel = $("draftPanel");
+  if(!panel || !d || !d.id) return;
+  const blk = panel.querySelector(".draft-block h3");
+  if(!blk) return;
+  const btn = document.createElement("button");
+  btn.className="ghost sm"; btn.style.marginLeft="6px"; btn.textContent="📈 录效果";
+  btn.onclick = ()=> openEffectModal(d.id);
+  blk.appendChild(btn);
+};
 
 init();
 </script>

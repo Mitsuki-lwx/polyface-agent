@@ -137,8 +137,35 @@ public class MaterialController {
         Store.MaterialRow m = store.getMaterial(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "material not found"));
         try {
-            JsonNode genResp = python.generate(m.rawText(), m.sourceKind(), m.title(),
-                    req.platforms(), req.tone_override(), req.template());
+            // FR-33 复盘回写：自动拉画像 + 复盘建议，注入 Python 提示词
+            com.fasterxml.jackson.databind.node.ObjectNode pyBody = mapper.createObjectNode();
+            pyBody.put("raw_text", m.rawText());
+            pyBody.put("source_kind", m.sourceKind() == null ? "general" : m.sourceKind());
+            if (m.title() != null) pyBody.put("title", m.title());
+            var arr = pyBody.putArray("platforms");
+            req.platforms().forEach(arr::add);
+            if (req.tone_override() != null) pyBody.put("tone_override", req.tone_override());
+            if (req.template() != null && !req.template().isNull()) {
+                pyBody.set("template", req.template());
+            }
+            // 创作者画像（FR-32→FR-33）
+            store.getProfile().ifPresent(p -> {
+                com.fasterxml.jackson.databind.node.ObjectNode pn = mapper.createObjectNode();
+                pn.put("brand_voice", p.brandVoice());
+                pn.put("domain", p.domain());
+                pn.put("audience", p.audience());
+                pn.put("avoid", p.avoid());
+                pyBody.set("creator_profile", pn);
+            });
+            // 复盘建议（FR-31→FR-33）：从数据库读最近 10 条 retro
+            var hints = store.listRetros(10);
+            if (!hints.isEmpty()) {
+                var hArr = pyBody.putArray("retrospect_hints");
+                for (Store.RetroRow r : hints) {
+                    hArr.add("[" + r.platformCode() + "] " + r.insight());
+                }
+            }
+            JsonNode genResp = python.postGenerate(pyBody);
             boolean mock = genResp.path("used_mock").asBoolean(false);
 
             ObjectNode out = mapper.createObjectNode();

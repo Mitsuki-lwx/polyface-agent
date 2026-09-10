@@ -63,11 +63,16 @@ public class PythonClient {
         return post("/generate", body);
     }
 
+    /** 完整自定义请求体（用于注入 creator_profile / retrospect_hints，FR-33）。 */
+    public JsonNode postGenerate(JsonNode body) {
+        return post("/generate", body);
+    }
+
     public JsonNode platforms() {
         return get("/platforms");
     }
 
-    private JsonNode post(String uri, ObjectNode body) {
+    private JsonNode post(String uri, Object body) {
         return client.post()
                 .uri(uri)
                 .contentType(MediaType.APPLICATION_JSON)

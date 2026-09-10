@@ -36,6 +36,21 @@ public class Store {
                            String createdAt) {
     }
 
+    /** 发布后录入的效果指标（FR-30）。 */
+    public record EffectRow(long id, long draftId, int views, int likes, int favs, int comments,
+                            String postedAt, String note, String createdAt) {
+    }
+
+    /** 创作者单行画像（FR-32，固定 id=1）。 */
+    public record CreatorProfileRow(String brandVoice, String domain, String audience,
+                                    String avoid, String updatedAt) {
+    }
+
+    /** 复盘建议日志（FR-31/33，可由自动聚合写入 + 人工接受/忽略）。 */
+    public record RetroRow(long id, String kind, String platformCode, String domain,
+                           String insight, String createdAt) {
+    }
+
     private final String jdbcUrl;
     private final Path dbPath;
     private volatile boolean schemaReady = false;
@@ -75,7 +90,23 @@ public class Store {
                 "CREATE TABLE IF NOT EXISTS draft ("
                         + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
                         + "material_id INTEGER NOT NULL, platform_code TEXT NOT NULL, platform_name TEXT,"
-                        + "brief_json TEXT, payload_json TEXT, qa_json TEXT, status TEXT, created_at TEXT)"
+                        + "brief_json TEXT, payload_json TEXT, qa_json TEXT, status TEXT, created_at TEXT)",
+                // FR-30 发布后回填：播放/赞/藏/评 + 发布日期 + 备注
+                "CREATE TABLE IF NOT EXISTS effect_metrics ("
+                        + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                        + "draft_id INTEGER NOT NULL,"
+                        + "views INTEGER DEFAULT 0, likes INTEGER DEFAULT 0,"
+                        + "favs INTEGER DEFAULT 0, comments INTEGER DEFAULT 0,"
+                        + "posted_at TEXT, note TEXT, created_at TEXT)",
+                // FR-32 创作者画像：单行(id=1)
+                "CREATE TABLE IF NOT EXISTS creator_profile ("
+                        + "id INTEGER PRIMARY KEY,"
+                        + "brand_voice TEXT, domain TEXT, audience TEXT, avoid TEXT, updated_at TEXT)",
+                // FR-31/33 复盘建议：自动聚合 + 人工接受可写入
+                "CREATE TABLE IF NOT EXISTS retrospect_log ("
+                        + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                        + "kind TEXT, platform_code TEXT, domain TEXT,"
+                        + "insight TEXT NOT NULL, created_at TEXT)"
         };
         try (Connection c = DriverManager.getConnection(jdbcUrl); Statement st = c.createStatement()) {
             for (String sql : statements) {
@@ -207,5 +238,159 @@ public class Store {
         } catch (java.sql.SQLException e) {
             throw new RuntimeException("getDraft failed", e);
         }
+    }
+
+    // ---------------- effect metrics (FR-30) ----------------
+    /** 录入一条效果指标。一稿允许多条(滚动累计/分时段)。 */
+    public long insertEffect(long draftId, int views, int likes, int favs, int comments,
+                             String postedAt, String note) {
+        String sql = "INSERT INTO effect_metrics(draft_id, views, likes, favs, comments, posted_at, note, created_at) "
+                + "VALUES(?,?,?,?,?,?,?,?)";
+        try (Connection c = open();
+             PreparedStatement ps = c.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+            ps.setLong(1, draftId);
+            ps.setInt(2, Math.max(0, views));
+            ps.setInt(3, Math.max(0, likes));
+            ps.setInt(4, Math.max(0, favs));
+            ps.setInt(5, Math.max(0, comments));
+            ps.setString(6, postedAt);
+            ps.setString(7, note);
+            ps.setString(8, LocalDateTime.now().toString());
+            ps.executeUpdate();
+            try (ResultSet rs = ps.getGeneratedKeys()) {
+                return rs.next() ? rs.getLong(1) : -1L;
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("insertEffect failed", e);
+        }
+    }
+
+    /** 某稿的全部效果记录(按时间倒序)。 */
+    public List<EffectRow> effectsByDraft(long draftId) {
+        String sql = "SELECT id, draft_id, views, likes, favs, comments, posted_at, note, created_at "
+                + "FROM effect_metrics WHERE draft_id=? ORDER BY id DESC";
+        List<EffectRow> out = new ArrayList<>();
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setLong(1, draftId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(mapEffect(rs));
+                }
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("effectsByDraft failed", e);
+        }
+        return out;
+    }
+
+    /** 全部效果(聚合用,按 draft_id ASC 便于聚合去重取最新一条)。 */
+    public List<EffectRow> allEffects() {
+        String sql = "SELECT id, draft_id, views, likes, favs, comments, posted_at, note, created_at "
+                + "FROM effect_metrics ORDER BY draft_id, id";
+        List<EffectRow> out = new ArrayList<>();
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql); ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                out.add(mapEffect(rs));
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("allEffects failed", e);
+        }
+        return out;
+    }
+
+    /** 某稿最新一条效果(返回最新值/累计视图)。 */
+    public Optional<EffectRow> latestEffectForDraft(long draftId) {
+        List<EffectRow> all = effectsByDraft(draftId);
+        return all.isEmpty() ? Optional.empty() : Optional.of(all.get(0));
+    }
+
+    private EffectRow mapEffect(ResultSet rs) throws java.sql.SQLException {
+        return new EffectRow(
+                rs.getLong("id"), rs.getLong("draft_id"),
+                rs.getInt("views"), rs.getInt("likes"),
+                rs.getInt("favs"), rs.getInt("comments"),
+                rs.getString("posted_at"), rs.getString("note"),
+                rs.getString("created_at"));
+    }
+
+    // ---------------- creator profile (FR-32) ----------------
+    /** 单行 upsert：固定 id=1。 */
+    public void upsertProfile(String brandVoice, String domain, String audience, String avoid) {
+        // 先确保行存在
+        String ensure = "INSERT OR IGNORE INTO creator_profile(id, brand_voice, domain, audience, avoid, updated_at) "
+                + "VALUES(1, '', '', '', '', ?)";
+        String update = "UPDATE creator_profile SET brand_voice=?, domain=?, audience=?, avoid=?, updated_at=? WHERE id=1";
+        String now = LocalDateTime.now().toString();
+        try (Connection c = open()) {
+            try (PreparedStatement ps = c.prepareStatement(ensure)) {
+                ps.setString(1, now);
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps = c.prepareStatement(update)) {
+                ps.setString(1, brandVoice == null ? "" : brandVoice);
+                ps.setString(2, domain == null ? "" : domain);
+                ps.setString(3, audience == null ? "" : audience);
+                ps.setString(4, avoid == null ? "" : avoid);
+                ps.setString(5, now);
+                ps.executeUpdate();
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("upsertProfile failed", e);
+        }
+    }
+
+    public Optional<CreatorProfileRow> getProfile() {
+        String sql = "SELECT brand_voice, domain, audience, avoid, updated_at FROM creator_profile WHERE id=1";
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql); ResultSet rs = ps.executeQuery()) {
+            if (rs.next()) {
+                return Optional.of(new CreatorProfileRow(
+                        rs.getString("brand_voice"), rs.getString("domain"),
+                        rs.getString("audience"), rs.getString("avoid"),
+                        rs.getString("updated_at")));
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("getProfile failed", e);
+        }
+        return Optional.empty();
+    }
+
+    // ---------------- retrospect log (FR-31/33) ----------------
+    public long insertRetro(String kind, String platformCode, String domain, String insight) {
+        String sql = "INSERT INTO retrospect_log(kind, platform_code, domain, insight, created_at) "
+                + "VALUES(?,?,?,?,?)";
+        try (Connection c = open();
+             PreparedStatement ps = c.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+            ps.setString(1, kind == null ? "neutral" : kind);
+            ps.setString(2, platformCode);
+            ps.setString(3, domain);
+            ps.setString(4, insight);
+            ps.setString(5, LocalDateTime.now().toString());
+            ps.executeUpdate();
+            try (ResultSet rs = ps.getGeneratedKeys()) {
+                return rs.next() ? rs.getLong(1) : -1L;
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("insertRetro failed", e);
+        }
+    }
+
+    public List<RetroRow> listRetros(int limit) {
+        String sql = "SELECT id, kind, platform_code, domain, insight, created_at FROM retrospect_log "
+                + "ORDER BY id DESC LIMIT ?";
+        List<RetroRow> out = new ArrayList<>();
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setInt(1, Math.max(1, limit));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(new RetroRow(rs.getLong("id"),
+                            rs.getString("kind"), rs.getString("platform_code"),
+                            rs.getString("domain"), rs.getString("insight"),
+                            rs.getString("created_at")));
+                }
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("listRetros failed", e);
+        }
+        return out;
     }
 }

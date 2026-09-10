@@ -51,7 +51,24 @@ def _clip(text: str, n: int) -> str:
 
 # ---------------------------------------------------------------- brief
 def run_brief(code: str, dna: dict, mat: StructuredMaterial, tone_override: str | None,
-              template: UserTemplate | None = None) -> Brief:
+              template: UserTemplate | None = None,
+              creator_profile: dict | None = None,
+              retrospect_hints: list[str] | None = None) -> Brief:
+    profile_note = ""
+    if creator_profile:
+        bits = []
+        if creator_profile.get("domain"):
+            bits.append(f"领域={creator_profile['domain']}")
+        if creator_profile.get("brand_voice"):
+            bits.append(f"声音={creator_profile['brand_voice']}")
+        if creator_profile.get("audience"):
+            bits.append(f"受众={creator_profile['audience']}")
+        if bits:
+            profile_note = "；创作者画像:" + "/".join(bits)
+    retro_note = ""
+    if retrospect_hints:
+        retro_note = "；历史经验:" + "｜".join(retrospect_hints[:3])
+
     if llm.is_mock():
         structure = " → ".join(dna.get("structure_template", ["开头抛结论", "展开细节", "结尾互动"]))
         tag_dir = [t for t in (dna.get("tags") or {}).get("mock", ["干货"])]
@@ -61,11 +78,12 @@ def run_brief(code: str, dna: dict, mat: StructuredMaterial, tone_override: str 
             hooks=[_clip(mat.core_message, 40)],
             structure_plan=structure,
             tag_direction=tag_dir,
-            rationale=f"mock策略: 参考平台[{dna.get('name')}]的结构模板与标签方向",
+            rationale=f"mock策略: 参考平台[{dna.get('name')}]的结构模板与标签方向{profile_note}{retro_note}",
         )
     tpl = template.model_dump() if template else None
     data = llm.chat_json(
-        build_brief_prompt(dna, mat, tone_override, tpl), system=BRIEF_SYSTEM, temperature=0.7
+        build_brief_prompt(dna, mat, tone_override, tpl, creator_profile, retrospect_hints),
+        system=BRIEF_SYSTEM, temperature=0.7,
     )
     return Brief(
         platform_code=code,
@@ -79,7 +97,9 @@ def run_brief(code: str, dna: dict, mat: StructuredMaterial, tone_override: str 
 
 # ---------------------------------------------------------------- draft
 def _mock_draft(code: str, dna: dict, mat: StructuredMaterial, brief: Brief,
-                template: UserTemplate | None = None) -> DraftPayload:
+                template: UserTemplate | None = None,
+                creator_profile: dict | None = None,
+                retrospect_hints: list[str] | None = None) -> DraftPayload:
     facts = mat.facts[:5]
     body_lines = []
     # 用户模板优先级：opening 覆盖默认开头（ADR-014）
@@ -91,6 +111,10 @@ def _mock_draft(code: str, dna: dict, mat: StructuredMaterial, brief: Brief,
     for f in facts:
         marker = {"data": "📊", "story": "📖", "opinion": "💡"}.get(f.type, "·")
         body_lines.append(f"{marker} {f.text}")
+    # FR-32 创作者画像在 mock 中以"避雷"段落呈现
+    if creator_profile and creator_profile.get("avoid"):
+        body_lines.append("")
+        body_lines.append(f"⚠️ {creator_profile['avoid']}")
     if template and template.closing:
         body_lines.append("")
         body_lines.append(template.closing)
@@ -101,6 +125,11 @@ def _mock_draft(code: str, dna: dict, mat: StructuredMaterial, brief: Brief,
         _clip(mat.core_message, 18),
         f"{_clip(mat.core_message, 12)}｜真实经验",
     ]
+    extra_rationale = ""
+    if creator_profile and creator_profile.get("domain"):
+        extra_rationale = f"（已对齐创作者领域:{creator_profile['domain']}）"
+    if retrospect_hints:
+        extra_rationale += f"（已应用{len(retrospect_hints)}条历史经验）"
     return DraftPayload(
         titles=titles,
         body="\n".join(body_lines),
@@ -108,7 +137,8 @@ def _mock_draft(code: str, dna: dict, mat: StructuredMaterial, brief: Brief,
         cover_suggestion=_clip(mat.core_message, 16),
         interaction_line="你们平时会复盘吗？评论区聊聊～",
         rationale=f"mock成稿: {dna.get('name')}风格=结论前置+清单式干货+收藏引导"
-        + ("（已应用我的模板）" if template else ""),
+        + ("（已应用我的模板）" if template else "")
+        + extra_rationale,
     )
 
 
@@ -119,12 +149,15 @@ def run_draft(
     brief: Brief,
     feedback: str | None = None,
     template: UserTemplate | None = None,
+    creator_profile: dict | None = None,
+    retrospect_hints: list[str] | None = None,
 ) -> DraftPayload:
     if llm.is_mock():
-        return _mock_draft(code, dna, mat, brief, template)
+        return _mock_draft(code, dna, mat, brief, template, creator_profile, retrospect_hints)
     tpl = template.model_dump() if template else None
     data = llm.chat_json(
-        build_draft_prompt(dna, mat, brief, feedback, tpl), system=DRAFT_SYSTEM, temperature=0.8
+        build_draft_prompt(dna, mat, brief, feedback, tpl, creator_profile, retrospect_hints),
+        system=DRAFT_SYSTEM, temperature=0.8,
     )
     return DraftPayload(
         titles=[str(t).strip() for t in (data.get("titles") or []) if str(t).strip()][:3],
@@ -245,16 +278,20 @@ def run_qa(dna: dict, draft: DraftPayload, mat: StructuredMaterial) -> QaReport:
 
 # ---------------------------------------------------------------- orchestrator
 def _generate_one(code: str, mat: StructuredMaterial, tone_override: str | None,
-                  template: UserTemplate | None = None) -> PlatformDraft:
+                  template: UserTemplate | None = None,
+                  creator_profile: dict | None = None,
+                  retrospect_hints: list[str] | None = None) -> PlatformDraft:
     dna = dna_lib.load_dna(code)
-    brief = run_brief(code, dna, mat, tone_override, template)
-    draft = run_draft(code, dna, mat, brief, template=template)
+    brief = run_brief(code, dna, mat, tone_override, template, creator_profile, retrospect_hints)
+    draft = run_draft(code, dna, mat, brief, template=template,
+                      creator_profile=creator_profile, retrospect_hints=retrospect_hints)
     qa = run_qa(dna, draft, mat)
 
     # 真实模式下 QA 未通过 → 带反馈重写一轮
     if not qa.passed and not llm.is_mock():
         feedback = "；".join(qa.issues)
-        draft = run_draft(code, dna, mat, brief, feedback=feedback, template=template)
+        draft = run_draft(code, dna, mat, brief, feedback=feedback, template=template,
+                          creator_profile=creator_profile, retrospect_hints=retrospect_hints)
         qa = run_qa(dna, draft, mat)
 
     # 视频平台：成稿后附剪辑单（A 阶段）
@@ -287,7 +324,8 @@ def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
     results: list[PlatformDraft] = []
     with ThreadPoolExecutor(max_workers=min(4, len(req.platforms))) as ex:
         futures = [
-            ex.submit(_generate_one, code, structured, req.tone_override, req.template)
+            ex.submit(_generate_one, code, structured, req.tone_override, req.template,
+                      req.creator_profile, req.retrospect_hints)
             for code in req.platforms
         ]
         for f in futures:

@@ -113,3 +113,73 @@ def test_qa_rule_flags_overlong_body():
     qa = run_qa(dna_xhs, draft, _structured())
     assert qa.passed is False
     assert any("超长" in i for i in qa.issues)
+
+
+# ============ M4: 创作者画像(FR-32) + 复盘回写(FR-33) ============
+
+def test_creator_profile_appears_in_rationale():
+    """画像字段应出现在 brief.rationale（mock）。"""
+    r = client.post(
+        "/generate",
+        json={
+            "raw_text": SAMPLE, "platforms": ["xhs"],
+            "creator_profile": {"brand_voice": "理性干货", "domain": "自由职业",
+                                "audience": "职场人", "avoid": "不要AI味"},
+        },
+    )
+    assert r.status_code == 200
+    rationale = r.json()["drafts"][0]["brief"]["rationale"]
+    assert "领域=自由职业" in rationale
+    assert "声音=理性干货" in rationale
+    assert "受众=职场人" in rationale
+
+
+def test_creator_profile_avoid_appears_in_draft_body():
+    """画像中的 avoid 应在 mock 成稿正文中以 ⚠️ 段呈现。"""
+    r = client.post(
+        "/generate",
+        json={
+            "raw_text": SAMPLE, "platforms": ["xhs"],
+            "creator_profile": {"brand_voice": "", "domain": "", "audience": "",
+                                "avoid": "不要堆砌AI词"},
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()["drafts"][0]["draft"]["body"]
+    assert "不要堆砌AI词" in body
+    assert "⚠️" in body
+    # rationale 含"已对齐创作者领域"
+    rationale = r.json()["drafts"][0]["draft"]["rationale"]
+    # domain 为空时不应有"已对齐"
+    assert "已对齐创作者领域" not in rationale
+
+
+def test_retrospect_hints_in_rationale_and_draft():
+    """复盘建议应同时出现在 brief.rationale 与 draft.rationale。"""
+    hints = ["[douyin] 短钩子效果最好", "[xhs] 长文首屏要加图"]
+    r = client.post(
+        "/generate",
+        json={"raw_text": SAMPLE, "platforms": ["douyin"], "retrospect_hints": hints},
+    )
+    assert r.status_code == 200
+    d = r.json()["drafts"][0]
+    assert "[douyin] 短钩子效果最好" in d["brief"]["rationale"]
+    assert "已应用2条历史经验" in d["draft"]["rationale"]
+
+
+def test_profile_and_retro_compose_clean():
+    """空画像 + 空复盘 → 与不传等价（不破已有行为）。"""
+    r1 = client.post(
+        "/generate",
+        json={"raw_text": SAMPLE, "platforms": ["xhs"]},
+    )
+    r2 = client.post(
+        "/generate",
+        json={"raw_text": SAMPLE, "platforms": ["xhs"],
+              "creator_profile": {}, "retrospect_hints": []},
+    )
+    assert r1.status_code == r2.status_code == 200
+    # 都不应出现画像/复盘标记
+    r2_draft = r2.json()["drafts"][0]["draft"]
+    assert "已对齐创作者领域" not in r2_draft["rationale"]
+    assert "已应用" not in r2_draft["rationale"]

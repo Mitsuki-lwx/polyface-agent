@@ -75,6 +75,11 @@ class GenerateRequest(BaseModel):
     platforms: list[str] = Field(default_factory=lambda: ["xhs"], description="目标平台代码列表")
     tone_override: str | None = Field(None, description="可选：覆盖素材语气")
     template: UserTemplate | None = Field(None, description="可选：用户内容模板(ADR-014)")
+    # FR-32 创作者画像（来自 /api/profile；不传则视为空）
+    creator_profile: dict | None = Field(default=None, description="创作者画像{brand_voice,domain,audience,avoid}")
+    # FR-33 复盘经验回写（来自 /api/retrospect 的 insights[]；不传则视为空）
+    retrospect_hints: list[str] | None = Field(default_factory=list,
+                                               description="历史复盘建议文案(逐平台什么有效/无效)")
 
 
 class GenerateResponse(BaseModel):

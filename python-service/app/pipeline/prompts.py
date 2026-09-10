@@ -8,6 +8,17 @@
 
 import json
 
+
+def _profile_dict(profile: dict) -> dict:
+    """规范化创作者画像字段（FR-32）：去除空白键/None，统一字段名。"""
+    if not profile:
+        return {}
+    return {
+        k: (v if isinstance(v, str) else "")
+        for k, v in profile.items()
+        if k in {"brand_voice", "domain", "audience", "avoid"}
+    }
+
 UNDERSTAND_SYSTEM = (
     "你是一名资深自媒体内容分析师。你的任务是从用户提供的素材中提炼结构化信息，"
     "只允许输出一个 JSON 对象，不要输出任何其他文字、解释或 markdown。\n"
@@ -53,7 +64,9 @@ BRIEF_SYSTEM = (
 
 
 def build_brief_prompt(dna: dict, structured, tone_override: str | None,
-                       template: dict | None = None) -> str:
+                       template: dict | None = None,
+                       creator_profile: dict | None = None,
+                       retrospect_hints: list[str] | None = None) -> str:
     payload = {
         "platform": {"code": dna["code"], "name": dna["name"]},
         "platform_dna": {
@@ -74,6 +87,10 @@ def build_brief_prompt(dna: dict, structured, tone_override: str | None,
     }
     if template:
         payload["user_template"] = template
+    if creator_profile:
+        payload["creator_profile"] = _profile_dict(creator_profile)
+    if retrospect_hints:
+        payload["retrospect_hints"] = list(retrospect_hints)
     return json.dumps(payload, ensure_ascii=False, indent=1)
 
 
@@ -97,7 +114,9 @@ DRAFT_SYSTEM = (
 
 
 def build_draft_prompt(dna: dict, structured, brief, feedback: str | None = None,
-                       template: dict | None = None) -> str:
+                       template: dict | None = None,
+                       creator_profile: dict | None = None,
+                       retrospect_hints: list[str] | None = None) -> str:
     payload = {
         "platform": {"code": dna["code"], "name": dna["name"]},
         "platform_dna": {
@@ -119,6 +138,10 @@ def build_draft_prompt(dna: dict, structured, brief, feedback: str | None = None
     }
     if template:
         payload["user_template"] = template
+    if creator_profile:
+        payload["creator_profile"] = _profile_dict(creator_profile)
+    if retrospect_hints:
+        payload["retrospect_hints"] = list(retrospect_hints)
     prompt = json.dumps(payload, ensure_ascii=False, indent=1)
     if feedback:
         prompt += f"\n\n【上一轮 QA 未通过，请针对性修改后重写】\n{feedback}"
