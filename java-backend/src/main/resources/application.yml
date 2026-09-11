@@ -6,10 +6,16 @@ spring:
     name: polyface-backend
   jackson:
     default-property-inclusion: non_null
+  servlet:
+    multipart:
+      max-file-size: 500MB      # FR-51 音视频入料上限
+      max-request-size: 520MB
 
 polyface:
   llm:
     base-url: http://127.0.0.1:8000   # Python LLM 服务
+  media:
+    dir: ""                     # 留空则用 {data-dir}/media（FR-51 媒体副本目录）
 
 logging:
   level:

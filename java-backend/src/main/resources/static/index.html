@@ -109,6 +109,33 @@
         <span class="status-line" id="analyzeStatus"></span>
       </div>
       <div id="analyzeResult"></div>
+
+      <details class="tmpl-box" style="margin-top:12px">
+        <summary>🎬 从音视频导入（本地转文字）</summary>
+        <div class="inner">
+          <div style="font-size:11px;color:var(--sub);line-height:1.5;margin-bottom:8px">
+            请仅处理自有或已获授权的内容。文件仅存于本机 <code>data/media</code>，全程不上传。
+          </div>
+          <input type="file" id="ingFile" accept="video/*,audio/*,.mkv,.flv,.m4v,.ts,.opus,.flac" style="font-size:12px">
+          <div style="font-size:11px;color:var(--sub);margin:8px 0 4px">或粘贴本机文件路径：</div>
+          <input id="ingPath" placeholder="例如 D:\videos\口播.mp4">
+          <div style="margin-top:8px">
+            <button class="ghost sm" id="btnIngest">探测并转写</button>
+            <span class="status-line" id="ingStatus"></span>
+          </div>
+          <div id="ingInfo" style="font-size:11px;color:var(--sub);margin-top:6px"></div>
+          <div id="ingHint" style="font-size:11px;color:#854f0b;margin-top:6px;line-height:1.5;display:none"></div>
+          <div id="ingTextWrap" style="display:none;margin-top:8px">
+            <div style="font-size:11px;color:var(--sub);margin-bottom:4px">转录文本（可编辑后再解析）：</div>
+            <textarea id="ingText" style="min-height:110px"></textarea>
+            <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+              <button class="sm" id="btnIngConfirm">确认并解析为素材</button>
+              <button class="ghost sm" id="btnIngClear">清空</button>
+            </div>
+            <div class="status-line" id="ingConfirmStatus" style="margin-top:6px"></div>
+          </div>
+        </div>
+      </details>
     </div>
 
     <div class="card" style="margin-top:14px">
@@ -281,6 +308,7 @@ async function init(){
   loadProfile();
   bindM4Handlers();
   bindM5Handlers();
+  bindIngestHandlers();
   loadTemplates();
   refreshRetro();
 }
@@ -847,6 +875,137 @@ function bindM5Handlers(){
       }catch(e){ $("conflictStatus").textContent="❌ "+e.message; $("conflictStatus").style.color="var(--brand)"; }
     };
   });
+}
+
+// ============ FR-51: 音视频入料（本地转文字，不上传） ============
+let ingMediaId = null;
+let ingFilename = null;
+
+function ingStatus(msg, color){
+  const el = $("ingStatus");
+  el.textContent = msg || "";
+  el.style.color = color || "var(--sub)";
+}
+
+function ingReset(keepInput){
+  $("ingInfo").textContent = "";
+  $("ingHint").style.display = "none";
+  $("ingHint").textContent = "";
+  $("ingTextWrap").style.display = "none";
+  $("ingText").value = "";
+  $("ingConfirmStatus").textContent = "";
+  ingStatus("");
+  if(!keepInput){
+    ingMediaId = null; ingFilename = null;
+    $("ingPath").value = "";
+    $("ingFile").value = "";
+  }
+}
+
+async function ingUpload(file){
+  const fd = new FormData();
+  fd.append("file", file);
+  const r = await fetch("/api/ingest/upload", { method:"POST", body: fd });
+  const data = await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(data.detail || "上传失败");
+  return data;
+}
+
+function fmtDuration(sec){
+  if(!sec) return "时长未知";
+  const m = Math.floor(sec/60), s = Math.round(sec%60);
+  return `${m}:${String(s).padStart(2,"0")}`;
+}
+
+const ING_MODE_LABEL = { subtitle:"提取字幕", asr:"本地转写", manual:"需手填" };
+
+async function ingestRun(){
+  const file = $("ingFile").files[0];
+  const rawPath = $("ingPath").value.trim();
+  if(!file && !rawPath){
+    ingStatus("❌ 请选择文件或填写本机路径", "var(--brand)");
+    return;
+  }
+  const btn = $("btnIngest");
+  btn.disabled = true;
+  $("ingHint").style.display = "none";
+  $("ingTextWrap").style.display = "none";
+  try{
+    let body;
+    if(file){
+      ingStatus("上传中…");
+      const up = await ingUpload(file);
+      ingMediaId = up.media_id; ingFilename = up.filename;
+      body = { media_id: ingMediaId };
+    }else{
+      ingMediaId = null;
+      ingFilename = rawPath.split(/[\\/]/).pop();
+      body = { path: rawPath };
+    }
+
+    ingStatus("探测中…");
+    const info = await j("POST","/api/ingest/probe", body);
+    $("ingInfo").textContent =
+      `${info.filename} · ${fmtDuration(info.duration_sec)} · `
+      + `${info.has_audio?"有音轨":"无音轨"} · ${info.has_subtitle?"有字幕轨":"无字幕轨"}`
+      + ` · 推荐：${ING_MODE_LABEL[info.recommended_mode] || info.recommended_mode}`;
+
+    ingStatus(info.recommended_mode === "asr" ? "转写中（较慢，请稍候）…" : "提取中…");
+    const res = await j("POST","/api/ingest/transcribe", body);
+
+    if(res.hint){
+      $("ingHint").textContent = "ℹ️ " + res.hint;
+      $("ingHint").style.display = "block";
+    }
+    if(res.text){
+      $("ingText").value = res.text;
+      $("ingTextWrap").style.display = "block";
+      const label = res.source === "subtitle" ? "字幕提取" : (res.source === "asr" ? "本地转写" : "");
+      ingStatus(`✅ ${label}完成（${res.chars} 字）`, "var(--ok)");
+    }else{
+      ingStatus("⚠️ 未取得文字，请见下方提示", "var(--brand)");
+    }
+  }catch(e){
+    ingStatus("❌ " + e.message, "var(--brand)");
+  }finally{
+    btn.disabled = false;
+  }
+}
+
+/** 确认：把转录文本交给**既有**素材创建接口，走原有 understand 管线。 */
+async function ingestConfirm(){
+  const text = $("ingText").value.trim();
+  const st = $("ingConfirmStatus");
+  if(!text){
+    st.textContent = "❌ 文本为空，无法创建素材";
+    st.style.color = "var(--brand)";
+    return;
+  }
+  st.textContent = "解析中…"; st.style.color = "var(--sub)";
+  try{
+    const r = await fetch("/api/materials", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ raw_text: text, source_kind: "口播稿", title: ingFilename || null })
+    });
+    const data = await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.detail || "创建素材失败");
+    currentMaterialId = data.id;
+    $("raw").value = text;
+    $("kind").value = "口播稿";
+    if(ingFilename) $("title").value = ingFilename;
+    st.textContent = `✅ 已创建素材 #${data.id}（可在下方选择平台生成）`;
+    st.style.color = "var(--ok)";
+    await loadHistory();
+  }catch(e){
+    st.textContent = "❌ " + e.message; st.style.color = "var(--brand)";
+  }
+}
+
+function bindIngestHandlers(){
+  $("btnIngest").onclick = ingestRun;
+  $("btnIngConfirm").onclick = ingestConfirm;
+  $("btnIngClear").onclick = ()=> ingReset(false);
+  $("ingFile").onchange = ()=>{ if($("ingFile").files[0]) $("ingPath").value = ""; };
 }
 
 // 给每条 draft 卡片添加"录入效果"按钮 + 模板来源标记

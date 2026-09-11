@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     llm_host: str = "127.0.0.1"
     llm_port: int = 8000
 
+    # 音视频入料（FR-51）
+    # 留空则使用 PATH 中的 ffmpeg（也可用环境变量 POLYFACE_FFMPEG 指向安装目录或可执行文件）
+    ffmpeg_path: str = ""
+    # faster-whisper 模型尺寸（可选依赖；可用 POLYFACE_ASR_MODEL 覆盖）
+    asr_model: str = "small"
+
 
 @lru_cache
 def get_settings() -> Settings:

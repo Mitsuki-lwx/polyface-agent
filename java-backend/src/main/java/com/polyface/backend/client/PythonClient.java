@@ -87,6 +87,21 @@ public class PythonClient {
         return post("/learn", body);
     }
 
+    /** 媒体探测（FR-51）：时长/音轨/字幕轨 → 推荐入料模式。 */
+    public JsonNode probe(String path) {
+        ObjectNode body = mapper.createObjectNode();
+        body.put("path", path);
+        return post("/probe", body);
+    }
+
+    /** 音视频 → 文字（FR-51）：字幕优先，ASR 可选，失败降级 needs_manual。 */
+    public JsonNode transcribe(String path, String mode) {
+        ObjectNode body = mapper.createObjectNode();
+        body.put("path", path);
+        body.put("mode", (mode == null || mode.isBlank()) ? "auto" : mode);
+        return post("/transcribe", body);
+    }
+
     private JsonNode post(String uri, Object body) {
         return client.post()
                 .uri(uri)

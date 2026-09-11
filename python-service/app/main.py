@@ -7,9 +7,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import dna, llm
 from .config import get_settings
 from .pipeline.generate import generate
+from .pipeline.ingest import run_probe, run_transcribe
 from .pipeline.learn import run_learn
+from .pipeline.media import MediaInvalid, MediaToolMissing
 from .pipeline.understand import run_understand
-from .schemas import AnalyzeRequest, AnalyzeResponse
+from .schemas import (
+    AnalyzeRequest,
+    AnalyzeResponse,
+    ProbeRequest,
+    ProbeResponse,
+    TranscribeRequest,
+    TranscribeResponse,
+)
 from .schemas_gen import (
     GenerateRequest,
     GenerateResponse,
@@ -70,3 +79,20 @@ def do_learn(req: LearnRequest) -> LearnResponse:
     """示例学习（FR-63）：示例文本 → 模板参数（草稿，须人工确认后启用）。"""
     learned, used_mock = run_learn(req)
     return LearnResponse(template=learned, used_mock=used_mock)
+
+
+# ============================================================ 音视频入料(FR-51)
+
+@app.post("/probe", response_model=ProbeResponse)
+def do_probe(req: ProbeRequest) -> ProbeResponse:
+    """媒体探测：时长 / 音轨 / 字幕轨 → 推荐入料模式。"""
+    try:
+        return ProbeResponse(**run_probe(req.path))
+    except (MediaInvalid, MediaToolMissing) as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.post("/transcribe", response_model=TranscribeResponse)
+def do_transcribe(req: TranscribeRequest) -> TranscribeResponse:
+    """音视频 → 文字：字幕优先，ASR 可选，失败降级 needs_manual（不抛 5xx）。"""
+    return run_transcribe(req.path, req.mode)
