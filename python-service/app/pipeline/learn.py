@@ -110,7 +110,8 @@ def _mock_learn(sample_text: str, source_note: str | None) -> LearnedTemplate:
 
 def _llm_learn(sample_text: str, source_note: str | None) -> LearnedTemplate:
     data = llm.chat_json(
-        build_learn_prompt(sample_text, source_note), system=LEARN_SYSTEM, temperature=0.3
+        build_learn_prompt(sample_text, source_note), system=LEARN_SYSTEM, temperature=0.3,
+        scene="learn",
     )
 
     def _s(key: str) -> str:

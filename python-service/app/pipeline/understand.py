@@ -61,7 +61,8 @@ def run_understand(req: AnalyzeRequest) -> tuple[StructuredMaterial, bool]:
         return _mock_understand(req), True
 
     prompt = build_understand_prompt(req.raw_text, req.source_kind, req.title)
-    data = llm.chat_json(prompt, system=UNDERSTAND_SYSTEM, temperature=0.2)
+    data = llm.chat_json(prompt, system=UNDERSTAND_SYSTEM, temperature=0.2,
+                         scene="understand")
 
     facts = []
     for f in data.get("facts") or []:

@@ -11,10 +11,12 @@ import json
 import logging
 import math
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from .. import dna as dna_lib
-from .. import llm
+from .. import llm, trace
+from ..config import get_settings
 from ..pipeline.understand import run_understand
 from ..schemas import AnalyzeRequest, StructuredMaterial
 from ..schemas_gen import (
@@ -84,6 +86,7 @@ def run_brief(code: str, dna: dict, mat: StructuredMaterial, tone_override: str 
     data = llm.chat_json(
         build_brief_prompt(dna, mat, tone_override, tpl, creator_profile, retrospect_hints),
         system=BRIEF_SYSTEM, temperature=0.7,
+        scene="brief", platform=dna.get("code"),
     )
     return Brief(
         platform_code=code,
@@ -158,6 +161,7 @@ def run_draft(
     data = llm.chat_json(
         build_draft_prompt(dna, mat, brief, feedback, tpl, creator_profile, retrospect_hints),
         system=DRAFT_SYSTEM, temperature=0.8,
+        scene="draft", platform=dna.get("code"),
     )
     return DraftPayload(
         titles=[str(t).strip() for t in (data.get("titles") or []) if str(t).strip()][:3],
@@ -202,7 +206,8 @@ def run_clip_sheet(dna: dict, mat: StructuredMaterial, draft: DraftPayload,
         return _mock_clip_sheet(dna, draft)
     tpl = template.model_dump() if template else None
     data = llm.chat_json(build_clip_prompt(dna, draft, mat, tpl),
-                         system=CLIP_SYSTEM, temperature=0.5)
+                         system=CLIP_SYSTEM, temperature=0.5,
+                         scene="clip", platform=dna.get("code"))
     scenes = []
     for s in data.get("scenes") or []:
         if not isinstance(s, dict) or not str(s.get("script", "")).strip():
@@ -261,7 +266,8 @@ def _llm_qa(
 ) -> QaReport:
     """真实模式：规则 + LLM 自评（按平台爆款清单 + 事实一致性）。"""
     data = llm.chat_json(
-        build_qa_prompt(dna, draft, mat), system=QA_SYSTEM, temperature=0.2
+        build_qa_prompt(dna, draft, mat), system=QA_SYSTEM, temperature=0.2,
+        scene="qa", platform=dna.get("code"),
     )
     llm_issues = [str(x).strip() for x in (data.get("issues") or []) if str(x).strip()]
     llm_warns = [str(x).strip() for x in (data.get("warnings") or []) if str(x).strip()]
@@ -322,14 +328,28 @@ def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
             raise ValueError(f"不支持的平台 [{code}]；可用: {[p['code'] for p in dna_lib.list_platforms()]}") from e
 
     results: list[PlatformDraft] = []
-    with ThreadPoolExecutor(max_workers=min(4, len(req.platforms))) as ex:
-        futures = [
-            ex.submit(_generate_one, code, structured, req.tone_override, req.template,
-                      req.creator_profile, req.retrospect_hints)
-            for code in req.platforms
-        ]
-        for f in futures:
-            results.append(f.result())
+    cfg = get_settings()
+
+    def _submit(code: str):
+        # 显式携带上下文：ThreadPoolExecutor **不会**继承 contextvars，
+        # 不包装则子线程内 trace_id 丢失（各平台各自生成新 trace）
+        return trace.run_in_context(_generate_one, code, structured,
+                                    req.tone_override, req.template,
+                                    req.creator_profile, req.retrospect_hints)
+
+    if cfg.llm_parallel and len(req.platforms) > 1:
+        # 并行：快，但需上游额度宽裕（默认关闭，理由见 config）
+        with ThreadPoolExecutor(max_workers=min(4, len(req.platforms))) as ex:
+            futures = [ex.submit(_submit, code) for code in req.platforms]
+            for f in futures:
+                results.append(f.result())
+    else:
+        # 串行 + 最小间隔：实测限流策略下的可靠路径
+        interval = max(0, int(cfg.llm_min_interval_ms)) / 1000.0
+        for i, code in enumerate(req.platforms):
+            if i > 0 and interval > 0:
+                time.sleep(interval)
+            results.append(_submit(code))
 
     structured_dict = json.loads(structured.model_dump_json())
     return structured_dict, results, used_mock

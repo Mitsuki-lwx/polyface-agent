@@ -33,11 +33,14 @@ public class MaterialController {
     private static final Logger log = LoggerFactory.getLogger(MaterialController.class);
     private final PythonClient python;
     private final Store store;
+    private final com.polyface.backend.observability.LangfuseReporter langfuse;
     private final ObjectMapper mapper = new ObjectMapper();
 
-    public MaterialController(PythonClient python, Store store) {
+    public MaterialController(PythonClient python, Store store,
+                              com.polyface.backend.observability.LangfuseReporter langfuse) {
         this.python = python;
         this.store = store;
+        this.langfuse = langfuse;
     }
 
     // ---------------- DTO ----------------
@@ -135,6 +138,9 @@ public class MaterialController {
     @PostMapping(value = "/api/materials/{id}/generate", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<JsonNode> generate(@PathVariable long id,
                                              @Valid @RequestBody GenerateRequest req) {
+        // 链路标识（FR-71）：由 TraceFilter 生成；Python 侧沿用同一 id
+        String traceId = com.polyface.backend.observability.TraceContext.getOrCreate();
+        long startedAt = System.currentTimeMillis();
         Store.MaterialRow m = store.getMaterial(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "material not found"));
 
@@ -219,11 +225,15 @@ public class MaterialController {
                 d.set("draft", pd.path("draft"));
                 d.set("qa", pd.path("qa"));
             }
-            log.info("material {} generated {} drafts (template={} v{})",
-                    id, pyDrafts.size(), tplId, tplVer);
+            long elapsed = System.currentTimeMillis() - startedAt;
+            log.info("material {} generated {} drafts (template={} v{}) trace={} elapsed={}ms",
+                    id, pyDrafts.size(), tplId, tplVer, traceId, elapsed);
+            // 观测：Java 编排阶段耗时（与 Python 侧 LLM 调用归入同一 trace）
+            langfuse.reportSpan(traceId, "java.orchestrate.generate", elapsed);
+            out.put("trace_id", traceId);
             return ResponseEntity.ok(out);
         } catch (Exception ex) {
-            log.error("generate failed", ex);
+            log.error("generate failed trace={}", traceId, ex);
             throw new GlobalExceptionHandler.LlmUnavailableException(ex.getMessage());
         }
     }

@@ -112,6 +112,22 @@
 
 ---
 
+## ADR-016 可观测性：本地优先 + Langfuse 可选接入（FR-70~72）
+- 状态：Accepted（2026-09-12，M5c 落地）
+- 背景：真实链路首次跑通时暴露出三个问题——① 上游额度极紧（连续两次调用即 429），失败原因不可见；② 无法回答"这次生成慢在哪、用了哪个模型、重试几次"；③ `openai` 依赖从未安装却因 mock 优先而长期未被发现（说明"能跑通"缺乏真实验证）。
+- 决策：
+  1. **本地用量必选**：每次 LLM 调用写本地 JSONL（`{data-dir}/llm-usage.jsonl`），只记模型/耗时/token/重试/错误类型，**不记 prompt 正文**（避免本地文件成为泄漏源）；Java 侧只做转发，维持"Python 不碰数据库"的既有边界。
+  2. **Langfuse 可选**：默认关闭；启用时 Python 用官方 v4 SDK（drop-in `langfuse.openai`，自动捕获 model/token），Java 手写 Public Ingestion API（纯 JDK HttpClient，**零新依赖**）。上报 **fire-and-forget**，失败仅告警。
+  3. **可达性探测 + 静默降级**：Langfuse 不可达时整体关闭观测，**业务零影响**（实测验证）。
+  4. **trace_id 用 W3C 32 位 hex**：由 Java `TraceFilter` 生成并写入响应头，经 `X-Trace-Id` 传给 Python；线程池须用 `run_in_context` 显式传播（`ThreadPoolExecutor` 不继承 `contextvars`）。
+- 后果：
+  - 无 Langfuse 也能查用量与错误分布；接入 Langfuse 后可得完整 trace 树（root `generate:xhs` → understand/brief/draft/qa → generation）。
+  - **不引入任何硬依赖**，不违背 ADR-002「本地一键启动」。
+  - 观测数据默认不出本机；若启用 Langfuse 且指向云端，则由用户自行承担（默认 host 为 localhost）。
+- 备注：prompt/response 正文**只在用户自建的 Langfuse 实例**中出现；本地与日志一律脱敏。
+
+---
+
 ## 决策记录表（速览）
 
 | ADR | 主题 | 状态 |
@@ -131,3 +147,4 @@
 | 013 | AI 剪辑分期 A→C→B(B1图文成片+B2智能剪) | ✅ |
 | 014 | 用户模板=用户级覆盖层(>DNA结构, 红线仍强制) | ✅ |
 | 015 | 前端=无构建静态SPA(React 留作演进) | ✅ |
+| 016 | 可观测=本地JSONL必选 + Langfuse可选(fire-and-forget, 零硬依赖, W3C 32位trace_id) | ✅ |

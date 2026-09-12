@@ -13,6 +13,7 @@ import org.springframework.web.client.RestClient;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.polyface.backend.observability.TraceContext;
 
 /**
  * Python LLM 服务（:8000）的 HTTP 客户端。
@@ -102,16 +103,25 @@ public class PythonClient {
         return post("/transcribe", body);
     }
 
+    /** LLM 用量聚合（FR-72）。 */
+    public JsonNode usageSummary(int limit) {
+        return get("/usage/summary?limit=" + Math.max(1, Math.min(limit, 500)));
+    }
+
     private JsonNode post(String uri, Object body) {
         return client.post()
                 .uri(uri)
                 .contentType(MediaType.APPLICATION_JSON)
+                // 链路标识：让 Python 侧的 LLM 调用归属到本次 Java 请求（FR-71）
+                .header(TraceContext.HEADER, TraceContext.getOrCreate())
                 .body(body)
                 .retrieve()
                 .body(JsonNode.class);
     }
 
     private JsonNode get(String uri) {
-        return client.get().uri(uri).retrieve().body(JsonNode.class);
+        return client.get().uri(uri)
+                .header(TraceContext.HEADER, TraceContext.getOrCreate())
+                .retrieve().body(JsonNode.class);
     }
 }

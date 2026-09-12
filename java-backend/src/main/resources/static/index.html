@@ -158,6 +158,7 @@
         <button id="btnGenerate" disabled>🚀 一键生成多平台稿件</button>
         <span class="status-line" id="genStatus"></span>
       </div>
+      <div id="traceLine" style="font-size:11px;color:var(--sub);margin-top:6px;line-height:1.5"></div>
     </div>
 
     <div class="card" style="margin-top:14px">
@@ -336,7 +337,7 @@ async function loadHistory(){
     const d = document.createElement("div");
     d.className="side-item";
     d.innerHTML = `<b>#${m.id}</b> ${esc((m.core_message||"").slice(0,34))}…<br><span style="color:#9ca3af">${esc(m.created_at||"").slice(0,16)} · ${m.draft_count||0} 平台稿</span>`;
-    d.onclick = async ()=>{ currentMaterialId=m.id; loadHistoryHighlight(m.id); loadDraftsOfMaterial(m.id); };
+    d.onclick = async ()=>{ currentMaterialId=m.id; loadHistoryHighlight(m.id); loadDraftsOfMaterial(m.id); updateGenBtn(); };
     box.appendChild(d);
   });
 }
@@ -381,9 +382,29 @@ function buildTemplate(){
   return has ? t : null;
 }
 
+/** 展示本次生成的 trace 摘要（FR-71/72）：模型 / 调用次数 / 重试 / trace 短 id。
+ *  仅读用量统计，**不展示 prompt 正文**（避免误截图泄漏素材）。 */
+async function showTraceSummary(genResult){
+  const el = $("traceLine");
+  if(!genResult || !genResult.trace_id){ el.textContent=""; return; }
+  try{
+    const u = await j("GET","/api/usage?limit=50");
+    const mine = (u.recent || []).filter(x => x.trace_id === genResult.trace_id);
+    const models = [...new Set(mine.map(x => x.model).filter(Boolean))];
+    const retries = mine.reduce((a,x) => a + Math.max(0, (x.attempt||1) - 1), 0);
+    const okAll = mine.length > 0 && mine.every(x => x.ok);
+    const label = genResult.used_mock ? "mock" : (models.join(" → ") || "—");
+    el.textContent = `📊 模型 ${label} · 调用 ${mine.length} 次 · 重试 ${retries} 次 · trace ${genResult.trace_id.slice(0,8)}`
+      + (okAll ? "" : " · ⚠️ 存在失败调用");
+    el.style.color = okAll ? "var(--sub)" : "var(--brand)";
+  }catch(e){ el.textContent = ""; }
+}
+
 $("btnGenerate").onclick = async ()=>{
   const btn=$("btnGenerate"); btn.disabled=true; btn.innerHTML='<span class="spinner"></span> 生成中…';
-  $("genStatus").textContent="平台并行生成（brief→draft→qa）…"; $("genStatus").style.color="var(--sub)";
+  $("genStatus").textContent="生成中（brief→draft→qa，遇限流自动重试）…"; $("genStatus").style.color="var(--sub)";
+  $("traceLine").textContent="";
+  const startedAt = Date.now();
   try{
     const sel = $("tplSelect").value;
     const body = {
@@ -394,9 +415,11 @@ $("btnGenerate").onclick = async ()=>{
     };
     const r = await j("POST", `/api/materials/${currentMaterialId}/generate`, body);
     drafts = r.drafts || [];
-    $("genStatus").textContent = `✅ 完成（${r.used_mock?"mock":"真实"}）`;
+    const secs = ((Date.now() - startedAt)/1000).toFixed(0);
+    $("genStatus").textContent = `✅ 完成（${r.used_mock?"mock":"真实"}，${secs}s）`;
     $("genStatus").style.color = "var(--ok)";
     renderTabsFromDb(r.drafts, null);
+    await showTraceSummary(r);
     loadHistory();
   }catch(e){
     $("genStatus").textContent="❌ "+e.message; $("genStatus").style.color="var(--brand)";

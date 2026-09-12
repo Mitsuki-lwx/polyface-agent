@@ -99,6 +99,9 @@ M3~M5 开发的验收基线；同时服务开源协作与参赛材料。
 | FR-62 | 模板管理：新建/编辑/复制/删除、预置模板库、导入导出 | S | ✅ M5（完整版） |
 | FR-63 | **示例自动学习模板**：喂 1 篇自有爆款/示例片 → AI 拆解结构参数 → 生成"草稿模板"，**人工确认后才启用** | S | ✅ 示例**文本**已实现（示例片待 FR-51/FR-61） |
 | FR-64 | 生成页模板选择器 + "本次用模板" 记录可追踪（模板版本号随稿存档） | S | ✅ M5 |
+| FR-70 | **LLM 调用加固**：错误分类（限流/额度/超时/网络/解析）、指数退避重试、**模型降级链**、串行化降级 | S | ✅ M5c |
+| FR-71 | **全链路 trace**：trace_id 贯穿浏览器 → Java 编排 → Python 管线 → LLM 调用；可上报 Langfuse（可选） | S | ✅ M5c |
+| FR-72 | **用量可见**：模型 / 耗时 / token / 重试次数本地落库与查询（不含 prompt 正文） | S | ✅ M5c |
 
 > 模板结构：内容模板 = {name, voice, opening, structure[], closing, tag_style, taboo[]}；
 > 成片模板 = {name, intro_sec, transition, subtitle_style, beat_bpm, bgm_hint}（B 阶段细化）。
@@ -144,8 +147,9 @@ M3~M5 开发的验收基线；同时服务开源协作与参赛材料。
 | NFR-05 | 平台并发 | ≥4 平台并行生成（线程池） |
 | NFR-06 | 兼容 | Windows 为主；浏览器端 Chrome/Edge；预留 mac/Linux 脚本 |
 | NFR-07 | 可扩展 | 新增平台=新增 1 个 DNA YAML + 注册，不改管线代码 |
-| NFR-08 | 可测试 | Python pytest 全绿；Java JUnit 全绿；mock 模式可离线验证 |
+| NFR-08 | 可测试 | Python pytest 全绿；Java JUnit 全绿；mock 模式可离线验证；**每项改动须跑真实端到端** |
 | NFR-09 | 合规红线 | 不自动发布、不爬平台数据、只处理自有/授权素材 |
+| NFR-10 | **可观测性** | LLM 调用可重试/可降级/可解释；trace_id 贯穿浏览器→Java→Python→LLM；用量（模型/耗时/token/重试）本地可查；Langfuse 可选接入（本地优先，不上传第三方） |
 
 ---
 
