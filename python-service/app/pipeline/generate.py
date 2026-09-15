@@ -350,10 +350,19 @@ def _generate_one(code: str, mat: StructuredMaterial, tone_override: str | None,
 
 
 def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
-    """全链路：素材理解 → 每平台 brief/draft/clip/qa（平台并行）。"""
+    """全链路：素材理解 → 每平台 brief/draft/clip/qa。
+
+    若请求带 `confirmed_facts`（用户已确认的事实），则**跳过理解阶段**直接使用，
+    省一次 LLM 调用，并保证「解析时看到的事实」== 「生成时用的事实」。
+    """
     used_mock = llm.is_mock()
-    a_req = AnalyzeRequest(raw_text=req.raw_text, source_kind=req.source_kind, title=req.title)
-    structured, _ = run_understand(a_req)
+    if req.confirmed_facts is not None:
+        structured = req.confirmed_facts
+        logger.info("using user-confirmed facts; skipping understand step (facts=%d)",
+                    len(structured.facts or []))
+    else:
+        a_req = AnalyzeRequest(raw_text=req.raw_text, source_kind=req.source_kind, title=req.title)
+        structured, _ = run_understand(a_req)
 
     # 校验平台合法性（统一提前报错）
     for code in req.platforms:

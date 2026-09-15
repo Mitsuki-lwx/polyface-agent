@@ -1,6 +1,7 @@
 package com.polyface.backend.web;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import org.slf4j.Logger;
@@ -11,7 +12,9 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -85,6 +88,9 @@ public class MaterialController {
             }
             out.set("structured", structured);
             out.put("used_mock", mock);
+            // 事实确认闭环（FR-34）：新素材默认未确认
+            out.put("facts_confirmed", false);
+            out.putNull("facts_confirmed_at");
             log.info("material created id={}", id);
             return ResponseEntity.ok(out);
         } catch (Exception ex) {
@@ -130,6 +136,18 @@ public class MaterialController {
         } catch (Exception ignore) {
             out.putArray("facts");
         }
+        // 事实确认状态（FR-34）：前端据此决定是否提示"确认后可少一次 AI 调用"
+        out.put("facts_confirmed", m.factsConfirmed());
+        if (m.factsConfirmedAt() != null) {
+            out.put("facts_confirmed_at", m.factsConfirmedAt());
+        }
+        // 供前端重新渲染解析区（含可编辑事实清单）
+        ObjectNode structured = mapper.createObjectNode();
+        structured.put("core_message", m.coreMessage() == null ? "" : m.coreMessage());
+        structured.put("tone", m.tone() == null ? "" : m.tone());
+        structured.put("audience", m.audience() == null ? "" : m.audience());
+        structured.set("facts", out.path("facts"));
+        out.set("structured", structured);
         out.set("drafts", draftsJson(m.id()));
         return out;
     }
@@ -183,6 +201,24 @@ public class MaterialController {
                 var hArr = pyBody.putArray("retrospect_hints");
                 for (Store.RetroRow r : hints) {
                     hArr.add("[" + r.platformCode() + "] " + r.insight());
+                }
+            }
+            // 事实确认闭环（FR-34）：已确认的事实作为生成唯一依据，Python 侧跳过重复理解
+            // 注：facts_json 存的是**数组**，此处按 StructuredMaterial 结构包装
+            if (m.factsConfirmed() && m.factsJson() != null && !m.factsJson().isBlank()) {
+                try {
+                    JsonNode factsArr = mapper.readTree(m.factsJson());
+                    if (factsArr != null && factsArr.isArray() && !factsArr.isEmpty()) {
+                        ObjectNode cf = mapper.createObjectNode();
+                        cf.put("core_message", m.coreMessage() == null ? "" : m.coreMessage());
+                        cf.put("tone", m.tone() == null ? "" : m.tone());
+                        cf.put("audience", m.audience() == null ? "" : m.audience());
+                        cf.set("facts", factsArr);
+                        pyBody.set("confirmed_facts", cf);
+                        log.info("material {} 使用已确认事实，将跳过重复理解", id);
+                    }
+                } catch (Exception e) {
+                    log.warn("facts_json 解析失败，回退为重新理解：{}", e.getMessage());
                 }
             }
             JsonNode genResp = python.postGenerate(pyBody);
@@ -262,6 +298,154 @@ public class MaterialController {
             throw new RuntimeException("draft json corrupt id=" + id, e);
         }
         return out;
+    }
+
+    // ---------------- 事实确认（FR-34 防幻觉地基）----------------
+    public record SaveFactsRequest(String core_message, String tone, String audience,
+                                   List<Map<String, Object>> facts, Boolean confirm) {}
+
+    /** 保存（并可选确认）事实清单。确认后该版本即成为后续生成的唯一事实依据。 */
+    @PutMapping(value = "/api/materials/{id}/facts", produces = MediaType.APPLICATION_JSON_VALUE)
+    public JsonNode saveFacts(@PathVariable long id, @RequestBody SaveFactsRequest req) {
+        store.getMaterial(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "material not found"));
+        List<Map<String, Object>> facts = req.facts() == null ? List.of() : req.facts();
+        // 校验与 Python FactType 保持一致（data|story|opinion），
+        // 提前拦截可避免把非法值传到下游才 422
+        java.util.Set<String> allowedTypes = java.util.Set.of("data", "story", "opinion");
+        for (int i = 0; i < facts.size(); i++) {
+            Object t = facts.get(i).get("text");
+            if (t == null || String.valueOf(t).isBlank()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "facts[" + i + "].text 不能为空");
+            }
+            Object ty = facts.get(i).get("type");
+            String typeStr = ty == null ? "data" : String.valueOf(ty);
+            if (!allowedTypes.contains(typeStr)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "facts[" + i + "].type 非法（仅允许 data|story|opinion）：" + typeStr);
+            }
+            facts.get(i).put("type", typeStr);
+        }
+        boolean confirm = Boolean.TRUE.equals(req.confirm());
+        String factsJson;
+        try {
+            factsJson = mapper.writeValueAsString(facts);
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "facts 序列化失败");
+        }
+        store.saveFacts(id, factsJson, req.core_message(), req.tone(), req.audience(), confirm);
+        ObjectNode out = mapper.createObjectNode();
+        out.put("id", id);
+        out.put("facts_confirmed", confirm);
+        out.put("facts_count", facts.size());
+        log.info("material {} facts saved: count={} confirmed={}", id, facts.size(), confirm);
+        return out;
+    }
+
+    // ---------------- 稿件编辑与导出（FR-42）----------------
+    public record EditDraftRequest(List<String> titles, String body, List<String> tags,
+                                   String interaction_line, String cover_suggestion) {}
+
+    /** 保存人工编辑后的稿件。
+     *
+     * <p>**只**更新可编辑字段（标题/正文/标签/互动句/封面建议），
+     * qa / brief / clip_sheet / rationale 不经此路径，避免绕过质检。
+     */
+    @PutMapping(value = "/api/drafts/{id}", produces = MediaType.APPLICATION_JSON_VALUE)
+    public JsonNode editDraft(@PathVariable long id, @RequestBody EditDraftRequest req) {
+        Store.DraftRow d = store.getDraft(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "draft not found"));
+        ObjectNode payload;
+        try {
+            payload = (ObjectNode) mapper.readTree(d.payloadJson());
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "稿件数据损坏");
+        }
+        // 白名单更新
+        if (req.titles() != null) {
+            ArrayNode ta = mapper.createArrayNode();
+            req.titles().forEach(ta::add);
+            payload.set("titles", ta);
+        }
+        if (req.body() != null) payload.put("body", req.body());
+        if (req.tags() != null) {
+            ArrayNode ga = mapper.createArrayNode();
+            req.tags().forEach(ga::add);
+            payload.set("tags", ga);
+        }
+        if (req.interaction_line() != null) payload.put("interaction_line", req.interaction_line());
+        if (req.cover_suggestion() != null) payload.put("cover_suggestion", req.cover_suggestion());
+
+        String json;
+        try {
+            json = mapper.writeValueAsString(payload);
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "稿件序列化失败");
+        }
+        store.updateDraftPayload(id, json);
+        log.info("draft {} edited by human", id);
+
+        ObjectNode out = mapper.createObjectNode();
+        out.put("id", id);
+        out.put("edited_at", java.time.LocalDateTime.now().toString());
+        out.set("draft", payload);
+        out.set("qa", safeTree(d.qaJson()));
+        return out;
+    }
+
+    /** 导出稿件：format=md（默认，含标签与互动句）| txt（仅标题+正文）。 */
+    @GetMapping(value = "/api/drafts/{id}/export")
+    public ResponseEntity<String> exportDraft(@PathVariable long id,
+                                              @RequestParam(defaultValue = "md") String format) {
+        Store.DraftRow d = store.getDraft(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "draft not found"));
+        JsonNode p = safeTree(d.payloadJson());
+        List<String> titles = new java.util.ArrayList<>();
+        if (p.path("titles").isArray()) p.path("titles").forEach(t -> titles.add(t.asText()));
+        List<String> tags = new java.util.ArrayList<>();
+        if (p.path("tags").isArray()) p.path("tags").forEach(t -> tags.add(t.asText()));
+        String body = p.path("body").asText("");
+        String interaction = p.path("interaction_line").asText("");
+
+        String filename = d.platformCode() + "-material" + d.materialId() + "-draft" + id;
+        String content = "txt".equalsIgnoreCase(format)
+                ? (titles.isEmpty() ? "" : titles.get(0) + "\n\n") + body
+                : buildMarkdown(titles, body, tags, interaction);
+        String ext = "txt".equalsIgnoreCase(format) ? "txt" : "md";
+        String encoded = java.net.URLEncoder.encode(filename + "." + ext, java.nio.charset.StandardCharsets.UTF_8)
+                .replace("+", "%20");
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("text/plain; charset=utf-8"))
+                .header("Content-Disposition", "attachment; filename*=UTF-8''" + encoded)
+                .body(content);
+    }
+
+    private String buildMarkdown(List<String> titles, String body, List<String> tags, String interaction) {
+        StringBuilder sb = new StringBuilder();
+        if (!titles.isEmpty()) {
+            sb.append("# ").append(titles.get(0)).append("\n\n");
+            for (int i = 1; i < titles.size(); i++) {
+                sb.append("- 备选标题：").append(titles.get(i)).append("\n");
+            }
+            sb.append("\n");
+        }
+        sb.append(body).append("\n");
+        if (!tags.isEmpty()) {
+            sb.append("\n**标签**：").append(String.join(" ", tags.stream().map(t -> "#" + t).toList())).append("\n");
+        }
+        if (interaction != null && !interaction.isBlank()) {
+            sb.append("\n**互动引导**：").append(interaction).append("\n");
+        }
+        return sb.toString();
+    }
+
+    private JsonNode safeTree(String json) {
+        try {
+            return json == null ? mapper.createObjectNode() : mapper.readTree(json);
+        } catch (Exception e) {
+            return mapper.createObjectNode();
+        }
     }
 
     private ArrayNode draftsJson(long materialId) {

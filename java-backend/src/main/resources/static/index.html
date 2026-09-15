@@ -57,6 +57,12 @@
   .meta{font-size:12px;color:var(--sub)}
   .meta b{color:var(--ink)}
   .qa-warn{background:#fff8e6;border:1px solid #f0dfae;color:#8a6d1a;border-radius:8px;padding:7px 9px;font-size:12px;margin-top:8px}
+  /* 事实确认与稿件编辑（FR-34/FR-42）：可编辑区样式 */
+  .ed-label{font-size:11px;color:var(--sub);margin:9px 0 4px}
+  #edTitles input{width:100%;margin-bottom:5px;font-size:12.5px;padding:5px 8px;border:1px solid var(--line);border-radius:7px}
+  #edBody{width:100%;min-height:230px;font-size:13px;line-height:1.75;padding:10px;border:1px solid var(--line);border-radius:9px;font-family:inherit;resize:vertical}
+  #edTags{width:100%;font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:7px}
+  #factsEditor .fact input,#factsEditor .fact select{border:1px solid var(--line);border-radius:6px;padding:3px 6px}
   .clip{margin-top:10px;border:1px dashed #d5a3a3;border-radius:10px;padding:10px;background:#fffaf9}
   .clip h4{margin:0 0 8px;color:#a93226;font-size:13px}
   .scene{border-left:3px solid var(--brand);padding:4px 10px;margin-bottom:8px;font-size:12.5px;background:#fff}
@@ -346,10 +352,107 @@ function loadHistoryHighlight(id){
 }
 async function loadDraftsOfMaterial(id){
   const m = await j("GET",`/api/materials/${id}`);
-  // 从 DB 读取历史稿只有摘要，不再重新生成
-  $("analyzeResult").innerHTML = `<div class="core">已加载素材 #${id}，历史稿 ${(m.drafts||[]).length} 份。</div>`;
-  drafts = (m.drafts||[]);
-  renderTabsFromDb(m.drafts, m);
+  // 列表接口只返回摘要 → 必须补读 GET /api/drafts/{id} 拿完整 payload，
+  // 否则历史稿正文会显示为空（此前缺陷）。
+  const sums = m.drafts || [];
+  const full = await Promise.all(sums.map(async d => {
+    try {
+      const f = await j("GET", `/api/drafts/${d.id}`);
+      return Object.assign({}, d, f);
+    } catch (e) {
+      return d;   // 单份读取失败不影响其它稿
+    }
+  }));
+  drafts = full;
+  if (m.structured) {
+    renderAnalyzeResult(m.structured, m.facts_confirmed, m.facts_confirmed_at);
+  }
+  renderTabsFromDb(full, m);
+}
+
+// ============ 事实确认闭环（FR-34）：可编辑事实清单 ============
+let editableFacts = [];
+let factsConfirmedState = false;
+
+function factRowHtml(f, i){
+  return `<div class="fact" data-i="${i}" style="display:flex;gap:6px;align-items:center;margin-bottom:5px">
+    <select class="fType" style="width:82px;font-size:11px">
+      ${["data","story","opinion"].map(t=>`<option value="${t}"${(f.type||"data")===t?" selected":""}>${t}</option>`).join("")}
+    </select>
+    <input class="fText" value="${esc(f.text)}" style="flex:1;font-size:12px" placeholder="事实内容（留空则该条会被拒绝保存）">
+    <button class="fDel" title="删除" style="padding:2px 7px;font-size:11px">✕</button>
+  </div>`;
+}
+
+function renderFactsEditor(){
+  const box = $("factsEditor");
+  box.innerHTML = editableFacts.length
+    ? editableFacts.map((f,i)=>factRowHtml(f,i)).join("")
+    : '<div class="empty">无事实（建议至少添加 1 条，防幻觉才有依据）</div>';
+  // 事件委托：改文本 / 改类型 / 删除
+  box.querySelectorAll(".fText").forEach(el=>el.oninput=()=>{
+    editableFacts[+el.closest(".fact").dataset.i].text = el.value;
+  });
+  box.querySelectorAll(".fType").forEach(el=>el.onchange=()=>{
+    editableFacts[+el.closest(".fact").dataset.i].type = el.value;
+  });
+  box.querySelectorAll(".fDel").forEach(el=>el.onclick=()=>{
+    editableFacts.splice(+el.closest(".fact").dataset.i, 1);
+    renderFactsEditor();
+  });
+  renderFactsState();
+}
+
+function renderFactsState(){
+  const el = $("factsState");
+  if(!el) return;
+  el.innerHTML = factsConfirmedState
+    ? '<span style="color:var(--ok);font-size:11px">✅ 已确认（生成时将复用，不再重复解析）</span>'
+    : '<span style="color:var(--sub);font-size:11px">⚠️ 未确认：生成时会由 AI 重新解析（多一次调用，且可能与这里不一致）</span>';
+}
+
+async function saveFacts(confirm){
+  if(currentMaterialId==null){ alert("请先解析素材"); return; }
+  const facts = editableFacts.filter(f=>(f.text||"").trim());
+  try{
+    const r = await j("PUT", `/api/materials/${currentMaterialId}/facts`, {
+      core_message: $("fCore") ? $("fCore").value : null,
+      tone: $("fTone") ? $("fTone").value : null,
+      audience: $("fAudience") ? $("fAudience").value : null,
+      facts, confirm
+    });
+    factsConfirmedState = !!r.facts_confirmed;
+    renderFactsState();
+    $("analyzeStatus").textContent = confirm ? `✅ 事实已确认（${r.facts_count} 条）` : `💾 事实已暂存（${r.facts_count} 条，未确认）`;
+    $("analyzeStatus").style.color = confirm ? "var(--ok)" : "var(--sub)";
+  }catch(e){
+    $("analyzeStatus").textContent = "❌ 保存事实失败：" + e.message;
+    $("analyzeStatus").style.color = "var(--brand)";
+  }
+}
+
+function renderAnalyzeResult(s, confirmed, confirmedAt){
+  factsConfirmedState = !!confirmed;
+  editableFacts = (s.facts||[]).map(f=>({type:f.type||"data", text:f.text||""}));
+  const when = confirmedAt ? ` · ${esc(String(confirmedAt).slice(0,16))}` : "";
+  $("analyzeResult").innerHTML = `
+    <div class="core">💡 核心观点：<input id="fCore" value="${esc(s.core_message||"")}" style="width:70%;font-size:13px"></div>
+    <div style="font-size:12px;color:var(--sub);margin-top:6px">
+      语气：<input id="fTone" value="${esc(s.tone||"")}" style="width:130px;font-size:12px">
+      受众：<input id="fAudience" value="${esc(s.audience||"")}" style="width:150px;font-size:12px">
+    </div>
+    <h2 style="margin-top:10px">事实清单（防幻觉依据）<span id="factsState"></span></h2>
+    <div class="facts" id="factsEditor"></div>
+    <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+      <button id="btnAddFact" style="font-size:12px">＋ 添加一条</button>
+      <button id="btnSaveFacts" style="font-size:12px">💾 暂存</button>
+      <button id="btnConfirmFacts" style="font-size:12px;font-weight:600">✅ 保存并确认</button>
+      <span style="font-size:11px;color:var(--sub);align-self:center">确认后生成将复用这份事实，<b>少一次 AI 调用</b>${when}</span>
+    </div>`;
+  renderFactsEditor();
+  $("btnAddFact").onclick = ()=>{ editableFacts.push({type:"data", text:""}); renderFactsEditor(); };
+  $("btnSaveFacts").onclick = ()=>saveFacts(false);
+  $("btnConfirmFacts").onclick = ()=>saveFacts(true);
 }
 
 $("btnAnalyze").onclick = async ()=>{
@@ -358,14 +461,7 @@ $("btnAnalyze").onclick = async ()=>{
   try{
     const m = await j("POST","/api/materials",{ raw_text:$("raw").value, source_kind:$("kind").value, title:$("title").value||null });
     currentMaterialId = m.id;
-    const s = m.structured;
-    let factsHtml = "";
-    (s.facts||[]).forEach(f=>{ factsHtml += `<div class="fact"><span class="ty ${esc(f.type)}">${esc(f.type)}</span><span>${esc(f.text)}</span></div>`; });
-    $("analyzeResult").innerHTML = `
-      <div class="core">💡 核心观点：${esc(s.core_message)}</div>
-      <div style="font-size:12px;color:var(--sub);margin-top:6px">语气：${esc(s.tone)} · 受众：${esc(s.audience)}</div>
-      <h2 style="margin-top:10px">事实清单（防幻觉依据）</h2>
-      <div class="facts">${factsHtml||'<div class="empty">无</div>'}</div>`;
+    renderAnalyzeResult(m.structured, m.facts_confirmed, m.facts_confirmed_at);
     updateGenBtn(); loadHistory();
   }catch(e){ $("analyzeStatus").textContent="❌ "+e.message; $("analyzeStatus").style.color="var(--brand)"; }
 };
@@ -467,22 +563,51 @@ function paintDraft(d){
   panel.innerHTML = `
     <div class="draft-block">
       <h3>${esc(d.platform_name)} ${statusBadge}
+        ${d.edited_at?`<span style="font-size:11px;color:var(--sub);font-weight:400">✏️ 人工编辑于 ${esc(String(d.edited_at).slice(0,16))}</span>`:""}
         <button class="ghost sm" style="margin-left:auto" data-copy>复制全文</button>
       </h3>
-      ${(draft.titles||[]).length?`<ul class="titles">${titles}</ul>`:""}
-      <div class="tags">${tags}</div>
-      <div class="preview">${esc(draft.body||"(空)")}</div>
+      <div class="ed-label">标题（可编辑，一行一个）</div>
+      <div id="edTitles">${(draft.titles||[]).map(t=>`<input class="edTitle" value="${esc(t)}">`).join("")}</div>
+      <div class="ed-label">正文（可编辑）</div>
+      <textarea id="edBody">${esc(draft.body||"")}</textarea>
+      <div class="ed-label">标签（逗号分隔）</div>
+      <input id="edTags" value="${esc((draft.tags||[]).join(","))}">
       ${draft.cover_suggestion?`<div class="meta" style="margin-top:6px">🖼 封面/首屏：<b>${esc(draft.cover_suggestion)}</b></div>`:""}
       ${draft.interaction_line?`<div class="meta">🗣 互动引导：<b>${esc(draft.interaction_line)}</b></div>`:""}
       ${draft.rationale?`<div class="meta">🧬 改写说明：${esc(draft.rationale)}</div>`:""}
       ${clipHtml}
       ${warns?`<div class="qa-warn">${warns}</div>`:""}
       ${issues?`<div class="qa-warn" style="border-color:#f0b4ab;color:#b03a2e">${issues}</div>`:""}
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button id="btnSaveDraft" style="font-size:12px;font-weight:600">💾 保存修改</button>
+        <button id="btnExpMd" style="font-size:12px">⬇️ 导出 .md</button>
+        <button id="btnExpTxt" style="font-size:12px">⬇️ 导出 .txt</button>
+        <span id="edState" style="font-size:11px;color:var(--sub)"></span>
+      </div>
       <div style="font-size:11px;color:var(--sub);margin-top:8px;line-height:1.6">
         ⓘ 质检为自动筛查，仅覆盖已知规则与模型自评，<b>不代表事实无误</b>；发布前请人工终审，事实以你的素材为准。
+        <br>ⓘ 编辑不会自动重跑质检——改动后请自行核对（尤其数字与事实）。
       </div>
     </div>`;
   panel.querySelector("[data-copy]").onclick = e=>copyText(fullCopy, e.currentTarget);
+  // 稿件编辑与导出（FR-42）
+  const draftId = d.id;
+  $("btnSaveDraft").onclick = async ()=>{
+    try{
+      const titles = [...panel.querySelectorAll(".edTitle")].map(el=>el.value).filter(t=>t.trim());
+      const tags = $("edTags").value.split(/[,，]/).map(s=>s.trim()).filter(Boolean);
+      const r = await j("PUT", `/api/drafts/${draftId}`, {
+        titles, body: $("edBody").value, tags
+      });
+      $("edState").textContent = `✅ 已保存（${String(r.edited_at||"").slice(11,19)}）`;
+      $("edState").style.color = "var(--ok)";
+    }catch(e){
+      $("edState").textContent = "❌ 保存失败：" + e.message;
+      $("edState").style.color = "var(--brand)";
+    }
+  };
+  $("btnExpMd").onclick = ()=>{ location.href = `/api/drafts/${draftId}/export?format=md`; };
+  $("btnExpTxt").onclick = ()=>{ location.href = `/api/drafts/${draftId}/export?format=txt`; };
 }
 
 // ============ M4: 创作者画像 / 复盘报告 / 效果录入 ============

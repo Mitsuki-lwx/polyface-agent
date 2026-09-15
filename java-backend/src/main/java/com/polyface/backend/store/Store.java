@@ -28,12 +28,14 @@ public class Store {
 
     public record MaterialRow(long id, String rawText, String sourceKind, String title,
                               String coreMessage, String tone, String audience,
-                              String factsJson, String createdAt) {
+                              String factsJson, String createdAt,
+                              boolean factsConfirmed, String factsConfirmedAt) {
     }
 
     public record DraftRow(long id, long materialId, String platformCode, String platformName,
                            String briefJson, String payloadJson, String qaJson, String status,
-                           String createdAt, Long templateId, Integer templateVersion) {
+                           String createdAt, Long templateId, Integer templateVersion,
+                           String editedAt) {
     }
 
     /** 发布后录入的效果指标（FR-30）。 */
@@ -139,6 +141,7 @@ public class Store {
             }
             ensureDraftTemplateColumns(c);
             ensureTemplateStatusColumns(c);
+            ensureFactsAndEditColumns(c);
         }
         log.info("SQLite schema ready");
     }
@@ -193,6 +196,32 @@ public class Store {
         }
     }
 
+    // ---------------- 迁移（事实确认与稿件编辑闭环）----------------
+    /** 增量加列：material.facts_confirmed / facts_confirmed_at、draft.edited_at。幂等。 */
+    private void ensureFactsAndEditColumns(Connection c) throws java.sql.SQLException {
+        addColumnIfMissing(c, "material", "facts_confirmed", "INTEGER DEFAULT 0");
+        addColumnIfMissing(c, "material", "facts_confirmed_at", "TEXT");
+        addColumnIfMissing(c, "draft", "edited_at", "TEXT");
+    }
+
+    /** 幂等加列助手：集中 PRAGMA 检查，避免重复样板代码。 */
+    private void addColumnIfMissing(Connection c, String table, String column, String ddl)
+            throws java.sql.SQLException {
+        java.util.Set<String> cols = new java.util.HashSet<>();
+        try (Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery("PRAGMA table_info(" + table + ")")) {
+            while (rs.next()) {
+                cols.add(rs.getString("name"));
+            }
+        }
+        if (!cols.contains(column)) {
+            try (Statement st = c.createStatement()) {
+                st.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + ddl);
+                log.info("migrated: {}.{} added", table, column);
+            }
+        }
+    }
+
     // ---------------- material ----------------
     public long insertMaterial(String rawText, String sourceKind, String title,
                                String coreMessage, String tone, String audience, String factsJson) {
@@ -218,7 +247,7 @@ public class Store {
     }
 
     public Optional<MaterialRow> getMaterial(long id) {
-        String sql = "SELECT id, raw_text, source_kind, title, core_message, tone, audience, facts_json, created_at "
+        String sql = "SELECT id, raw_text, source_kind, title, core_message, tone, audience, facts_json, created_at, facts_confirmed, facts_confirmed_at "
                 + "FROM material WHERE id=?";
         try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setLong(1, id);
@@ -234,7 +263,7 @@ public class Store {
     }
 
     public List<MaterialRow> listMaterials() {
-        String sql = "SELECT id, raw_text, source_kind, title, core_message, tone, audience, facts_json, created_at "
+        String sql = "SELECT id, raw_text, source_kind, title, core_message, tone, audience, facts_json, created_at, facts_confirmed, facts_confirmed_at "
                 + "FROM material ORDER BY id DESC";
         List<MaterialRow> out = new ArrayList<>();
         try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql); ResultSet rs = ps.executeQuery()) {
@@ -251,7 +280,33 @@ public class Store {
         return new MaterialRow(
                 rs.getLong("id"), rs.getString("raw_text"), rs.getString("source_kind"),
                 rs.getString("title"), rs.getString("core_message"), rs.getString("tone"),
-                rs.getString("audience"), rs.getString("facts_json"), rs.getString("created_at"));
+                rs.getString("audience"), rs.getString("facts_json"), rs.getString("created_at"),
+                rs.getInt("facts_confirmed") == 1, rs.getString("facts_confirmed_at"));
+    }
+
+    /** 保存（并可选确认）事实清单。
+     *
+     * <p>确认后该版本即成为后续生成的**唯一事实依据**（不再重复理解），
+     * 见 `docs/40-事实确认与稿件编辑闭环-spec.md`。
+     */
+    public int saveFacts(long id, String factsJson, String coreMessage, String tone,
+                         String audience, boolean confirm) {
+        String sql = "UPDATE material SET facts_json=?, core_message=COALESCE(?, core_message),"
+                + " tone=COALESCE(?, tone), audience=COALESCE(?, audience),"
+                + " facts_confirmed=?, facts_confirmed_at=? WHERE id=?";
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, factsJson);
+            ps.setString(2, coreMessage);
+            ps.setString(3, tone);
+            ps.setString(4, audience);
+            ps.setInt(5, confirm ? 1 : 0);
+            // 确认时记时间；未确认（仅暂存）则清空标记
+            ps.setString(6, confirm ? LocalDateTime.now().toString() : null);
+            ps.setLong(7, id);
+            return ps.executeUpdate();
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("saveFacts failed", e);
+        }
     }
 
     // ---------------- draft ----------------
@@ -297,8 +352,25 @@ public class Store {
         }
     }
 
+    /** 保存人工编辑后的稿件正文（FR-42）。
+     *
+     * <p>只覆盖 payload_json 与 edited_at；brief/qa/clip_sheet 等**不经此路径**，
+     * 避免绕过质检（见 spec §2.2）。
+     */
+    public int updateDraftPayload(long id, String payloadJson) {
+        String sql = "UPDATE draft SET payload_json=?, edited_at=? WHERE id=?";
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, payloadJson);
+            ps.setString(2, LocalDateTime.now().toString());
+            ps.setLong(3, id);
+            return ps.executeUpdate();
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("updateDraftPayload failed", e);
+        }
+    }
+
     private static final String DRAFT_COLS =
-            "id, material_id, platform_code, platform_name, brief_json, payload_json, qa_json, status, created_at, template_id, template_version";
+            "id, material_id, platform_code, platform_name, brief_json, payload_json, qa_json, status, created_at, template_id, template_version, edited_at";
 
     private DraftRow mapDraft(ResultSet rs) throws java.sql.SQLException {
         long tid = rs.getLong("template_id");
@@ -309,7 +381,7 @@ public class Store {
                 rs.getString("platform_code"), rs.getString("platform_name"),
                 rs.getString("brief_json"), rs.getString("payload_json"),
                 rs.getString("qa_json"), rs.getString("status"), rs.getString("created_at"),
-                templateId, templateVersion);
+                templateId, templateVersion, rs.getString("edited_at"));
     }
 
     public List<DraftRow> draftsByMaterial(long materialId) {

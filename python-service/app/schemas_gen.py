@@ -1,6 +1,8 @@
 """生成阶段数据模型：brief（平台策略）/ draft（成稿）/ clip_sheet（剪辑单）/ qa（质检）。"""
 from pydantic import BaseModel, Field
 
+from .schemas import StructuredMaterial
+
 
 class Brief(BaseModel):
     """某平台的内容策略。"""
@@ -80,6 +82,10 @@ class GenerateRequest(BaseModel):
     # FR-33 复盘经验回写（来自 /api/retrospect 的 insights[]；不传则视为空）
     retrospect_hints: list[str] | None = Field(default_factory=list,
                                                description="历史复盘建议文案(逐平台什么有效/无效)")
+    # FR-34 事实确认闭环：用户已确认的事实清单。
+    # 传入时**跳过理解阶段**（省一次 LLM 调用，且保证「所见即所用」）
+    confirmed_facts: StructuredMaterial | None = Field(
+        default=None, description="已确认事实(core_message/tone/audience/facts)；有则跳过 understand")
 
 
 class GenerateResponse(BaseModel):
