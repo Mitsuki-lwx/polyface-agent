@@ -106,24 +106,51 @@ def trace_span(name: str, trace_id: str | None = None, **attrs):
     if lf is None:
         yield None
         return
+    # ⚠️ 关键不变式：观测层**绝不改变业务异常的传播**。
+    #
+    # 反面写法（曾导致真实缺陷）：把 `yield span` 也放进 try，在 except 里再 `yield None`。
+    # 那会让 contextlib 抛 `RuntimeError: generator didn't stop after throw()`，
+    # 把业务异常（如 RateLimited）替换成 RuntimeError → llm.py 的异常分类失准 →
+    # **限流重试语义被破坏**。
+    #
+    # 正确做法：仅在「建立 span」阶段容错（失败则降级为无观测）；
+    # yield 之后的业务异常原样抛出，并把异常信息交回 span 以记录真实状态。
     try:
         kwargs: dict = {"as_type": "span", "name": name}
         if trace_id:
             kwargs["trace_context"] = {"trace_id": trace_id}
-        with lf.start_as_current_observation(**kwargs) as span:
-            if attrs and span is not None:
-                try:
-                    span.update(metadata={k: str(v) for k, v in attrs.items()})
-                except Exception:  # noqa: BLE001
-                    pass
-            yield span
-    except Exception as e:  # noqa: BLE001 — 观测失败不影响业务
-        logger.warning("Langfuse span 创建失败：%s", e)
+        ctx = lf.start_as_current_observation(**kwargs)
+        span = ctx.__enter__()
+    except Exception as e:  # noqa: BLE001 — 仅建立阶段失败才降级
+        logger.warning("Langfuse span 创建失败（已降级为无观测）：%s", e)
         yield None
+        return
+
+    if attrs and span is not None:
+        try:
+            span.update(metadata={k: str(v) for k, v in attrs.items()})
+        except Exception:  # noqa: BLE001 — 属性写入失败不影响业务
+            pass
+
+    try:
+        yield span
+    except BaseException as exc:  # 业务异常：记录状态后**原样抛出**
+        try:
+            ctx.__exit__(type(exc), exc, exc.__traceback__)
+        except Exception:  # noqa: BLE001
+            pass
+        raise
+    else:
+        try:
+            ctx.__exit__(None, None, None)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def flush() -> None:
-    """确保缓冲数据发出。"""
+    """确保缓冲数据发出。未启用时**绝不**触碰客户端。"""
+    if not enabled():
+        return
     lf = _get_client()
     if lf is not None:
         try:

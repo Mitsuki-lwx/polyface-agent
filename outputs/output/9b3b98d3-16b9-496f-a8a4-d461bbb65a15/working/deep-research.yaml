@@ -1,0 +1,9 @@
+topic: "Polyface跨平台素材复用与AI辅助剪辑方案的本地需求、实现差距及验收依据"
+tools: ["Read", "Grep"]
+scope: "local_knowledge"
+max_loops: 1
+min_facts_required: 8
+gap_check_strict: "strict"
+search_dimensions: ["用户目标与既有决策", "素材入料及剪辑数据差距", "可靠性与验收基线"]
+tier_priority: ["D:/media works move/polyface/docs/", "D:/media works move/polyface/python-service/app/", "D:/media works move/polyface/java-backend/src/"]
+snapshot_path: "D:/media works move/polyface/outputs/output/9b3b98d3-16b9-496f-a8a4-d461bbb65a15/working/research-snapshot.md"

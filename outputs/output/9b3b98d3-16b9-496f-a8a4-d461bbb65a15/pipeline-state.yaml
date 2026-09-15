@@ -1,0 +1,47 @@
+schema_version: 1
+request_id: "9b3b98d3-16b9-496f-a8a4-d461bbb65a15"
+created_at: "2026-09-14T23:21:14+08:00"
+updated_at: "2026-09-14T23:21:14+08:00"
+entry_type: "full_pipeline"
+stage_chain: [1, 2, 3]
+project_workspace: "D:/media works move/polyface"
+artifact_workspace: "D:/media works move/polyface/outputs"
+output_docx_path: "D:/media works move/polyface/outputs/output/9b3b98d3-16b9-496f-a8a4-d461bbb65a15/stage3/Polyface-跨平台素材复用产品与技术方案-v0.1.docx"
+output_docx_user_specified: false
+current_stage: 1
+stages:
+  stage_0:
+    status: "completed"
+    completed_at: "2026-09-14T23:21:14+08:00"
+    decision: "full_pipeline"
+  stage_1:
+    status: "pending"
+    output_path: null
+    genre: "general"
+    expert_used: null
+    route_tag: null
+    critic_decision: null
+  stage_2:
+    status: "pending"
+    route: null
+    html_sub: null
+    output_path: null
+    output_format: null
+    skills_invoked: []
+    design_tokens_path: null
+    fallback: false
+    fallback_reason: null
+  stage_3:
+    status: "pending"
+    executor: null
+    input_format: null
+    output_path: null
+    skill_used: []
+    present_files_opened: false
+    fallback: false
+    fallback_reason: null
+consistency_check:
+  output_files_exist: null
+  stage_chain_complete: null
+  last_checked_at: null
+  errors: []

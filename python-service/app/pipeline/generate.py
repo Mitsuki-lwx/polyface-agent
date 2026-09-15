@@ -235,7 +235,12 @@ def _rule_qa(dna: dict, draft: DraftPayload, mat: StructuredMaterial) -> tuple[l
     body_max = int(limits.get("body_chars_max", 1000))
     tag_max = int((dna.get("tags") or {}).get("count_max", 8))
 
-    body_len = len(draft.body)
+    body_len = len(draft.body or "")
+    # 结构校验（FR-60 加固）：最基本的可交付性必须由**规则**守住，不能依赖模型自评
+    if not (draft.body or "").strip():
+        issues.append("正文为空：不可交付")
+    if not any((t or "").strip() for t in (draft.titles or [])):
+        issues.append("标题为空：不可交付")
     if body_len > body_max:
         issues.append(f"正文超长: {body_len}字 > 上限{body_max}字")
     if not draft.titles:
@@ -261,25 +266,55 @@ def _rule_qa(dna: dict, draft: DraftPayload, mat: StructuredMaterial) -> tuple[l
     return issues, warnings
 
 
+def _strict_bool(value) -> tuple[bool, str | None]:
+    """严格解析 LLM 返回的 passed 字段。
+
+    修复 `bool("false") == True` 这类类型不合约误判。**只接受真正的布尔**；
+    其他类型一律按「不通过」处理并给出可读原因（fail-closed 原则）。
+    """
+    if isinstance(value, bool):
+        return value, None
+    return False, (
+        f"模型返回的 passed 字段类型不合约（{type(value).__name__}={value!r}），已按未通过处理"
+    )
+
+
 def _llm_qa(
-    dna: dict, draft: DraftPayload, mat: StructuredMaterial, issues: list[str]
+    dna: dict, draft: DraftPayload, mat: StructuredMaterial,
+    rule_issues: list[str], rule_warnings: list[str],
 ) -> QaReport:
-    """真实模式：规则 + LLM 自评（按平台爆款清单 + 事实一致性）。"""
+    """真实模式：规则 + LLM 自评**合并**判定。
+
+    fail-closed 原则：
+    - 任一来源（规则 / 结构 / LLM）存在阻断问题 → 不通过
+    - LLM 的 passed=true **不能**覆盖任何阻断问题
+    - 规则 warnings **必须保留**（此前被 LLM warnings 覆盖，导致「正文含无依据数字」告警丢失）
+    """
     data = llm.chat_json(
         build_qa_prompt(dna, draft, mat), system=QA_SYSTEM, temperature=0.2,
         scene="qa", platform=dna.get("code"),
     )
     llm_issues = [str(x).strip() for x in (data.get("issues") or []) if str(x).strip()]
     llm_warns = [str(x).strip() for x in (data.get("warnings") or []) if str(x).strip()]
-    passed = bool(data.get("passed")) and not issues
-    return QaReport(passed=passed, issues=issues + llm_issues[:3], warnings=llm_warns)
+    llm_passed, type_error = _strict_bool(data.get("passed"))
+
+    blocking = list(rule_issues) + llm_issues[:3]
+    if type_error:
+        blocking.append(type_error)
+
+    return QaReport(
+        passed=(not blocking) and llm_passed,
+        issues=blocking,
+        warnings=list(rule_warnings) + llm_warns,
+    )
 
 
 def run_qa(dna: dict, draft: DraftPayload, mat: StructuredMaterial) -> QaReport:
+    """质检门：规则与结构校验恒生效；真实模式再叠加 LLM 自评。"""
     issues, warnings = _rule_qa(dna, draft, mat)
     if llm.is_mock():
         return QaReport(passed=not issues, issues=issues, warnings=warnings)
-    return _llm_qa(dna, draft, mat, issues)
+    return _llm_qa(dna, draft, mat, issues, warnings)
 
 
 # ---------------------------------------------------------------- orchestrator

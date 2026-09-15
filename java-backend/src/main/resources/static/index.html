@@ -392,11 +392,11 @@ async function showTraceSummary(genResult){
     const mine = (u.recent || []).filter(x => x.trace_id === genResult.trace_id);
     const models = [...new Set(mine.map(x => x.model).filter(Boolean))];
     const retries = mine.reduce((a,x) => a + Math.max(0, (x.attempt||1) - 1), 0);
-    const okAll = mine.length > 0 && mine.every(x => x.ok);
+    const failed = mine.filter(x => !x.ok).length;
     const label = genResult.used_mock ? "mock" : (models.join(" → ") || "—");
     el.textContent = `📊 模型 ${label} · 调用 ${mine.length} 次 · 重试 ${retries} 次 · trace ${genResult.trace_id.slice(0,8)}`
-      + (okAll ? "" : " · ⚠️ 存在失败调用");
-    el.style.color = okAll ? "var(--sub)" : "var(--brand)";
+      + (failed ? ` · ⚠️ ${failed} 次调用失败` : "");
+    el.style.color = failed ? "var(--brand)" : "var(--sub)";
   }catch(e){ el.textContent = ""; }
 }
 
@@ -445,7 +445,11 @@ function paintDraft(d){
   const panel = $("draftPanel");
   const draft = d.draft||{};
   const qa = d.qa||{};
-  const statusBadge = d.status==="qa_passed" ? '<span class="qa-badge qa-pass">QA通过</span>' : '<span class="qa-badge qa-fail">需人工检查</span>';
+  // 表述边界：质检是**启发式筛查**，只说明「未发现阻断问题」，不等于「保证正确」
+  const warnN = (qa.warnings||[]).length, issueN = (qa.issues||[]).length;
+  const statusBadge = d.status==="qa_passed"
+    ? `<span class="qa-badge qa-pass">未发现阻断问题${warnN?`（${warnN} 条提醒）`:""}</span>`
+    : `<span class="qa-badge qa-fail">质检未通过（${issueN} 个问题）</span>`;
   const titles = (draft.titles||[]).map((t,i)=>`<li><b>${i===0?"主标题":"备选"}:</b> ${esc(t)}</li>`).join("");
   const tags = (draft.tags||[]).map(t=>`<span class="tag">#${esc(t)}</span>`).join("");
   const warns = (qa.warnings||[]).map(w=>`<div>⚠️ ${esc(w)}</div>`).join("");
@@ -474,6 +478,9 @@ function paintDraft(d){
       ${clipHtml}
       ${warns?`<div class="qa-warn">${warns}</div>`:""}
       ${issues?`<div class="qa-warn" style="border-color:#f0b4ab;color:#b03a2e">${issues}</div>`:""}
+      <div style="font-size:11px;color:var(--sub);margin-top:8px;line-height:1.6">
+        ⓘ 质检为自动筛查，仅覆盖已知规则与模型自评，<b>不代表事实无误</b>；发布前请人工终审，事实以你的素材为准。
+      </div>
     </div>`;
   panel.querySelector("[data-copy]").onclick = e=>copyText(fullCopy, e.currentTarget);
 }
