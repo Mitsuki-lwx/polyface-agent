@@ -40,3 +40,6 @@ web/dist/
 *.iml
 .DS_Store
 Thumbs.db
+
+# ===== AI tool artifacts (not project source) =====
+.workbuddy-ai/
