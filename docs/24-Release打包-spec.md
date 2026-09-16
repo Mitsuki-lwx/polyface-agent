@@ -107,12 +107,21 @@
       ├ scripts/             （start/stop/setup + build-release）
       ├ README.md  LICENSE  .gitignore
       └ docs/*.md            （方案与交付文档，开源材料）
-[4] 压缩 → dist/polyface-<version>.zip
-[5] 输出产物路径 + 大小，并提示「并附校验清单」
+[4] 统一 `*.bat` 行尾为 CRLF（`_normalize_eol`）—— 见下方「行尾符」
+[5] 压缩 → dist/polyface-<version>.zip
+[6] 输出产物路径 + 大小，并提示「并附校验清单」
 ```
 
 **排除校验（关键）**：打包前断言以下内容**不在** zip 中——
 `data/`、任何 `.env`、`.venv/`、`node_modules/`、`*.db`、`target/`（除 jar）、`__pycache__/`。
+
+**行尾符（2026-09-16 补）**：组装后必须把 `*.bat` / `*.cmd` 统一成 CRLF。
+cmd.exe 解析 LF 行尾的批处理时，`goto :label`、多行 `if (...)` 块、`for /f`
+会出错，而这三种结构 `setup/start/stop.bat` 全在用。
+**不能只依赖源码仓库的行尾**：`core.autocrlf=true` 时新克隆是 CRLF，
+但工具直接写出的文件是 LF，而打包直接拷工作区 —— 实测就漏出过 LF 的包。
+配套：`.gitattributes` 钉住 `*.bat → crlf` / `*.sh → lf`；6 项测试守卫
+（含幂等、`.sh` 不受影响、无 BOM、含中文必须 `chcp 65001`）。
 任一命中则中止打包并报错（防泄漏用户数据与密钥）。
 
 ## 6. README 结构调整

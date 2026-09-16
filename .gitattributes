@@ -1,0 +1,26 @@
+# 行尾符约定
+#
+# 为什么必须显式写死：Windows 批处理文件用 LF 行尾时，cmd.exe 解析
+# `goto :label`、多行 `if (...)` 块、`for /f` 循环会出错 —— 且这类
+# 故障依赖 Windows 版本，只在真实执行时才暴露。
+# 而发布包是**直接拷工作区**的（build_release.py），所以工作区是什么
+# 行尾，用户拿到的就是什么行尾。
+#
+# 本仓库 core.autocrlf=true 时新克隆会得到 CRLF，但工具直接写出的文件
+# 是 LF（打包时就漏出去了）。所以这里显式钉住，不依赖个人的 git 配置。
+
+# Windows 批处理：必须 CRLF
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# Shell 脚本：必须 LF（CRLF 会让 shebang 与 `bash script.sh` 出错）
+*.sh   text eol=lf
+
+# 其余按平台常规处理
+*.py   text
+*.java text
+*.yml  text
+*.yaml text
+*.md   text
+*.json text
+*.html text

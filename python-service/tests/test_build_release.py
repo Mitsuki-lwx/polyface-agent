@@ -276,6 +276,70 @@ def test_repo_versions_are_consistent():
     br.assert_versions_consistent(REPO_ROOT, br.read_version(REPO_ROOT))
 
 
+# ============================================================ 行尾符
+
+def test_normalize_eol_fixes_bat(tmp_path):
+    """LF 的 .bat 必须被转成 CRLF，且内容不变。"""
+    (tmp_path / "setup.bat").write_bytes(b"@echo off\necho hi\n")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "STOP.BAT").write_bytes(b"@echo off\necho bye\n")
+    br._normalize_eol(tmp_path)
+    assert (tmp_path / "setup.bat").read_bytes() == b"@echo off\r\necho hi\r\n"
+    assert (tmp_path / "sub" / "STOP.BAT").read_bytes() == b"@echo off\r\necho bye\r\n"
+
+
+def test_normalize_eol_is_idempotent(tmp_path):
+    """已经 CRLF 的文件不得被改成 CRCRLF。"""
+    p = tmp_path / "a.bat"
+    p.write_bytes(b"@echo off\r\necho hi\r\n")
+    br._normalize_eol(tmp_path)
+    assert p.read_bytes() == b"@echo off\r\necho hi\r\n"
+    br._normalize_eol(tmp_path)
+    assert p.read_bytes() == b"@echo off\r\necho hi\r\n"
+
+
+def test_normalize_eol_leaves_sh_alone(tmp_path):
+    """`.sh` 必须保持 LF（CRLF 会让 shebang 失效）。"""
+    p = tmp_path / "run.sh"
+    p.write_bytes(b"#!/bin/sh\necho hi\n")
+    br._normalize_eol(tmp_path)
+    assert p.read_bytes() == b"#!/bin/sh\necho hi\n"
+
+
+def test_repo_bat_files_are_crlf():
+    """仓库里的 `.bat` 必须是 CRLF —— 打包时虽有兜底，源码也不该是错的。"""
+    bad = []
+    for p in SCRIPTS.rglob("*"):
+        if p.is_file() and p.name.lower().endswith(br.BAT_SUFFIXES):
+            data = p.read_bytes()
+            if data.count(b"\n") != data.count(b"\r\n"):
+                bad.append(p.name)
+    assert not bad, f"这些 .bat 含 LF 行尾（cmd.exe 解析会出错）：{bad}"
+
+
+def test_repo_bat_files_have_no_bom():
+    """`.bat` 不能带 BOM：BOM 会被 cmd.exe 当成第一个命令的一部分。"""
+    bad = [p.name for p in SCRIPTS.rglob("*.bat")
+           if p.is_file() and p.read_bytes().startswith(b"\xef\xbb\xbf")]
+    assert not bad, f"这些 .bat 带 UTF-8 BOM：{bad}"
+
+
+def test_repo_bat_files_switch_codepage():
+    """含中文的 `.bat` 必须 `chcp 65001`，否则中文 Windows 下输出全是乱码。
+
+    这正是 `docs/48` §6 里"批处理未实机执行"最可能踩的坑：
+    提示信息乱码会让"出问题能自诊断"这个卖点直接失效。
+    """
+    bad = []
+    for p in SCRIPTS.rglob("*.bat"):
+        if not p.is_file():
+            continue
+        text = p.read_text(encoding="utf-8")
+        if any(ord(c) > 127 for c in text) and "chcp 65001" not in text:
+            bad.append(p.name)
+    assert not bad, f"这些 .bat 含中文却没有 chcp 65001（会乱码）：{bad}"
+
+
 # ============================================================ 真实仓库自检
 
 # 字节码缓存是「跑一次 Python 就会产生」的正常副产物，且 assemble() → _prune()

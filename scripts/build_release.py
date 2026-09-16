@@ -133,8 +133,33 @@ def assemble(root: Path, version: str, dist: Path, jar: Path) -> Path:
         if src.is_file():
             shutil.copy2(src, pkg / f)
 
+    _normalize_eol(pkg)
     _prune(pkg)
     return pkg
+
+
+BAT_SUFFIXES = (".bat", ".cmd")
+
+
+def _normalize_eol(pkg: Path) -> None:
+    """把 Windows 批处理统一成 CRLF。
+
+    为什么必须在打包阶段做，而不是只依赖源码仓库的行尾：
+    cmd.exe 解析 **LF 行尾**的批处理时，`goto :label`、多行 `if (...)`
+    块、`for /f` 循环都会出错 —— 而这三种结构 `setup/start/stop.bat`
+    大量使用。这个故障只在真实执行时暴露，逐行阅读看不出来。
+
+    "工作区是 LF、于是包也是 LF"是真实发生过的：`core.autocrlf=true`
+    会掩盖它（新克隆得到 CRLF，但工具直接写出的文件是 LF）。在这里
+    兜底后，无论从哪个平台、什么 git 配置打包，产出都一致。
+    """
+    for p in pkg.rglob("*"):
+        if not (p.is_file() and p.name.lower().endswith(BAT_SUFFIXES)):
+            continue
+        data = p.read_bytes()
+        fixed = data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+        if fixed != data:
+            p.write_bytes(fixed)
 
 
 def _prune(pkg: Path) -> None:

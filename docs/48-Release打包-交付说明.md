@@ -16,7 +16,7 @@
 
 | 项 | 结果 | 证据 |
 |---|---|---|
-| Python 测试 | ✅ **174 通过**（任务开始前 76） | `pytest -q`，2026-09-16 复核；见 §2.1 |
+| Python 测试 | ✅ **180 通过**（任务开始前 76） | `pytest -q`，2026-09-16 复核；见 §2.1 |
 | Java 测试 | ✅ **43 通过** | `mvn test`，`java.version=17` 下编译通过 |
 | 发布包产出 | ✅ `dist/polyface-0.4.0.zip`（32.3 MB） | `build_release.py --no-build` |
 | 包内容校验 | ✅ 无违禁内容 | `build_release.py --check-only` |
@@ -30,17 +30,18 @@
 
 初版本节写的是「Python 165 通过」。**该数字不可复现**，两次订正：
 
-| | 初版声明 | 复核实测 |
-|---|---|---|
-| 总数 | 165 | **174** |
-| 结果 | 全通过 | 初版当时实为 **170 passed / 1 failed** |
+| | 初版声明 | 复核后 | 终值 |
+|---|---|---|---|
+| 总数 | 165 | 174 | **180** |
+| 结果 | 全通过 | 初版当时实为 **170 passed / 1 failed** | 全通过 |
+| 变化原因 | — | 修掉 1 项**必然失败**的测试 | 新增 6 项行尾/编码守卫（§5 第 8 项） |
 
 **为什么必须记下来**：`tests/test_build_release.py::test_repo_scripts_dir_is_clean`
 是一个**必然失败**的测试 —— 它用 `importlib` 加载 `scripts/build_release.py`，
 而「加载」这个动作本身就会写出 `scripts/__pycache__/*.pyc`，随后该测试又断言
 `scripts/` 下不得存在 `__pycache__`/`.pyc`。**从干净检出跑也必红。**
 
-它还有第二层错误：注释称这些文件"会被原样打进包"，但 `build_release.py:128` 的
+它还有第二层错误：注释称这些文件"会被原样打进包"，但 `build_release.py` 的
 `shutil.ignore_patterns(*FORBIDDEN_DIRS, *FORBIDDEN_FILES, "*.pyc", "*.pyo", "*.log")`
 已经把它们排除，`_prune()` 再兜底删除 —— **发布包实际上是干净的**
 （`--check-only` 实测 `[OK] 未发现不应分发的内容` 佐证）。
@@ -94,7 +95,8 @@ D:\最终 验证\polyface-0.4.0\      ← 中文 + 空格路径（最容易翻�
 | `python-service/tests/test_doctor.py` | 33 项 |
 | `python-service/tests/test_cors.py` | 20 项 |
 | `python-service/tests/test_version.py` | 9 项 |
-| `python-service/tests/test_build_release.py` | 27 项 |
+| `python-service/tests/test_build_release.py` | **42 项**（初版写 27 项，实为 33；2026-09-16 加固后 42 —— 见 §5 第 8 项与 §2.1） |
+| `.gitattributes` | 行尾符约定：`*.bat` → CRLF，`*.sh` → LF（见 §5 第 8 项） |
 
 **修改**
 
@@ -108,6 +110,7 @@ D:\最终 验证\polyface-0.4.0\      ← 中文 + 空格路径（最容易翻�
 | `java-backend/pom.xml` | 版本 `0.1.0`→`0.4.0`；`java.version` 21→**17**（实测无 21 专属 API）；`<finalName>polyface</finalName>` |
 | `README.md` | 重写快速开始（发布包 / 源码两条路径）、配置速查、FAQ；**修正路线图**（M3/M3.5/M4 早已完成却标着未做） |
 | `.gitignore` | 增加 `outputs/browser-shots/`（二进制证据不入库） |
+| `scripts/setup.bat` · `start.bat` · `stop.bat` | 行尾符 LF → **CRLF**（2026-09-16，见 §5 第 8 项） |
 
 ## 5. 本次实测中发现并修复的问题
 
@@ -122,6 +125,11 @@ D:\最终 验证\polyface-0.4.0\      ← 中文 + 空格路径（最容易翻�
 | 5 | `build_release.py` 用 `shutil.which("mvn")` | Windows + Git Bash 下命中的是 POSIX shell 脚本，报 `ClassNotFoundException: ...Launcher` | 新增 `maven_cmd()`：Windows 优先用仓库自带的 `scripts/mvn.sh`；并支持 `--mvn` 覆盖 |
 | 6 | 版本号不一致 | Python 服务显示 `0.3.0`、Java 是 `0.4.0` | `VERSION` 作唯一来源，Python 运行时读取；加测试断言 `/health`、FastAPI `app.version` 都与文件一致 |
 | 7 | README 路线图与事实不符 | M3 / M3.5 / M4 均有交付说明却标着 `[ ]`，而 M5+ 自动成片未实现却未标明 | 按 `docs/03/04/09/10/22` 实际状态逐项订正；明确标注 B1/B2 **尚未实现** |
+| 8 | **发布包里的 `.bat` 是 LF 行尾**（2026-09-16 复核发现） | `cmd.exe` 解析 LF 行尾的批处理时，`goto :label`、多行 `if (...)` 块、`for /f` 会出错 —— 而这三种结构三个 `.bat` 全在用。**这是真实会交付出去的缺陷** | 三层修复：① 新增 `.gitattributes`（`*.bat text eol=crlf` / `*.sh text eol=lf`，不依赖个人 git 配置）② 把工作区的 3 个 `.bat` 转 CRLF ③ `build_release.py` 新增 `_normalize_eol()`，**打包时兜底统一**（从任何平台/配置打包，产出都一致）。加 6 项测试守卫（含幂等、`.sh` 不受影响、无 BOM、含中文必须 `chcp 65001`） |
+
+> 第 8 项说明了一件事：`core.autocrlf=true` **会掩盖**这类问题 ——
+> 新克隆得到 CRLF，于是"在开发机上看是对的"，但工具直接写出的文件是 LF，
+> 而发布包又直接拷工作区。**逐行复核永远看不出行尾符**，只能靠检查程序或真机执行。
 
 ## 6. 残余项（**未验证**部分，请勿当成已验收）
 
@@ -129,10 +137,10 @@ D:\最终 验证\polyface-0.4.0\      ← 中文 + 空格路径（最容易翻�
 
 | 项 | 状态 | 说明 |
 |---|---|---|
-| `scripts/*.bat` 本身 | ⚠️ **未实机执行** | 本次验证环境无法执行 `.bat`（调用 `cmd.exe` 被安全策略拦截）。脚本的**编排逻辑**已逐行复核，其调用的 `doctor.py` / `build_release.py` 已单测覆盖，但**批处理语法本身没有跑过**。首次在真实 Windows 上使用请留意 |
+| `scripts/*.bat` 本身 | ⚠️ **仍未实机执行** | 两处工具（Bash / PowerShell）都硬性拦截 `cmd.exe`，本环境**不可能**执行批处理 —— 这一点没有变。**但已消除最可能致命的两类隐患**：行尾符（§5 第 8 项）与中文编码（`chcp 65001` 已有，并加测试守卫）。剩余风险收窄为"批处理语法/取词的个别写法"，首次使用仍请留意 |
 | `setup.bat` 的 Maven 构建分支 | ⚠️ 未走通 | 该分支只在"没有预构建 jar"时触发；发布包自带 jar，故未触发 |
 | `start.bat` 的浏览器自动打开 | ⚠️ 未验证 | 依赖 `start ""` 打开默认浏览器 |
-| `start.bat` / `stop.bat` 的 `curl` 与 `tasklist` 解析 | ⚠️ 部分未验证 | `netstat`/`tasklist` 的输出格式已实测确认与脚本解析一致；但脚本内的 `for /f` 取词未实跑 |
+| `start.bat` / `stop.bat` 的 `curl` 与 `tasklist` 解析 | ⚠️ 部分未验证 | `netstat`/`tasklist` 的输出格式已实测确认与脚本解析一致；但脚本内的 `for /f` 取词未实跑。**行尾符修正前，`for /f` 恰恰是最可能出错的地方** |
 | 真实 LLM 模式 | ⚠️ 未验证 | 隔离验证全程 `LLM_MOCK=true`。真实模式的耗时（101~250s/平台）与限流表现引自 `docs/46` 的既有实测 |
 | 音视频入料（ffmpeg / ASR） | ⚠️ 未在发布包内验证 | 属 `docs/19-22` 的既有交付范围，本次未回归 |
 | 浏览器端 UI 验证 | ⚠️ 未重做 | 本次改动未触及 `index.html`；前端回归证据见 `docs/46`（15/15，mock 模式） |
@@ -142,7 +150,7 @@ D:\最终 验证\polyface-0.4.0\      ← 中文 + 空格路径（最容易翻�
 
 ```bash
 # 测试
-cd python-service && .venv/Scripts/python -m pytest -q        # 174 passed
+cd python-service && .venv/Scripts/python -m pytest -q        # 180 passed
 bash scripts/mvn.sh -B -f java-backend/pom.xml test           # 43 passed
 
 # 打包（含校验）
@@ -157,6 +165,10 @@ python scripts/doctor.py
 ## 8. 下一步建议
 
 1. **在真实 Windows 机器上实跑一遍 `setup.bat` → `start.bat` → `stop.bat`**，补上 §6 第一行那个缺口。这是当前交付里最该补的一块。
+   本环境两处工具都拦 `cmd.exe`，**无法代跑** —— 只能由你在真机上双击一次。
+   已把最可能致命的两类隐患（行尾符 / 中文乱码）用 `.gitattributes` + 打包兜底 + 6 项测试钉死，
+   剩余风险是"个别批处理写法"，若报错请把窗口原文给我，可据此精确修。
 2. 真实 LLM 模式下完整走一遍发布包（含 Key 配置、429 重试、部分失败重试）。
 3. `application.yml` 的 `polyface.data-dir` 默认值是 `../data`（相对启动目录），手动 `java -jar` 会把数据写到包外。目前靠 `start.bat` 显式覆盖规避；若要彻底解决，应改为相对 **jar 所在目录**解析（需同时评估对开发布局的影响，避免动了默认值后开发环境数据"搬家"）。
 4. 跨平台验证（Linux / macOS）。
+5. **产品定位待立档**：用户 09-14 明确"项目目的就是解决多平台素材复用，AI 剪辑是核心路径之一"，但 SRS 里 FR-52/53 标的是"M5+ 专项"。二者冲突未解。
