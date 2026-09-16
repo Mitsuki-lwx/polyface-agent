@@ -1,5 +1,7 @@
 """应用配置：从 .env 读取，未配置时使用安全默认值（mock 模式）。"""
+import os
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -47,7 +49,63 @@ class Settings(BaseSettings):
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
 
+    # ===== CORS（安全收紧）=====
+    # **默认为空 = 不启用跨域**。浏览器只与 Java 工作台(:8080)同源通信，
+    # Java 调 Python 是服务端请求（不受 CORS 约束），所以本服务不需要跨域。
+    # 为什么不能是 "*"：本服务无鉴权，`allow_origins=["*"]` 会让**任意网页**
+    # 都能 POST 到 127.0.0.1:8000 触发 LLM 调用、消耗用户额度并读回结果。
+    # 需要时（如本地前端调试直连）用逗号分隔显式列出。
+    #
+    # ⚠️ 变量名是 `CORS_ORIGINS`（不是 POLYFACE_CORS_ORIGINS）—— 本类没有
+    # `env_prefix`，字段名直接大写即为变量名，与同文件其它项（LLM_MOCK 等）一致。
+    # 写在 `python-service/.env` 里：CORS_ORIGINS=http://127.0.0.1:8080
+    cors_origins: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def parse_cors_origins(raw: str) -> list[str]:
+    """把逗号分隔的放行来源解析成列表；空串/纯空白 → 空列表（= 不启用跨域）。
+
+    单独抽成函数是为了**可测试**：中间件的注册分支由它决定，
+    如果写在 main.py 里就只能靠起服务来验证。
+    """
+    return [item.strip() for item in (raw or "").split(",") if item.strip()]
+
+
+def read_version_file(start: Path, max_up: int = 4) -> str | None:
+    """从 start 向上逐级查找 `VERSION` 文件，返回其内容（去空白）；找不到返回 None。
+
+    `max_up` 限制上溯层数，避免在异常目录结构下一直走到盘根。
+    """
+    cur = start
+    for _ in range(max_up):
+        candidate = cur / "VERSION"
+        try:
+            if candidate.is_file():
+                text = candidate.read_text(encoding="utf-8").strip()
+                if text:
+                    return text
+        except OSError:
+            return None
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    return None
+
+
+@lru_cache
+def service_version() -> str:
+    """本服务的版本号，与仓库根 `VERSION` 保持一致。
+
+    优先级：环境变量 `POLYFACE_VERSION` > 向上查找的 `VERSION` 文件 > "0.0.0-dev"。
+    写死字符串会随发版漂移（曾出现 Java 0.4.0 / Python 0.3.0 对不上），
+    所以这里统一从单一来源读取。
+    """
+    env = (os.environ.get("POLYFACE_VERSION") or "").strip()
+    if env:
+        return env
+    return read_version_file(Path(__file__).resolve().parent) or "0.0.0-dev"

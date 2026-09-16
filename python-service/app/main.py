@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import dna, llm, observability, trace, usage
-from .config import get_settings
+from .config import get_settings, parse_cors_origins, service_version
 from .pipeline.generate import generate
 from .pipeline.ingest import run_probe, run_transcribe
 from .pipeline.learn import run_learn
@@ -29,17 +29,49 @@ from .schemas_gen import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("polyface-llm")
 
+
+def install_cors(target: FastAPI, raw_origins: str) -> list[str]:
+    """按配置注册 CORS 中间件，返回**实际放行**的来源列表（空列表 = 未启用）。
+
+    抽成函数而非内联，是为了让"注册 / 不注册"这个分支可以被单测直接覆盖
+    —— 内联时只能靠改环境变量 + 重载模块来验证，既绕又不可靠。
+    """
+    origins = parse_cors_origins(raw_origins)
+    if not origins:
+        logger.info("CORS 未启用（默认）：仅接受同源页面与服务端调用")
+        return []
+    if "*" in origins:
+        logger.warning(
+            "CORS 放行了任意来源（CORS_ORIGINS 含 *）。本服务无鉴权，"
+            "任何网页都能调用 127.0.0.1:8000 消耗你的模型额度并读走结果，"
+            "请仅在临时调试时使用，用完即改回。"
+        )
+    target.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", trace.HEADER],
+    )
+    logger.info("CORS 已启用，放行来源：%s", origins)
+    return origins
+
+
 settings = get_settings()
-app = FastAPI(title="Polyface LLM Service", version="0.3.0",
+app = FastAPI(title="Polyface LLM Service", version=service_version(),
               description="素材解析 / 平台策略 / 成稿 / QA / 音视频入料 / 示例学习")
 
-# 仅本机访问；放行便于前端本地调试
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ============================================================ CORS（默认关闭）
+# 默认 **不注册** CORSMiddleware：浏览器只跟 Java 工作台(:8080)同源通信，
+# Java 调本服务是服务端请求（不受 CORS 约束），因此本服务**不需要**跨域。
+#
+# 为什么不能默认 `allow_origins=["*"]`：本服务无任何鉴权，且监听 127.0.0.1。
+# 放行 `*` 后，用户浏览任意恶意网页时，该页面的 JS 就能 POST 到
+# http://127.0.0.1:8000/generate 触发真实 LLM 调用 —— 既消耗用户自付的模型额度，
+# 又能把返回的稿件正文读走。默认关闭 = 浏览器侧根本发不出这个跨域请求。
+#
+# 需要本地前端直连调试时，在 `python-service/.env` 里显式配置（逗号分隔）：
+#   CORS_ORIGINS=http://127.0.0.1:8080,http://localhost:5173
+install_cors(app, settings.cors_origins)
 
 
 @app.middleware("http")
@@ -68,6 +100,7 @@ def health() -> dict:
     return {
         "status": "ok",
         "service": "polyface-llm",
+        "version": service_version(),
         "mock": llm.is_mock(),
         "model": settings.llm_model,
         "model_chain": llm.model_chain(),

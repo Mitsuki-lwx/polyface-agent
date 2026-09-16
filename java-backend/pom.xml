@@ -13,12 +13,14 @@
 
     <groupId>com.polyface</groupId>
     <artifactId>java-backend</artifactId>
-    <version>0.1.0</version>
+    <version>0.4.0</version>
     <name>polyface-java-backend</name>
     <description>Polyface 同源万面 - Java 后端（业务编排 + 本地存储 + Web 托管）</description>
 
     <properties>
-        <java.version>21</java.version>
+        <!-- 17：与 README「Java 17+」一致。已实测 release 17 可编译（无 21 专属 API）。
+             不要盲目调高 —— 会平白抬高用户门槛。 -->
+        <java.version>17</java.version>
     </properties>
 
     <dependencies>
@@ -43,6 +45,9 @@
     </dependencies>
 
     <build>
+        <!-- 固定产物名 polyface.jar：启动脚本 / 打包脚本按此名查找，
+             不随版本号变化（避免脚本里再出现版本号硬编码） -->
+        <finalName>polyface</finalName>
         <plugins>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
