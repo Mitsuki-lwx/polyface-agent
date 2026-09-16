@@ -88,11 +88,23 @@ class GenerateRequest(BaseModel):
         default=None, description="已确认事实(core_message/tone/audience/facts)；有则跳过 understand")
 
 
+class GenerateFailure(BaseModel):
+    """单平台生成失败（部分失败可容忍：其余平台照常交付）。"""
+    platform: str = Field(..., description="失败的平台代码")
+    error: str = Field(..., description="失败原因（含异常类型）")
+
+
 class GenerateResponse(BaseModel):
-    """素材 → N 平台成稿（brief+draft+clip+qa 全链路）。"""
+    """素材 → N 平台成稿（brief+draft+clip+qa 全链路）。
+
+    注意：多平台生成是**可部分成功**的操作 —— 某平台失败时会记入 failures，
+    其余平台照常返回，调用方须同时处理 drafts 与 failures。
+    """
     structured: dict = Field(..., description="素材理解结果(含事实清单)")
     drafts: list[PlatformDraft]
     used_mock: bool
+    failures: list[GenerateFailure] = Field(default_factory=list,
+                                            description="失败平台与原因（部分失败可容忍）")
 
 
 # ============================================================ 示例学习(FR-63)

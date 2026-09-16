@@ -34,7 +34,7 @@ def spy_understand(monkeypatch):
 def test_confirmed_facts_skips_understand(monkeypatch, spy_understand):
     """传入 confirmed_facts → 不调用 understand（省一次 LLM 调用）。"""
     req = GenerateRequest(raw_text=SAMPLE, platforms=["xhs"], confirmed_facts=CONFIRMED)
-    _, drafts, _ = G.generate(req)
+    _, drafts, _, failures = G.generate(req)
     assert spy_understand == [], "不应调用理解阶段"
     assert drafts and drafts[0].platform_code == "xhs"
 
@@ -49,7 +49,7 @@ def test_without_confirmed_facts_runs_understand(spy_understand):
 def test_confirmed_facts_used_as_source(monkeypatch, spy_understand):
     """生成使用的事实必须是用户确认的那份（所见即所用）。"""
     req = GenerateRequest(raw_text=SAMPLE, platforms=["xhs"], confirmed_facts=CONFIRMED)
-    structured_dict, _, _ = G.generate(req)
+    structured_dict, _, _, _ = G.generate(req)
     texts = [f["text"] for f in structured_dict.get("facts", [])]
     assert "2023年裸辞，写作月入从0到3万" in texts
 

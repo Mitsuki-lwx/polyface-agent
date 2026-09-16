@@ -165,6 +165,7 @@
         <span class="status-line" id="genStatus"></span>
       </div>
       <div id="traceLine" style="font-size:11px;color:var(--sub);margin-top:6px;line-height:1.5"></div>
+      <div id="failLine" style="display:none;margin-top:6px;line-height:1.6"></div>
     </div>
 
     <div class="card" style="margin-top:14px">
@@ -328,7 +329,12 @@ function renderPlats(list){
     label.querySelector("input").addEventListener("change", ()=>{ label.classList.toggle("checked", label.querySelector("input").checked); updateGenBtn(); });
     $("platList").appendChild(label);
   });
-  if(list.length) $("platList").querySelector("input").checked = true;
+  if(list.length){
+    const first = $("platList").querySelector("input");
+    first.checked = true;
+    // 程序化 checked 不触发 change，需手动同步 label 高亮，否则默认平台看不出被选中
+    first.closest("label").classList.add("checked");
+  }
   updateGenBtn();
 }
 function selectedPlats(){ return [...document.querySelectorAll("#platList input:checked")].map(i=>i.value); }
@@ -496,15 +502,36 @@ async function showTraceSummary(genResult){
   }catch(e){ el.textContent = ""; }
 }
 
-$("btnGenerate").onclick = async ()=>{
+/** 展示失败平台与原因，并提供「只重试失败平台」（部分成功保留的一部分）。 */
+function renderFailures(list){
+  const el = $("failLine");
+  if(!list || !list.length){ el.innerHTML=""; el.style.display="none"; return; }
+  el.style.display = "block";
+  el.innerHTML = `<div style="font-size:12px;color:var(--brand);font-weight:600">❌ 失败平台（其余已生成并保存）</div>`
+    + list.map(f=>`<div style="font-size:11.5px;color:var(--brand);margin-left:8px">· <b>${esc(f.platform)}</b>：${esc(String(f.error||"").slice(0,140))}</div>`).join("")
+    + `<button id="btnRetryFail" style="font-size:12px;margin-top:6px">🔁 重试失败平台</button>`;
+  $("btnRetryFail").onclick = ()=>{
+    const plats = list.map(f=>f.platform).filter(Boolean);
+    if(!plats.length) return;
+    $("btnGenerate").onclick({ platforms: plats });
+  };
+}
+
+$("btnGenerate").onclick = async (opts)=>{
+  const plats = (opts && opts.platforms && opts.platforms.length) ? opts.platforms : selectedPlats();
   const btn=$("btnGenerate"); btn.disabled=true; btn.innerHTML='<span class="spinner"></span> 生成中…';
-  $("genStatus").textContent="生成中（brief→draft→qa，遇限流自动重试）…"; $("genStatus").style.color="var(--sub)";
+  const n = plats.length;
+  $("genStatus").textContent = n > 1
+    ? `生成中（${n} 个平台，每个约 1~4 分钟，上游限流时更久）…`
+    : "生成中（brief→draft→qa，遇限流自动重试）…";
+  $("genStatus").style.color="var(--sub)";
   $("traceLine").textContent="";
+  renderFailures([]);
   const startedAt = Date.now();
   try{
     const sel = $("tplSelect").value;
     const body = {
-      platforms: selectedPlats(),
+      platforms: plats,
       tone_override: null,
       template_id: sel ? +sel : null,
       template: sel ? null : buildTemplate()
@@ -512,9 +539,17 @@ $("btnGenerate").onclick = async ()=>{
     const r = await j("POST", `/api/materials/${currentMaterialId}/generate`, body);
     drafts = r.drafts || [];
     const secs = ((Date.now() - startedAt)/1000).toFixed(0);
-    $("genStatus").textContent = `✅ 完成（${r.used_mock?"mock":"真实"}，${secs}s）`;
-    $("genStatus").style.color = "var(--ok)";
+    const okN = (r.ok_count != null) ? r.ok_count : drafts.length;
+    const failN = (r.fail_count != null) ? r.fail_count : 0;
+    if(failN > 0){
+      $("genStatus").textContent = `⚠️ 部分完成（成功 ${okN} / 失败 ${failN}，${secs}s）`;
+      $("genStatus").style.color = "var(--brand)";
+    }else{
+      $("genStatus").textContent = `✅ 完成（${r.used_mock?"mock":"真实"}，成功 ${okN}，${secs}s）`;
+      $("genStatus").style.color = "var(--ok)";
+    }
     renderTabsFromDb(r.drafts, null);
+    renderFailures(r.failures || []);
     await showTraceSummary(r);
     loadHistory();
   }catch(e){

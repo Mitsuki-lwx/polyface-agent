@@ -4,6 +4,8 @@ import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.List;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
@@ -22,17 +24,30 @@ import com.polyface.backend.observability.TraceContext;
 @Component
 public class PythonClient {
 
-    private final RestClient client;
+    private static final Logger log = LoggerFactory.getLogger(PythonClient.class);
+
+    private final RestClient client;      // 短任务（resolve/analyze/learn/usage 等）
+    private final RestClient genClient;   // 长任务（生成）：独立且可配的预算
     private final ObjectMapper mapper = new ObjectMapper();
 
-    public PythonClient(@Value("${polyface.llm.base-url}") String baseUrl) {
+    public PythonClient(@Value("${polyface.llm.base-url}") String baseUrl,
+                        @Value("${polyface.llm.timeout-sec:240}") int timeoutSec,
+                        @Value("${polyface.llm.fast-timeout-sec:60}") int fastTimeoutSec) {
+        this.client = build(baseUrl, fastTimeoutSec);
+        this.genClient = build(baseUrl, timeoutSec);
+        // 显式打印预算：避免"超时是魔法数字"，也便于排查长任务失败
+        log.info("Python 调用超时预算：短任务 {}s / 生成 {}s（可用 POLYFACE_LLM_TIMEOUT_SEC 覆盖）",
+                fastTimeoutSec, timeoutSec);
+    }
+
+    private RestClient build(String baseUrl, int readTimeoutSec) {
         HttpClient http = HttpClient.newBuilder()
                 .version(HttpClient.Version.HTTP_1_1)
                 .connectTimeout(Duration.ofSeconds(5))
                 .build();
         JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory(http);
-        rf.setReadTimeout(Duration.ofSeconds(180));
-        this.client = RestClient.builder().baseUrl(baseUrl).requestFactory(rf).build();
+        rf.setReadTimeout(Duration.ofSeconds(readTimeoutSec));
+        return RestClient.builder().baseUrl(baseUrl).requestFactory(rf).build();
     }
 
     public JsonNode analyze(String rawText, String sourceKind, String title) {
@@ -66,7 +81,8 @@ public class PythonClient {
 
     /** 完整自定义请求体（用于注入 creator_profile / retrospect_hints，FR-33）。 */
     public JsonNode postGenerate(JsonNode body) {
-        return post("/generate", body);
+        // 生成是长任务：走独立的长超时客户端（可配），避免与短任务共用预算
+        return post(genClient, "/generate", body);
     }
 
     public JsonNode platforms() {
@@ -109,7 +125,11 @@ public class PythonClient {
     }
 
     private JsonNode post(String uri, Object body) {
-        return client.post()
+        return post(client, uri, body);
+    }
+
+    private JsonNode post(RestClient c, String uri, Object body) {
+        return c.post()
                 .uri(uri)
                 .contentType(MediaType.APPLICATION_JSON)
                 // 链路标识：让 Python 侧的 LLM 调用归属到本次 Java 请求（FR-71）

@@ -43,3 +43,6 @@ Thumbs.db
 
 # ===== AI tool artifacts (not project source) =====
 .workbuddy-ai/
+
+# ===== generated evidence (regenerate by running scripts/) =====
+outputs/browser-shots/

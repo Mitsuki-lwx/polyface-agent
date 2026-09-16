@@ -372,6 +372,7 @@ def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
             raise ValueError(f"不支持的平台 [{code}]；可用: {[p['code'] for p in dna_lib.list_platforms()]}") from e
 
     results: list[PlatformDraft] = []
+    failures: list[dict] = []
     cfg = get_settings()
 
     def _submit(code: str):
@@ -381,19 +382,33 @@ def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
                                     req.tone_override, req.template,
                                     req.creator_profile, req.retrospect_hints)
 
+    def _record_failure(code: str, exc: Exception) -> None:
+        """单平台失败不致命：记录原因后继续，已完成平台的产物必须交付。"""
+        logger.exception("platform %s failed", code)
+        failures.append({
+            "platform": code,
+            "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+        })
+
     if cfg.llm_parallel and len(req.platforms) > 1:
         # 并行：快，但需上游额度宽裕（默认关闭，理由见 config）
         with ThreadPoolExecutor(max_workers=min(4, len(req.platforms))) as ex:
-            futures = [ex.submit(_submit, code) for code in req.platforms]
-            for f in futures:
-                results.append(f.result())
+            futures = {ex.submit(_submit, code): code for code in req.platforms}
+            for f, code in futures.items():
+                try:
+                    results.append(f.result())
+                except Exception as e:  # noqa: BLE001 — 部分失败可容忍
+                    _record_failure(code, e)
     else:
         # 串行 + 最小间隔：实测限流策略下的可靠路径
         interval = max(0, int(cfg.llm_min_interval_ms)) / 1000.0
         for i, code in enumerate(req.platforms):
             if i > 0 and interval > 0:
                 time.sleep(interval)
-            results.append(_submit(code))
+            try:
+                results.append(_submit(code))
+            except Exception as e:  # noqa: BLE001 — 部分失败可容忍
+                _record_failure(code, e)
 
     structured_dict = json.loads(structured.model_dump_json())
-    return structured_dict, results, used_mock
+    return structured_dict, results, used_mock, failures

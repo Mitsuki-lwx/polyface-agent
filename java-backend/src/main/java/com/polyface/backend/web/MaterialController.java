@@ -262,12 +262,44 @@ public class MaterialController {
                 d.set("qa", pd.path("qa"));
             }
             long elapsed = System.currentTimeMillis() - startedAt;
-            log.info("material {} generated {} drafts (template={} v{}) trace={} elapsed={}ms",
-                    id, pyDrafts.size(), tplId, tplVer, traceId, elapsed);
+            // 部分失败可容忍（FR-42）：Python 侧已逐平台容错，这里只透传与计数，
+            // 成功的稿子照常落库，**不因个别平台失败而整体 502**
+            JsonNode pyFailures = genResp.path("failures");
+            int failCount = (pyFailures.isArray()) ? pyFailures.size() : 0;
+            out.put("ok_count", draftsOut.size());
+            out.put("fail_count", failCount);
+            if (failCount > 0) {
+                out.set("failures", pyFailures);
+                log.warn("material {} 部分平台失败（成功 {} / 失败 {}）：{}",
+                        id, draftsOut.size(), failCount, pyFailures);
+            }
+            log.info("material {} generated {} drafts, {} failures (template={} v{}) trace={} elapsed={}ms",
+                    id, pyDrafts.size(), failCount, tplId, tplVer, traceId, elapsed);
             // 观测：Java 编排阶段耗时（与 Python 侧 LLM 调用归入同一 trace）
             langfuse.reportSpan(traceId, "java.orchestrate.generate", elapsed);
             out.put("trace_id", traceId);
             return ResponseEntity.ok(out);
+        } catch (org.springframework.web.client.ResourceAccessException ex) {
+            // 超时/连接中断：Spring 会包装为 ResourceAccessException（其中可能含 SocketTimeoutException）。
+            // 属长任务预算问题：**不谎报成功**，明确告知未完成并可重试
+            long elapsed = System.currentTimeMillis() - startedAt;
+            boolean timedOut = ex.getCause() instanceof java.net.SocketTimeoutException
+                    || String.valueOf(ex.getMessage()).toLowerCase().contains("timed out");
+            log.error("generate {} trace={} elapsed={}ms（可用 POLYFACE_LLM_TIMEOUT_SEC 调整预算）：{}",
+                    timedOut ? "timeout" : "connect-error", traceId, elapsed, ex.getMessage());
+            throw new GlobalExceptionHandler.LlmUnavailableException(
+                    (timedOut ? "生成超时" : "与生成服务连接中断")
+                            + "（已等待 " + (elapsed / 1000) + "s）：上游限流时单平台可能需数分钟。"
+                            + "请稍后重试，或减少平台数量后重试。");
+        } catch (org.springframework.web.client.HttpClientErrorException ex) {
+            // Python 侧的业务校验失败（如平台代码非法）应**原样透传 4xx**，
+            // 而不是被包装成 502 —— 502 表示"上游不可用"，会让用户误以为服务坏了
+            if (ex.getStatusCode().is4xxClientError()) {
+                String body = ex.getResponseBodyAsString();
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        (body == null || body.isBlank()) ? ex.getMessage() : body);
+            }
+            throw new GlobalExceptionHandler.LlmUnavailableException(ex.getMessage());
         } catch (Exception ex) {
             log.error("generate failed trace={}", traceId, ex);
             throw new GlobalExceptionHandler.LlmUnavailableException(ex.getMessage());

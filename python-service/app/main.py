@@ -98,11 +98,14 @@ def do_generate(req: GenerateRequest) -> GenerateResponse:
     trace_name = f"generate:{','.join(req.platforms)}"
     try:
         with observability.trace_span(trace_name, trace.current_trace_id()):
-            structured_dict, drafts, used_mock = generate(req)
+            structured_dict, drafts, used_mock, failures = generate(req)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     observability.flush()
-    return GenerateResponse(structured=structured_dict, drafts=drafts, used_mock=used_mock)
+    if failures:
+        logger.warning("generate 部分失败 trace=%s failures=%s", trace.current_trace_id(), failures)
+    return GenerateResponse(structured=structured_dict, drafts=drafts, used_mock=used_mock,
+                            failures=failures)
 
 
 @app.post("/learn", response_model=LearnResponse)
