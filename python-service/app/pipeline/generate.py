@@ -42,8 +42,47 @@ from .prompts import (
 
 logger = logging.getLogger(__name__)
 
-_NUM_RE = re.compile(r"\d+(?:\.\d+)?(?:[%％万kK亿])?\b|\d{2,}")
+# ⚠️ 不要用 `\b` 界定数字：汉字是 Unicode 词字符，`月入0做到3万` 在 `0` 与 `做` 之间
+# 没有词边界 → `0` 被丢弃；而 `月入0，` 处有边界 → `0` 保留。结果是**同一个数字在素材里
+# 隐身、在正文里现身**，必然误报。改用「前后都不是数字」判定，与邻接字符无关。
+# 同时把 `w/W`（「万」的通用简写）纳入单位类 —— 旧版漏了它，导致 `3w` 这类完全漏检。
+_DIGIT_UNIT = r"[%％万wWkK亿]"
+_NUM_RE = re.compile(rf"(?<!\d)\d+(?:\.\d+)?{_DIGIT_UNIT}?(?!\d)")
+
+# 分点/序号标记（`1.` `2、` `3）` `3．` …）不是数字主张，提取前先剥离。
+# 两条防线避免"把真数字当序号吃掉"：
+#   ① 只认 1~2 位（`2023` 这类年份够不到，不会被误剥）
+#   ② 半角句点必须**后接空白**才算序号 —— 否则 `营收 3.5亿` 会被剥成 `5亿`
+#      （中文标点 `、）．` 不存在小数点歧义，无须此约束）
+_LIST_MARKER_RE = re.compile(
+    r"(?m)(?:^[^\w\s]{0,4}[ \t]*|[ \t])\d{1,2}[ \t]*(?:[、)）．]|\.[ \t])(?![ \t]*\d)"
+)
+
+_UNIT_ALIAS_RE = re.compile(r"[wW]$")
 _EMOJI_LEAD = re.compile(r"^[\U0001F300-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF]+[\s·:：]*")
+
+
+def _norm_num(tok: str) -> str:
+    """把「万」的简写归一，使 `3w` 与 `3万` 可比（只作用于**紧跟数字**的单位）。"""
+    return _UNIT_ALIAS_RE.sub("万", tok)
+
+
+def _numbers_in(text: str) -> dict[str, str]:
+    """提取文本中的数字 token。
+
+    返回 `{归一化形式: 原文}` —— 归一化只用于**比较**（`3w` 与 `3万` 视为同一个数），
+    展示时必须用原文，否则会把用户写的 `3w` 改写成 `3万`，看着像被篡改。
+
+    三处修复对应 `docs/52` 的 D1/D2/D3：
+      1. `\\b` 在中文语境下失效 → 改用数字 lookaround（见 `_NUM_RE` 注释）
+      2. 分点序号被当事实数字 → 提取前用 `_LIST_MARKER_RE` 剥离
+      3. `3w` 漏检 → 单位类补 `w/W`，并归一化为「万」
+    """
+    out: dict[str, str] = {}
+    for tok in _NUM_RE.findall(_LIST_MARKER_RE.sub(" ", text)):
+        out.setdefault(_norm_num(tok), tok)
+    return out
+
 
 
 def _clip(text: str, n: int) -> str:
@@ -257,12 +296,14 @@ def _rule_qa(dna: dict, draft: DraftPayload, mat: StructuredMaterial) -> tuple[l
             issues.append(f"标签格式非法: {t!r}")
 
     # 事实约束：正文中出现的数字若在素材事实清单无依据 → warning(不硬拦，交由人工/LLM)
+    # 合并为一条：原先每个数字刷一条，4 条噪声会把同批真告警挤出视野（docs/52 D4）。
     fact_text = " ".join(f.text for f in mat.facts)
-    nums_in_body = set(_NUM_RE.findall(draft.body))
-    nums_in_facts = set(_NUM_RE.findall(fact_text))
-    for n in sorted(nums_in_body):
-        if n not in nums_in_facts:
-            warnings.append(f"正文含素材中无依据的数字: {n}（请确认或删除）")
+    in_body, in_facts = _numbers_in(draft.body), _numbers_in(fact_text)
+    unsupported = sorted(n for n in in_body if n not in in_facts)
+    if unsupported:
+        # 展示原文（用户写的是 3w，不要给他改写成 3万）
+        warnings.append("正文含素材中无依据的数字: "
+                        + "、".join(in_body[n] for n in unsupported) + "（请确认或删除）")
     return issues, warnings
 
 
