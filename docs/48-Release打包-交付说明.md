@@ -16,7 +16,7 @@
 
 | 项 | 结果 | 证据 |
 |---|---|---|
-| Python 测试 | ✅ **180 通过**（任务开始前 76） | `pytest -q`，2026-09-16 复核；见 §2.1 |
+| Python 测试 | ✅ **199 通过**（任务开始前 76；含 2026-09-17 FR-60 加固新增 19 项，见 `docs/54`） | `pytest -q`，2026-09-17 复核；见 §2.1 |
 | Java 测试 | ✅ **43 通过** | `mvn test`，`java.version=17` 下编译通过 |
 | 发布包产出 | ✅ `dist/polyface-0.4.0.zip`（32.3 MB） | `build_release.py --no-build` |
 | 包内容校验 | ✅ 无违禁内容 | `build_release.py --check-only` |
@@ -141,7 +141,7 @@ D:\最终 验证\polyface-0.4.0\      ← 中文 + 空格路径（最容易翻�
 | `setup.bat` 的 Maven 构建分支 | ⚠️ 未走通 | 该分支只在"没有预构建 jar"时触发；发布包自带 jar，故未触发 |
 | `start.bat` 的浏览器自动打开 | ⚠️ 未验证 | 依赖 `start ""` 打开默认浏览器 |
 | `start.bat` / `stop.bat` 的 `curl` 与 `tasklist` 解析 | ⚠️ 部分未验证 | `netstat`/`tasklist` 的输出格式已实测确认与脚本解析一致；但脚本内的 `for /f` 取词未实跑。**行尾符修正前，`for /f` 恰恰是最可能出错的地方** |
-| 真实 LLM 模式 | ⚠️ 未验证 | 隔离验证全程 `LLM_MOCK=true`。真实模式的耗时（101~250s/平台）与限流表现引自 `docs/46` 的既有实测 |
+| 真实 LLM 模式 | ✅ **已补验证（2026-09-17）** | 真实链路 E2E **14/14**（`glm-5.2`）：素材理解 20.7s / 生成 95.4s / QA passed，trace 留存。详见 `docs/54`。⚠️ 但**未在发布包内**跑（在源码目录），且只覆盖小红书 1 平台 —— **这不影响第一行「`.bat` 仍需实机验证」的结论** |
 | 音视频入料（ffmpeg / ASR） | ⚠️ 未在发布包内验证 | 属 `docs/19-22` 的既有交付范围，本次未回归 |
 | 浏览器端 UI 验证 | ⚠️ 未重做 | 本次改动未触及 `index.html`；前端回归证据见 `docs/46`（15/15，mock 模式） |
 | 跨平台 | ⚠️ 仅 Windows | `doctor.py` / `build_release.py` 写了 POSIX 分支（`lsof`、`bin/python`）但未在 Linux/macOS 实测 |
@@ -150,8 +150,13 @@ D:\最终 验证\polyface-0.4.0\      ← 中文 + 空格路径（最容易翻�
 
 ```bash
 # 测试
-cd python-service && .venv/Scripts/python -m pytest -q        # 180 passed
+cd python-service && .venv/Scripts/python -m pytest -q        # 199 passed
 bash scripts/mvn.sh -B -f java-backend/pom.xml test           # 43 passed
+
+# 真实 LLM 链路（2026-09-17 补；先探额度再跑，见 docs/54 §8）
+python scripts/probe_llm.py
+python scripts/probe_llm.py "" deepseek-v4-flash,glm-5.2,deepseek-v4-pro
+python scripts/e2e_real_llm.py D:/temp/py-real.log            # 14/14
 
 # 打包（含校验）
 python scripts/build_release.py                               # 完整构建
