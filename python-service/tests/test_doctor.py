@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import importlib.util
+import socket
 import sys
 from pathlib import Path
 
@@ -123,6 +124,78 @@ def test_find_venv_python_posix_layout(tmp_path):
 
 def test_find_venv_python_none(tmp_path):
     assert doctor.find_venv_python(tmp_path) is None
+
+
+# ---------------------------------------------------------------- 端口检测
+
+def _listen_on_free_port():
+    """占住一个系统分配的空闲端口，返回 (socket, port)。
+
+    不写死端口号：CI/开发机上固定端口可能已被占用或落在系统保留段里，
+    那样测试会因环境而假红/假绿。
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.listen(1)
+    return s, port
+
+
+def test_port_in_use_true_for_listening_socket():
+    s, port = _listen_on_free_port()
+    try:
+        assert doctor.port_in_use(port) is True
+    finally:
+        s.close()
+
+
+def test_port_in_use_false_after_release():
+    s, port = _listen_on_free_port()
+    s.close()
+    assert doctor.port_in_use(port) is False
+
+
+def test_port_in_use_true_for_bound_but_not_listening():
+    """**回归测试**：只 bind、不 listen 的端口也必须报「占用」。
+
+    这是实机踩到的缺陷。旧实现用 `connect_ex(...) == 0` 判断，
+    它只能发现「有人在 listen」；对「已 bind 但未 listen」的端口返回连不上，
+    于是被判成"空闲"。
+    Windows 上这类占用很常见：某些游戏平台/加速器会一次性 bind 掉一整段端口，
+    `netstat` 里显示为 BOUND。结果是体检放行 → 真正启动时 bind 失败 →
+    用户白等 120 秒才看到报错（体检的意义就没了）。
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    try:                       # 刻意不调用 listen()
+        assert doctor.port_in_use(port) is True, (
+            "已 bind 未 listen 的端口必须视为占用 —— "
+            "否则体检会放过一个绑不上的端口")
+    finally:
+        s.close()
+
+
+def test_check_ports_respects_custom_ports():
+    """check_ports 必须检查传入的端口，而不是写死的 8080/8000。"""
+    s, port = _listen_on_free_port()
+    try:
+        checks = doctor.check_ports(java_port=port, py_port=port)
+        assert len(checks) == 2
+        assert all(c.ok is False for c in checks), "两个检查都应报占用"
+        assert all(str(port) in c.name for c in checks), "检查项名字里应是指定端口"
+    finally:
+        s.close()
+
+
+def test_check_ports_hint_mentions_override():
+    """端口被占时，提示里要给出「怎么换端口」，不能只说"被占用"。"""
+    s, port = _listen_on_free_port()
+    try:
+        c = doctor.check_ports(java_port=port, py_port=12345)[0]
+        assert "POLYFACE_JAVA_PORT" in c.hint and "POLYFACE_PY_PORT" in c.hint
+    finally:
+        s.close()
 
 
 # ---------------------------------------------------------------- LLM 模式（与 ADR-017 对齐）

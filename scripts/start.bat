@@ -46,11 +46,18 @@ rem 数据目录：显式指定，保证数据落在包内（Spring Boot 松绑�
 set "POLYFACE_DATA_DIR=%ROOT%\data"
 
 rem ---------------------------------------------------------- Python LLM 服务
-rem 在 python-service 目录下启动 —— .env 是相对 CWD 读取的
-start "polyface-python" cmd /k "cd /d "%ROOT%\python-service" && .venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
+rem 用 `start /d <目录>` 指定工作目录，而不是在 cmd /k 里写 `cd /d "..."`。
+rem 原因：后者需要在 cmd /k 的引号里再套一层引号，而 cmd 对嵌套引号的剥离
+rem 规则很微妙（属"取词写法"类隐患，见 docs/56 B9）。/d 让内层命令保持简单。
+rem 工作目录必须是 python-service —— `.env` 是按当前目录查找的。
+start "polyface-python" /d "%ROOT%\python-service" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
 
 rem ---------------------------------------------------------- Java 后端（java -jar）
-start "polyface-java" cmd /k "cd /d "%ROOT%" && java -jar "%ROOT%\polyface.jar""
+rem 同样用 /d 指定 jar 所在目录，内层只写文件名 —— 既避开嵌套引号，
+rem 又同时兼容发布包布局（<root>/polyface.jar）与开发布局（java-backend/target/）。
+set "JARDIR=%ROOT%"
+if not exist "%ROOT%\polyface.jar" set "JARDIR=%ROOT%\java-backend\target"
+start "polyface-java" /d "%JARDIR%" cmd /k "java -jar polyface.jar"
 
 rem ---------------------------------------------------------- 等就绪
 rem 注意：Java 的 /health 在 Python 不可达时**仍返回 200**（内部吞掉异常），

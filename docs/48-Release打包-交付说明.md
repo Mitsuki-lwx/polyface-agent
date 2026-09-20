@@ -137,14 +137,16 @@ D:\最终 验证\polyface-0.4.0\      ← 中文 + 空格路径（最容易翻�
 
 | 项 | 状态 | 说明 |
 |---|---|---|
-| `scripts/*.bat` 本身 | ⚠️ **仍未实机执行** | 两处工具（Bash / PowerShell）都硬性拦截 `cmd.exe`，本环境**不可能**执行批处理 —— 这一点没有变。**但已消除最可能致命的两类隐患**：行尾符（§5 第 8 项）与中文编码（`chcp 65001` 已有，并加测试守卫）。剩余风险收窄为"批处理语法/取词的个别写法"，首次使用仍请留意 |
+| `scripts/*.bat` 本身 | ⚠️ **仍未实机执行**（缺口已收窄，2026-09-20 更新） | 两处工具（Bash / PowerShell）都硬性拦截 `cmd.exe`，本环境**不可能**执行批处理 —— 这一点没有变。**但已消除三类隐患**：行尾符（§5 第 8 项）、中文编码（`chcp 65001` 已有，并加测试守卫）、**嵌套引号与语法/取词问题**（新增 `scripts/check_scripts.py` 静态校验器，对 `start.bat` 检出并修掉了一处 `cmd /k` 嵌套引号缺陷）。剩余风险已收窄到"校验器覆盖不到的运行时行为"。详见 `docs/58` |
+| `scripts/*.sh` 本身 | ✅ **已实机验证（2026-09-20）** | 在 Git Bash（Windows 上的 bash）跑通 setup → start → `/health` → 生成一条稿（`qa_passed`）→ stop → 二次启动幂等。⚠️ **真 macOS/Linux 仍未实测**（见下表"跨平台"行） |
 | `setup.bat` 的 Maven 构建分支 | ⚠️ 未走通 | 该分支只在"没有预构建 jar"时触发；发布包自带 jar，故未触发 |
 | `start.bat` 的浏览器自动打开 | ⚠️ 未验证 | 依赖 `start ""` 打开默认浏览器 |
 | `start.bat` / `stop.bat` 的 `curl` 与 `tasklist` 解析 | ⚠️ 部分未验证 | `netstat`/`tasklist` 的输出格式已实测确认与脚本解析一致；但脚本内的 `for /f` 取词未实跑。**行尾符修正前，`for /f` 恰恰是最可能出错的地方** |
 | 真实 LLM 模式 | ✅ **已补验证（2026-09-17）** | 真实链路 E2E **14/14**（`glm-5.2`）：素材理解 20.7s / 生成 95.4s / QA passed，trace 留存。详见 `docs/54`。⚠️ 但**未在发布包内**跑（在源码目录），且只覆盖小红书 1 平台 —— **这不影响第一行「`.bat` 仍需实机验证」的结论** |
 | 音视频入料（ffmpeg / ASR） | ⚠️ 未在发布包内验证 | 属 `docs/19-22` 的既有交付范围，本次未回归 |
 | 浏览器端 UI 验证 | ⚠️ 未重做 | 本次改动未触及 `index.html`；前端回归证据见 `docs/46`（15/15，mock 模式） |
-| 跨平台 | ⚠️ 仅 Windows | `doctor.py` / `build_release.py` 写了 POSIX 分支（`lsof`、`bin/python`）但未在 Linux/macOS 实测 |
+| 跨平台 | ⚠️ 仅 Git Bash | `doctor.py` / `build_release.py` / 三个 `.sh` 写了 POSIX 分支（`lsof`、`ss`、`bin/python`、Homebrew 路径）但**未在真 Linux/macOS 实测**。Git Bash 能验证的是"bash 语法 + 编排逻辑"，**不能替代** `lsof`/`ss`/`open` 这些平台命令的真实行为 |
+| 端口冲突的用户出路 | ✅ **已修（2026-09-20）** | 修前 8000/8080 写死在 4 处，被占时用户只能改脚本。现支持 `POLYFACE_JAVA_PORT` / `POLYFACE_PY_PORT` 覆盖；`doctor.py` 的端口检测由 `connect_ex` 改为 `bind`（修掉一个**会放行不可用端口**的缺陷）。详见 `docs/58` |
 
 ## 7. 复现方式
 

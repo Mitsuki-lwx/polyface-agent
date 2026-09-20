@@ -25,8 +25,12 @@
 ## 快速开始
 
 > 需要：**Java 17+** / **Python 3.11+** / 浏览器。无需 Node、无需数据库。
+>
+> **Windows** 用 `.bat`，**macOS / Linux / Git Bash** 用 `.sh` —— 两组脚本行为逐项对齐。
 
 ### 方式 A：下载发布包（推荐，不需要 Maven）
+
+**Windows**
 
 ```bat
 :: 解压 polyface-<版本>.zip 后，在该目录下：
@@ -35,13 +39,42 @@ scripts\start.bat     :: 启动（自动打开浏览器）
 scripts\stop.bat      :: 停止
 ```
 
+**macOS / Linux**
+
+```bash
+# 解压 polyface-<版本>.zip 后，在该目录下：
+bash scripts/setup.sh     # 首次运行：建 venv、装依赖、生成 .env
+bash scripts/start.sh     # 启动（自动打开浏览器）
+bash scripts/stop.sh      # 停止
+```
+
 发布包自带预构建的 `polyface.jar`，**不需要装 Maven**。
+
+> **端口被占用？** 8000（Python）或 8080（Java）被别的程序占用时，不用改脚本：
+> ```bash
+> # macOS / Linux / Git Bash
+> POLYFACE_JAVA_PORT=18080 POLYFACE_PY_PORT=18000 bash scripts/start.sh
+> ```
+> ```bat
+> :: Windows
+> set POLYFACE_JAVA_PORT=18080
+> set POLYFACE_PY_PORT=18000
+> scripts\start.bat
+> ```
+> 启动前的体检会明确告诉你哪个端口被占、以及这条命令。
 
 ### 方式 B：从源码运行（开发者）
 
-```bash
-scripts\setup.bat          # 同上；这一步需要 Maven 来构建 jar
+```bat
+:: Windows
+scripts\setup.bat          :: 这一步需要 Maven 来构建 jar
 scripts\start.bat
+```
+
+```bash
+# macOS / Linux / Git Bash
+bash scripts/setup.sh
+bash scripts/start.sh
 ```
 
 或手动分别启动：
@@ -49,8 +82,9 @@ scripts\start.bat
 ```bash
 # Python LLM 服务（注意：必须在 python-service 目录下启动，.env 是按当前目录找的）
 cd python-service && .venv/Scripts/python -m uvicorn app.main:app --port 8000
+# macOS/Linux 是 .venv/bin/python
 
-# Java 后端
+# Java 后端（Git Bash 下必须走 scripts/mvn.sh，直接 mvn 会报 ClassNotFoundException）
 mvn -f java-backend/pom.xml spring-boot:run
 ```
 
@@ -156,14 +190,29 @@ polyface/
 | `FFMPEG_PATH` | `.env` | 空 | 音视频入料用；空则找 PATH |
 | `POLYFACE_LLM_TIMEOUT_SEC` | 系统环境变量 | `240` | Java 侧：生成任务总预算 |
 | `POLYFACE_LLM_FAST_TIMEOUT_SEC` | 系统环境变量 | `60` | Java 侧：短任务预算 |
-| `POLYFACE_DATA_DIR` | 系统环境变量 | `../data` | 数据目录。**默认值相对「启动时的当前目录」**，所以手动 `java -jar` 可能把数据写到包外；`start.bat` 已显式设为 `<包根>/data` |
+| `POLYFACE_DATA_DIR` | 系统环境变量 | `../data` | 数据目录。**默认值相对「启动时的当前目录」**，所以手动 `java -jar` 可能把数据写到包外；`start.bat` / `start.sh` 已显式设为 `<包根>/data` |
+| `POLYFACE_JAVA_PORT` | 系统环境变量 | `8080` | Java 后端端口。被占用时改它，不用改脚本 |
+| `POLYFACE_PY_PORT` | 系统环境变量 | `8000` | Python LLM 服务端口。同上 |
 
 > 注意前缀差异：`.env` 里的变量**没有** `POLYFACE_` 前缀，系统环境变量**有**。完整注释版模板见 `python-service/.env.example`。
 
 ## 常见问题（FAQ）
 
 **Q：启动后浏览器打不开 / 页面空白？**
-先跑 `python scripts\doctor.py`。最常见是端口 8080 或 8000 被占用（自检会直接报出占用的 PID），用 `scripts\stop.bat` 清理后重试。
+先跑 `python scripts\doctor.py`（macOS/Linux 用 `python3 scripts/doctor.py`）。最常见是端口 8080 或 8000 被别的程序占用，自检会直接报出来并提示两条出路：
+
+1. 用 `scripts\stop.bat`（或 `scripts/stop.sh`）清理旧进程后重试；
+2. **直接换端口，不用改脚本**：
+   ```bash
+   POLYFACE_JAVA_PORT=18080 POLYFACE_PY_PORT=18000 bash scripts/start.sh
+   ```
+   ```bat
+   set POLYFACE_JAVA_PORT=18080 & set POLYFACE_PY_PORT=18000 & scripts\start.bat
+   ```
+
+> 注意：体检若报「端口无法绑定（未查到监听进程）」，通常是该端口落在系统的保留段里
+> （Windows 上可 `netsh int ipv4 show excludedportrange protocol=tcp` 查看），
+> 或者是某个程序已 bind 但还没开始监听 —— 这两种情况换端口最快。
 
 **Q：没填 Key 能体验吗？**
 能。默认离线演示模式，秒级返回、完全不出网，但产出是**演示结果**（模板填充），不是真实生成。UI 上的运行模式徽章会标明当前是哪种。

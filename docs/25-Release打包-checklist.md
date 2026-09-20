@@ -61,8 +61,12 @@
 - [x] D6 打包前**断言**敏感内容未被打入（命中则中止） —— `find_forbidden()`，前后各校验一次
 - [x] D7 产出 zip 并输出路径与大小 —— `dist/polyface-0.4.0.zip`（32.3 MB）
 - [x] D8 *(新增)* `.env*` 家族除 `.env.example` 外一律拦截 —— 实测发现只列 `.env` 精确名会漏掉 `.env.local`，见交付说明 §5-2
-- [ ] D9 有 `.sh` 版本（macOS/Linux） —— **未完成**。仅有既有的 `scripts/start.sh` / `mvn.sh`；
-      `setup.sh` / `stop.sh` 未提供。跨平台验证亦未做（见交付说明 §6）
+- [x] D9 有 `.sh` 版本（macOS/Linux） —— 已补齐 `setup.sh` / `stop.sh`，并重写 `start.sh`
+      与 `start.bat` 逐项对齐（`java -jar`、`POLYFACE_DATA_DIR`、轮询就绪、打开首页）。
+      **已在 Git Bash（Windows 上的 bash）实机跑通全链路**：setup → start → `/health` →
+      生成一条稿（`qa_passed`）→ stop → 二次启动幂等（见 `docs/58`）。
+      ⚠️ **仍未在真 macOS / Linux 上执行** —— `lsof` / `ss` 分支与 Homebrew 路径探测未实测；
+      `stop.sh` 的 POSIX 分支只做过静态检查。
 
 ## E. README
 
@@ -118,7 +122,7 @@
 
 | 项 | 结果 | 备注 |
 |---|---|---|
-| A~H 全部勾选 | ✅ 除 D9 外全部完成 | D9（`.sh` 脚本）明确未做 |
+| A~H 全部勾选 | ✅ 全部完成（含 D9） | D9（`.sh` 脚本）已补齐并在 Git Bash 实机验证；真 macOS/Linux 未实测 |
 | 启动链路验证 | ✅ 通过 | 隔离环境（中文+空格路径）端到端跑通 |
 | 失败路径验证 | ✅ 通过 | G1~G8 均命中预期分支 |
 | 单元测试（2026-09-17 复核） | ✅ **Python 199 / Java 43 全绿** | 含 09-17 FR-60 加固新增 19 项。初版 `docs/48` 写的「165 通过」不可复现（当时实为 1 项**必然失败**的测试，已修，详见 `docs/48` §2.1） |

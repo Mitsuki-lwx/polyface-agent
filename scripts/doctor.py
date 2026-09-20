@@ -33,7 +33,8 @@ from pathlib import Path
 # 最低版本要求（与 README / pom.xml 保持一致）
 MIN_JAVA = 17
 MIN_PY = (3, 11)
-PORTS = {"Java 后端": 8080, "Python LLM 服务": 8000}
+DEFAULT_JAVA_PORT = 8080
+DEFAULT_PY_PORT = 8000
 
 REQUIRED_PY_PKGS = ("fastapi", "uvicorn", "pydantic_settings")
 
@@ -125,13 +126,18 @@ def find_venv_python(root: Path) -> Path | None:
 
 
 def port_pid(port: int) -> int | None:
-    """占用端口的进程 PID。查不到返回 None（不猜）。"""
+    """占用端口的进程 PID。查不到返回 None（不猜）。
+
+    Windows 上同时看 LISTENING 与 BOUND —— 后者虽未 listen，但已占住端口，
+    bind 会失败（见 port_in_use 的说明）。
+    """
     if sys.platform == "win32":
         code, out = _run(["netstat", "-ano", "-p", "tcp"])
         if code != 0:
             return None
         for line in out.splitlines():
-            if "LISTENING" not in line.upper():
+            up = line.upper()
+            if "LISTENING" not in up and "BOUND" not in up:
                 continue
             parts = line.split()
             if len(parts) >= 5 and parts[1].endswith(f":{port}"):
@@ -149,12 +155,26 @@ def port_pid(port: int) -> int | None:
 
 
 def port_in_use(port: int, host: str = "127.0.0.1") -> bool:
+    """端口能否被本进程**绑定**。
+
+    ⚠️ 这里刻意用 bind 而不是 connect。曾经用 `connect_ex(...) == 0`，
+    它只探测「有没有活跃的监听者」，于是**漏掉两类真实占用**：
+      · 别人已 bind 但还没 listen（Windows 上就是 `BOUND` 状态，
+        某些游戏平台/加速器会一次性 bind 掉一整段端口）
+      · 落在 Windows 保留段（`netsh int ipv4 show excludedportrange`）里的端口，
+        bind 会报 WinError 10013
+    这两种情况下 connect_ex 都返回「连不上」，旧实现据此判定"空闲"，
+    于是体检放行、start.sh 却卡满 120 秒才报错 —— 体检的意义就没了。
+
+    bind 到 127.0.0.1 是可用的最强判据：能绑上就是真能用。
+    """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.4)
-        return s.connect_ex((host, port)) == 0
+        try:
+            s.bind((host, port))
+            return False
+        except OSError:
+            return True
 
-
-# ---------------------------------------------------------------- 各项检查
 
 def check_java() -> Check:
     exe = shutil.which("java")
@@ -210,14 +230,26 @@ def check_jar(root: Path) -> Check:
     return Check("Java 后端 jar", True, f"{jar}（{size_mb:.1f} MB）")
 
 
-def check_ports() -> list[Check]:
+def check_ports(java_port: int = DEFAULT_JAVA_PORT,
+                py_port: int = DEFAULT_PY_PORT) -> list[Check]:
     out: list[Check] = []
-    for label, port in PORTS.items():
+    for label, port in {"Java 后端": java_port, "Python LLM 服务": py_port}.items():
         pid = port_pid(port)
         if port_in_use(port):
-            out.append(Check(f"端口 {port}（{label}）", False, f"已被占用（PID {pid or '未知'}）",
-                             f"先运行 scripts\\stop.bat 结束旧进程；"
-                             f"或确认该端口是你要复用的服务", blocking=True))
+            # 查不到 PID 不等于没人占：可能是别人 bind 了还没 listen，
+            # 或端口落在系统保留段。这时给「换端口」而不是「杀进程」，
+            # 因为大概率不是本应用的进程（本应用的进程用 stop 脚本更安全）。
+            if pid:
+                detail = f"已被占用（PID {pid}）"
+                hint = ("先运行 scripts\\stop.bat 结束旧进程；若该 PID 不是 Polyface，"
+                        "换端口启动：")
+            else:
+                detail = "无法绑定（未查到监听进程，可能是端口被保留或已被占用）"
+                hint = ("换一个端口启动（下方命令；Windows 用 set 而不是 export）：")
+            out.append(Check(
+                f"端口 {port}（{label}）", False, detail,
+                hint + f"POLYFACE_JAVA_PORT=18080 POLYFACE_PY_PORT=18000",
+                blocking=True))
         else:
             out.append(Check(f"端口 {port}（{label}）", True, "空闲"))
     return out
@@ -259,10 +291,11 @@ def check_llm_mode(root: Path) -> Check:
                  blocking=False)
 
 
-def run_all(root: Path | None = None) -> list[Check]:
+def run_all(root: Path | None = None, java_port: int = DEFAULT_JAVA_PORT,
+            py_port: int = DEFAULT_PY_PORT) -> list[Check]:
     root = root or project_root()
     checks = [check_java(), check_python(), check_venv(root), check_jar(root)]
-    checks += check_ports()
+    checks += check_ports(java_port, py_port)
     checks += [check_data_dir(root), check_llm_mode(root)]
     return checks
 
@@ -290,10 +323,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", action="store_true", help="输出 JSON")
     ap.add_argument("--quiet", action="store_true", help="只输出问题")
     ap.add_argument("--root", default=None, help="项目根目录（默认自动推导）")
+    ap.add_argument("--java-port", type=int, default=DEFAULT_JAVA_PORT,
+                    help=f"Java 后端端口（默认 {DEFAULT_JAVA_PORT}）")
+    ap.add_argument("--py-port", type=int, default=DEFAULT_PY_PORT,
+                    help=f"Python LLM 服务端口（默认 {DEFAULT_PY_PORT}）")
     args = ap.parse_args(argv)
 
     root = Path(args.root).resolve() if args.root else project_root()
-    checks = run_all(root)
+    checks = run_all(root, java_port=args.java_port, py_port=args.py_port)
 
     if args.json:
         blocking = [c for c in checks if not c.ok and c.blocking]
