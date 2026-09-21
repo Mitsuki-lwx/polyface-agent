@@ -9,6 +9,9 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import shutil
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -274,6 +277,62 @@ def test_assert_versions_consistent_without_pom(tmp_path):
 def test_repo_versions_are_consistent():
     """仓库自身必须一致（防止改了 VERSION 忘了改 pom）。"""
     br.assert_versions_consistent(REPO_ROOT, br.read_version(REPO_ROOT))
+
+
+# ============================================================ maven 命令选择
+
+def test_maven_cmd_honours_override(tmp_path):
+    """显式 --mvn 覆盖时原样返回。"""
+    assert br.maven_cmd(tmp_path, "/opt/mvn/bin/mvn") == ["/opt/mvn/bin/mvn"]
+
+
+def test_maven_cmd_falls_back_when_no_wrapper(tmp_path):
+    """没有 mvn.sh 时回退到裸 mvn。"""
+    assert br.maven_cmd(tmp_path) == ["mvn"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 专有分支")
+def test_maven_cmd_uses_which_bash_not_bare_name():
+    """回归①：必须用 `which("bash")` 的**绝对路径**，不能写裸 `"bash"`。
+
+    裸名交给 CreateProcess 解析时，`System32\\bash.exe`（**WSL bash**）会先被命中。
+    那是另一个文件系统视图：看不到 `D:/...`，还会**吃掉路径里的反斜杠**。
+    实测报错原文：`/bin/bash: C:UserslwxAppDataLocalTemp...: No such file or directory`。
+
+    这一条是"仅改路径形式不够"的证据 —— 只把 `D:\\` 换成 `D:/` 仍然失败。
+    """
+    if not shutil.which("bash"):
+        pytest.skip("本机无 bash")
+    cmd = br.maven_cmd(REPO_ROOT)
+    assert cmd[0] == shutil.which("bash"), \
+        f"必须用 which() 的绝对路径（裸 'bash' 会落到 WSL bash），实际 {cmd[0]!r}"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 专有分支")
+def test_maven_cmd_gives_bash_a_posix_path():
+    """回归②：交给 bash 的脚本路径必须是 POSIX 形式（不能用 `D:\\...`）。"""
+    if not shutil.which("bash"):
+        pytest.skip("本机无 bash")
+    cmd = br.maven_cmd(REPO_ROOT)
+    assert "mvn.sh" in cmd[1], f"应指向仓库自带的 mvn.sh，实际 {cmd}"
+    assert "\\" not in cmd[1], f"bash 收到反斜杠路径会解析失败：{cmd[1]}"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 专有分支")
+def test_maven_cmd_path_is_actually_resolvable_by_bash():
+    """回归③（最关键）：让**将要被执行的那个 bash** 亲自解析该路径。
+
+    前两条只检查"命令长什么样"，这条才证明"真的能跑"——
+    正是它在上一步抓出了"只改路径形式还不够"。
+    """
+    if not shutil.which("bash"):
+        pytest.skip("本机无 bash")
+    cmd = br.maven_cmd(REPO_ROOT)
+    # 关键：用 cmd[0]（即将被执行的同一个 bash），而不是另找一个
+    r = subprocess.run([cmd[0], "-c", 'test -f "$1" && echo OK || echo MISSING', "_", cmd[1]],
+                       capture_output=True, text=True)
+    assert r.returncode == 0 and "OK" in r.stdout, \
+        f"{cmd[0]} 无法解析 {cmd[1]}（stdout={r.stdout.strip()[:80]} stderr={r.stderr.strip()[:120]}）"
 
 
 # ============================================================ 行尾符

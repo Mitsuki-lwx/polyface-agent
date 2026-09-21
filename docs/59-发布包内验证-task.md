@@ -36,10 +36,37 @@
 - 若发现缺陷 → 记录并判断归属于**代码缺陷**还是**包组装缺陷**
 
 **Out（明确不做）**
-- 不改 `index.html`、不改业务代码（本次是验证，不是开发）
+- 不改 `index.html`、不改业务代码
 - 不测 `.bat`（本环境硬拦批处理解释器，只能由用户在真机跑）
 - 不测真 macOS / Linux
 - 不测真实 LLM 模式（那份证据已在 `docs/54`；本次统一 mock，隔离变量）
+
+> ⚠️ **范围扩展（2026-09-21，执行中）**：T1 全量打包时撞到**阻塞性缺陷 F-1**
+> （见 §5.1）。因为它**正好挡住了本次验证**（拿不到用当前代码构建的包），
+> 且 `docs/48 §7` 把这条命令写成推荐用法，故并入本次范围修复——
+> 修不修本可另立任务，但"文档推荐命令是坏的"不能留着。
+
+## 5.1 执行中发现并修复的缺陷 F-1（阻塞性）
+
+**现象**：`python scripts/build_release.py`（完整构建）在 Windows 上必然失败：
+
+```
+      Maven 命令：bash D:\media works move\polyface\scripts\mvn.sh
+/bin/bash: D:\media works move\polyface\scripts\mvn.sh: No such file or directory
+[失败] Maven 构建失败（退出码 127）
+```
+
+**根因**：`build_release.py:maven_cmd()` 返回 `["bash", str(wrapper)]` ——
+把一个 **Windows 路径喂给 POSIX 程序**，Git Bash 无法解析 `D:\...`。
+
+**为何一直没被发现**：09-20 那次打包走的是 `--no-build`（复用既有 jar），
+**从未触发 `build_jar()`**。而 `docs/48 §7` 第一条推荐命令恰恰就是完整构建。
+
+**归属**：**包组装缺陷**（工具链自身的缺陷，不影响运行时）。
+与 09-20 给 `.sh` 启动脚本修的 MSYS 路径问题**是同一类**，只是没修到 `build_release.py`。
+
+**修法**：`str(wrapper)` → `wrapper.as_posix()`（`D:/...` 形式，Git Bash 可解析）；
+并加回归测试（断言交给 bash 的路径不含反斜杠 + bash 实际能解析到该文件）。
 
 ## 5. 任务拆分
 

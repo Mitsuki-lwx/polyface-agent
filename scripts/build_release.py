@@ -195,8 +195,23 @@ def maven_cmd(root: Path, override: str | None = None) -> list[str]:
         return [override]
     if os.name == "nt":
         wrapper = root / "scripts" / "mvn.sh"
-        if wrapper.is_file() and shutil.which("bash"):
-            return ["bash", str(wrapper)]
+        bash = shutil.which("bash")
+        if wrapper.is_file() and bash:
+            # ⚠️ 两件事都必须做，缺一个就在 Windows 上必失败（退出码 127）：
+            #
+            # ① 用 bash 的**绝对路径**，不要写裸 "bash"。
+            #    裸名交给 CreateProcess 解析时，`System32\bash.exe`（**WSL bash**）
+            #    会先被命中 —— 那是另一个文件系统视图：它看不到 `D:/...`，
+            #    还会**吃掉路径里的反斜杠**（实测报错原文为
+            #    `/bin/bash: C:UserslwxAppDataLocalTemp...: No such file or directory`）。
+            #    `shutil.which("bash")` 拿到的是 PortableGit 的 bash，才有 D: 盘视图。
+            #
+            # ② 路径用 **POSIX 形式**（`wrapper.as_posix()`）。
+            #    `str(wrapper)` 得到 `D:\...`，bash 不认反斜杠形式。
+            #
+            # 这与 start.sh / setup.sh 里 `native_path()` 属同类问题的**反方向**：
+            # 那边是"给原生程序 POSIX→Windows"，这里是"给 bash 程序 Windows→POSIX"。
+            return [bash, wrapper.as_posix()]
     return ["mvn"]
 
 
