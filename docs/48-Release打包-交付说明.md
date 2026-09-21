@@ -16,7 +16,7 @@
 
 | 项 | 结果 | 证据 |
 |---|---|---|
-| Python 测试 | ✅ **199 通过**（任务开始前 76；含 2026-09-17 FR-60 加固新增 19 项，见 `docs/54`） | `pytest -q`，2026-09-17 复核；见 §2.1 |
+| Python 测试 | ✅ **260 通过**（任务开始前 76；含 FR-60 加固 +19、启动脚本加固 +41，见 `docs/54`/`docs/58`） | `pytest -q`，2026-09-21 复核；见 §2.1 |
 | Java 测试 | ✅ **43 通过** | `mvn test`，`java.version=17` 下编译通过 |
 | 发布包产出 | ✅ `dist/polyface-0.4.0.zip`（32.3 MB） | `build_release.py --no-build` |
 | 包内容校验 | ✅ 无违禁内容 | `build_release.py --check-only` |
@@ -152,7 +152,7 @@ D:\最终 验证\polyface-0.4.0\      ← 中文 + 空格路径（最容易翻�
 
 ```bash
 # 测试
-cd python-service && .venv/Scripts/python -m pytest -q        # 199 passed
+cd python-service && .venv/Scripts/python -m pytest -q        # 260 passed
 bash scripts/mvn.sh -B -f java-backend/pom.xml test           # 43 passed
 
 # 真实 LLM 链路（2026-09-17 补；先探额度再跑，见 docs/54 §8）
