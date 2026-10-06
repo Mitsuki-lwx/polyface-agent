@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -212,11 +213,159 @@ class EditorProcessTest {
         assertEquals("", EditorProcess.versionFromPackageJson(tmp.resolve("not-a-gimpish-dir").resolve("x.js")));
     }
 
+    /**
+     * 端口被占的**可观测行为**：serve 起得来但立刻退出（`isAlive()==false`）。
+     * 实现里 `awaitHealthy` 必须据此**提前降级**，而不是空等满 15s 健康预算 ——
+     * 否则用户点一下要僵住十几秒才知道"端口被占"。
+     */
+    @Test
+    void processDyingImmediatelyDegradesFastInsteadOfWaitingFullTimeout() throws Exception {
+        int port = stub(true);   // 有服务在响应，但我们的子进程已经死了
+        EditorProcess ep = newEditor(port, true);
+        ep.setLauncher((cmd, cwd) -> new DeadProcess());
+        ep.setVersionDetector(() -> "0.1.0");
+        ep.setProbeTimeoutMs(500);
+        ep.setHealthTimeoutMs(5_000);   // 给足预算，验证的是"提前返回"
+
+        long t0 = System.currentTimeMillis();
+        EditorProcess.OpenResult r = ep.open(tmp.resolve("scene-dying"));
+        long elapsed = System.currentTimeMillis() - t0;
+
+        assertEquals("needs_manual", r.status());
+        assertFalse(r.hint().isBlank(), "降级必须带可执行提示，不能只是失败");
+        assertTrue(elapsed < 3_000, "进程已死就该立刻降级，实测等了 " + elapsed + "ms");
+    }
+
+    /**
+     * 并发 `open` 必须被互斥锁串行化：两个请求同时到，**绝不能起两个 serve**。
+     * 做法：让 launcher 慢 300ms，两个线程同时 open 同一目录 —— 谁先拿到锁谁起进程，
+     * 另一个进来时发现"同目录且健康"直接复用。
+     */
+    @Test
+    void concurrentOpenLaunchesOnlyOneProcess() throws Exception {
+        int port = stub(true);
+        EditorProcess ep = newEditor(port, true);
+        SlowLauncher launcher = new SlowLauncher();
+        ep.setLauncher(launcher);
+        ep.setVersionDetector(() -> "0.1.0");
+        ep.setProbeTimeoutMs(500);
+        ep.setHealthTimeoutMs(5_000);
+
+        Path dir = tmp.resolve("scene-concurrent");
+        List<EditorProcess.OpenResult> results = new ArrayList<>();
+        CountDownLatch go = new CountDownLatch(1);
+        List<Thread> threads = new ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            Thread t = new Thread(() -> {
+                try {
+                    go.await(5, TimeUnit.SECONDS);
+                    EditorProcess.OpenResult r = ep.open(dir);
+                    synchronized (results) {
+                        results.add(r);
+                    }
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            threads.add(t);
+            t.start();
+        }
+        go.countDown();
+        for (Thread t : threads) {
+            t.join(10_000);
+        }
+
+        assertEquals(4, results.size(), "4 个并发请求都要拿到结果");
+        assertTrue(results.stream().allMatch(r -> "ok".equals(r.status())), "都该是 ok");
+        assertEquals(1, launcher.launchCount.get(), "并发 open 只允许起一个 serve，实际起了 " + launcher.launchCount);
+    }
+
+    /**
+     * 端口被占：**前置探测**就该拦下，绝不 spawn。
+     *
+     * <p>为什么必须前置：实测 `gimpish serve` 在端口被占时**不会退出**（照样活着），
+     * 所以"进程死了就快速降级"救不了这种情况 —— 只会白等满 15s 健康预算。
+     */
+    @Test
+    void occupiedPortDegradesImmediatelyWithoutSpawning() throws Exception {
+        try (ServerSocket holder = new ServerSocket()) {
+            holder.bind(new InetSocketAddress("127.0.0.1", 0));
+            int busy = holder.getLocalPort();
+
+            EditorProcess ep = newEditor(busy, true);
+            ep.setPortChecker(EditorProcess::portFree);   // 本用例要的就是**真实**探测
+            FakeLauncher launcher = new FakeLauncher();
+            ep.setLauncher(launcher);
+            ep.setVersionDetector(() -> "0.1.0");
+            ep.setHealthTimeoutMs(15_000);   // 故意给满预算：要证明的是"根本没走到健康检查"
+
+            long t0 = System.currentTimeMillis();
+            EditorProcess.OpenResult r = ep.open(tmp.resolve("scene-busy"));
+            long took = System.currentTimeMillis() - t0;
+
+            assertEquals("needs_manual", r.status());
+            assertTrue(r.hint().contains(String.valueOf(busy)), "提示要点名是哪个端口：" + r.hint());
+            assertTrue(launcher.commands.isEmpty(), "端口被占时**不该** spawn 任何进程");
+            assertTrue(took < 6_000, "前置探测应当很快，实测 " + took + "ms");
+        }
+    }
+
     // ---------------- 替身与 stub ----------------
 
     private EditorProcess newEditor(int port, boolean enabled) throws IOException {
         Path exe = Files.writeString(tmp.resolve("gimpish.js"), "// test stub entry");
-        return new EditorProcess(exe.toString(), port, enabled);
+        EditorProcess ep = new EditorProcess(exe.toString(), port, enabled);
+        // 这些用例的 HTTP stub 就监听在编辑器端口上（用来模拟"serve 已就绪"），
+        // 真实的 bind 探测必然报"被占" → 默认放行。端口探测本身另有用例覆盖。
+        ep.setPortChecker(p -> true);
+        return ep;
+    }
+
+    /** 起得来又立刻退出（端口被占时上游的真实表现）。 */
+    private static final class DeadProcess implements EditorProcess.ManagedProcess {
+        @Override
+        public boolean isAlive() {
+            return false;
+        }
+
+        @Override
+        public InputStream stdout() {
+            return InputStream.nullInputStream();
+        }
+
+        @Override
+        public InputStream stderr() {
+            return InputStream.nullInputStream();
+        }
+
+        @Override
+        public void destroy() {
+        }
+
+        @Override
+        public void destroyForcibly() {
+        }
+
+        @Override
+        public void destroyDescendants() {
+        }
+    }
+
+    /** 启动耗时 300ms 的替身：把"两个请求同时进来"的时间窗撑开。 */
+    private static final class SlowLauncher implements EditorProcess.Launcher {
+
+        final java.util.concurrent.atomic.AtomicInteger launchCount = new java.util.concurrent.atomic.AtomicInteger();
+
+        @Override
+        public EditorProcess.ManagedProcess launch(List<String> cmd, Path cwd) throws IOException {
+            launchCount.incrementAndGet();
+            try {
+                Thread.sleep(300);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return new FakeProcess();
+        }
     }
 
     /**

@@ -662,14 +662,19 @@ function paintDraft(d){
           <img src="${esc(r.url)}" alt="封面" style="display:block;max-width:100%;margin-top:8px;border:1px solid var(--line);border-radius:10px">
           <div style="margin-top:6px;font-size:12px">
             <a href="${esc(r.url)}" target="_blank" rel="noopener">在新窗口打开 ↗</a>
-            <button id="btnOpenEditor" style="font-size:12px;margin-left:10px">✏️ 在编辑器中打开</button>
-          </div>
-          <div id="editorBox" style="margin-top:10px"></div>`;
-        wireEditorButton(r.url);
+          </div>`;
       } else {
         // needs_manual 是**降级**不是失败：中性提示 + 安装指引，不标红
         box.innerHTML = `<div class="meta">🖼 需手动处理：${esc(r.hint || "未安装封面渲染工具")}</div>`;
       }
+      // 编辑器入口**与封面成败无关**：失败时也保留入口，点了会把"为什么不能改"讲清楚
+      // （与"生成封面"按钮本身始终可见一致 —— 能力缺失不该表现为功能凭空消失）
+      box.insertAdjacentHTML("beforeend",
+        `<div style="margin-top:8px;font-size:12px">
+           <button id="btnOpenEditor" style="font-size:12px">✏️ 在编辑器中打开</button>
+         </div>
+         <div id="editorBox" style="margin-top:10px"></div>`);
+      wireEditorButton(r.status === "ok" ? r.url : "");
     }catch(e){
       box.innerHTML = `<div class="qa-warn" style="border-color:#f0b4ab;color:#b03a2e">封面生成失败：${esc(e.message)}</div>`;
     }finally{
@@ -689,9 +694,16 @@ function wireEditorButton(coverUrl){
     const old = btn.textContent;
     btn.disabled = true; btn.textContent = "⏳ 启动编辑器…";
     try{
-      // 传媒体目录内的相对路径（不是绝对路径）：Java 侧统一用 MediaDir 校验越界
-      const relDir = coverUrl.replace(/^\/api\/media\//, "").replace(/\/[^/]*$/, "");
-      const r = await j("POST", "/api/editor/open", {path: relDir});
+      let r;
+      if(coverUrl){
+        // 传媒体目录内的相对路径（不是绝对路径）：Java 侧统一用 MediaDir 校验越界
+        const relDir = coverUrl.replace(/^\/api\/media\//, "").replace(/\/[^/]*$/, "");
+        r = await j("POST", "/api/editor/open", {path: relDir});
+      }else{
+        // 没有可用封面（例如 gimpish 没装）：问状态并把原因直接说清楚，而不是静默不响应
+        const s = await j("GET", "/api/editor/status");
+        r = {status: "needs_manual", hint: s.hint || "当前没有可编辑的封面"};
+      }
       if(r.status === "ok" && r.url){
         edBox.innerHTML = `<iframe src="${esc(r.url)}" title="封面编辑器"
           style="width:100%;height:720px;border:1px solid var(--line);border-radius:10px;background:#fff"></iframe>`;

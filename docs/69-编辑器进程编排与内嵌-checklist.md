@@ -3,6 +3,11 @@
 日期：2026-10-06 · 对应 `docs/67` task / `docs/68` spec
 勾选规则：**只有实测通过的才勾**。无法在本机验证的，勾选时必须附限定说明。
 
+> **补验证记录（2026-10-06 晚）**：首轮交付时有 4 项未验证（下方标注 ⚠️ 的历史项）。
+> 本轮逐项补上，并**顺带发现一个真实缺陷**：`gimpish serve` 在端口被占时**不会退出**，
+> 所以原来只靠"进程死了就快速降级"救不了端口冲突 —— 实测要白等满 15s 健康预算。
+> 已加**端口前置探测**（spawn 前先 bind 一次），降级耗时 **15.3s → 0.0s**。
+
 ---
 
 ## A. 进程编排（Java）
@@ -14,9 +19,11 @@
 - [x] 健康检查打 `/api/scene`（不是 `/`），超时 15s（`probeNeverReadyDegradesAfterTimeout`）
 - [x] 同目录复用：重复 open 同一封面**不重启**（单测 + E2E `elapsed_ms` 极小）
 - [x] 换目录重启：open 另一张封面 → 指向新目录，旧进程被杀（`differentDirRestarts`）
-- [ ] ⚠️ **端口被占 → `needs_manual`**：实现里有该分支（`awaitHealthy` 里判 `!isAlive()`），
-      但**未单测覆盖**——上游进程"起得来但立刻退出"的路径没造出来。**未验证，不勾。**
-- [ ] ⚠️ **`open` 并发被互斥锁串行化**：`synchronized (lock)` 已实现，但**未写并发测试**。**未验证，不勾。**
+- [x] **端口被占 → `needs_manual`**（**已补验证**）：
+      单测 `occupiedPortDegradesImmediatelyWithoutSpawning`（真实 bind 探测，**不 spawn**、点名端口）；
+      E2E `G1/G2/G3` 用真占端口复现 → `200 + needs_manual`，**降级耗时 0.0s**
+- [x] **`open` 并发被互斥锁串行化**（**已补验证**）：`concurrentOpenLaunchesOnlyOneProcess` ——
+      4 线程同时 open 同一目录，launcher 只被调用 **1** 次，4 个结果都是 ok
 - [x] JVM 退出时子进程被杀 —— **实测**：`stop` 掉 Java 服务后 `netstat` 无 18765 LISTENING，PID 已消失
 - [x] 场景目录内保留 `scene.json`，gimpish 写回同一文件（E2E D1 回读校验）
 
@@ -34,10 +41,13 @@
 
 - [x] 封面生成成功后出现「✏️ 在编辑器中打开」
 - [x] 点击 → iframe 真的加载（E2E B1：src 指向编辑器）
-- [ ] ⚠️ **再次点击可收起**：代码里实现了 toggle，但 **E2E 未断言**。**未验证，不勾。**
+- [x] **再次点击可收起**（**已补验证**）：E2E `D2` —— iframe 被移除且按钮文案还原为「✏️ 在编辑器中打开」
 - [x] `needs_manual` → 中性提示 + 安装指引（**不是**红色报错）
-- [ ] ⚠️ **未装 gimpish 时按钮仍在**：E2E 只跑了"装了"的路径；接口层降级由 Java 单测覆盖，
-      但**前端这条分支没跑过**。**未验证，不勾。**
+- [x] **未装 gimpish 时按钮仍在**（**已补验证**）：E2E 降级模式 `H2` ——
+      封面走 `needs_manual` 时**编辑器入口仍渲染**；`H3` 点击后给出 `npm install -g gimpish`；
+      `H4` 不显示为红色报错
+      > 实现上顺手修了一处：原先入口只在封面成功分支渲染 → 缺工具时"功能凭空消失"。
+      > 已改为**与封面成败无关**，失败时点了把原因讲清楚（`docs/68` §4 本来就要求这样）。
 
 ## D. 测试与防线
 
@@ -48,8 +58,9 @@
       ① `open` 绕过 `MediaDir.resolveSafe` → `EditorControllerTest` 1 failed；
       ② 健康探测恒真（方法入口短路）→ `probeNeverReadyDegradesAfterTimeout` failed
 - [x] Python 全量回归无退化（**289 passed**）
-- [x] Java 全量回归无退化（**63 passed**，此前 48）
-- [x] 浏览器端到端 `scripts/e2e_editor.py` **11/11**（含截图）
+- [x] Java 全量回归无退化（**66 passed**，此前 48）
+- [x] 浏览器端到端 `scripts/e2e_editor.py`：
+      **正常模式 15/15** + **降级模式 4/4**（含截图）
 
 > **§D 备注（一次"假变异"的教训）**：第一次做的 M2 是把
 > `return client.send(...).statusCode() == 200` 改成 `send(...); return true` ——
@@ -61,15 +72,15 @@
 
 - [x] `docs/08` ADR-020（HTTP + 内嵌，MCP 暂不用，含证据）
 - [x] `docs/64` §9（serve 接口面 + `ok:true` 静默忽略的坑）
-- [x] `docs/67` task / `docs/68` spec / 本 checklist
+- [x] `docs/67` task / `docs/68` spec（§3 已补"端口前置探测"）/ 本 checklist
 - [x] `docs/70` 交付说明（含「残余项 / 未验证」）
 - [x] README：新增"在编辑器里改封面"用法 + 配置项 + 版本钉死说明
 - [x] `scripts/doctor.py` 新增「封面编辑器」检查（含版本不符时提示重跑 E2E），+6 项测试
 
 ## F. 交付
 
-- [ ] 全量 `git status` 复核后提交
-- [ ] 推送到 `origin/main`
+- [x] 全量 `git status` 复核后提交
+- [x] 推送到 `origin/main`
 
 ---
 

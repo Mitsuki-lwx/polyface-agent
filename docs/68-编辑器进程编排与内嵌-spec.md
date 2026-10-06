@@ -67,14 +67,21 @@
 | 阶段 | 行为 |
 |---|---|
 | 定位可执行文件 | 配置 `polyface.gimpish.path` > 环境变量 `POLYFACE_GIMPISH` > PATH（`gimpish.cmd`/`gimpish`/`gimpish.js`）；`.js` 入口自动前置 `node` |
+| **端口前置探测** | spawn **之前**先自己 `bind` 一次编辑器端口；被占 → **立即** `needs_manual`（点名端口 + 怎么改），**不 spawn、不等健康预算** |
 | 启动 | `gimpish serve --port <port> --scene <dir>`，工作目录 = 场景目录，stdout/stderr 收进环形缓冲（供 `hint` 引用） |
-| 健康检查 | 轮询 `GET http://127.0.0.1:<port>/api/scene` 直到 200；**超时 15s** → 杀进程 + `needs_manual` |
+| 健康检查 | 轮询 `GET http://127.0.0.1:<port>/api/scene` 直到 200；**超时 15s** → 杀进程 + `needs_manual`；若进程中途死掉则**提前**降级 |
 | 复用 | 目标目录 == 当前目录且健康 → 直接返回 |
 | 重启 | 目标目录 != 当前目录 → 停旧的（destroy + 等端口释放，最多 5s）再起新的 |
 | 退出清理 | JVM `shutdownHook` 杀子进程；`stop` 接口手动停 |
 | 并发 | `open` 用**互斥锁**串行化（避免两个请求同时起两个进程） |
 
 > 为什么健康检查打 `/api/scene` 而不是 `/`：前者能证明**场景已加载**，后者只能证明 HTTP 起来了。
+>
+> **为什么必须有"端口前置探测"**（2026-10-06 实测补上）：`gimpish serve` 在端口被占时
+> **不会退出**（照样活着），所以"进程死了就快速降级"这条救不了端口冲突 ——
+> 只会白等满 15s 健康预算。实测：加前置探测前 `open` 要 **15.3s** 才降级，加完 **<1s**。
+> 探测用 `bind` 而非 `connect`（判据与 `scripts/doctor.py::port_in_use` 一致），
+> 且**刻意不设** `SO_REUSEADDR` —— Windows 上它会允许绑到别人已监听的端口，等于没测。
 
 ## 4. 前端
 

@@ -5,6 +5,8 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -56,6 +58,11 @@ public class EditorProcess {
 
     static final String HINT_DISABLED =
             "编辑器已在配置中关闭（polyface.editor.enabled=false），未尝试启动 serve。";
+
+    /** 端口被占。带 {@code {port}} 占位符，由调用处替换（保持常量可读）。 */
+    static final String HINT_PORT_BUSY =
+            "编辑器端口 {port} 已被别的程序占用。把 POLYFACE_EDITOR_PORT 换成空闲端口即可"
+                    + "（或用 scripts/doctor.py 看是谁占的）。";
 
     /** PATH 与「配置指向目录」两种情形下的候选名（顺序即优先级，见 docs/68 §3）。 */
     private static final String[] ENTRY_CANDIDATES = {"gimpish.cmd", "gimpish", "gimpish.js"};
@@ -119,8 +126,18 @@ public class EditorProcess {
         boolean healthy(int port);
     }
 
+    /**
+     * 端口可用性判断。做成缝是为了让单测能模拟"端口已被健康 serve 占着"的场景 ——
+     * 那些用例的 HTTP stub **本来就监听在那个端口上**，用真实 bind 探测必然报"被占"。
+     */
+    @FunctionalInterface
+    interface PortChecker {
+        boolean free(int port);
+    }
+
     private Launcher launcher = this::defaultLaunch;
     private Prober prober = this::probeScene;
+    private PortChecker portChecker = EditorProcess::portFree;
     private Supplier<String> versionDetector = this::detectVersion;
     private int healthTimeoutMs = HEALTH_TIMEOUT_MS;
     private int probeTimeoutMs = 2_000;
@@ -200,8 +217,21 @@ public class EditorProcess {
             if (dir.equals(sceneDir) && isRunning()) {
                 return ok(dir, t0);
             }
+            boolean justStopped = false;
             if (process != null) {
                 stopInternal();
+                justStopped = true;
+            }
+            // 先自己探一次端口：gimpish serve **不会**在端口被占时退出（实测它照样活着），
+            // 因此光靠"进程死了就快速降级"根本救不了这种情况 —— 只会白等满 15s 健康预算。
+            // 用 bind 探测（不是 connect），判据与 scripts/doctor.py::port_in_use 一致：
+            // connect 只发现"有人 listen"，会漏掉"已 bind 未 listen"和系统保留段。
+            //
+            // 只有"刚停掉自己的进程"才做短暂轮询 —— 那是吸收 TIME_WAIT/收尾的窗口；
+            // 端口被**别的程序**占着时立刻降级，不给用户白等 5s。
+            boolean free = portChecker.free(port) || (justStopped && waitForPortFree(port));
+            if (!free) {
+                return degrade(dir, HINT_PORT_BUSY.replace("{port}", String.valueOf(port)), t0);
             }
             if (start(exe, dir)) {
                 return ok(dir, t0);
@@ -446,6 +476,48 @@ public class EditorProcess {
         return v;
     }
 
+    // ---------------- 端口可用性（spawn 之前的前置判断） ----------------
+
+    /**
+     * 端口能否被本进程绑定。**用 bind 不用 connect** —— 判据与 `scripts/doctor.py::port_in_use`
+     * 保持一致：`connect` 只发现"有人正在 listen"，会漏掉"已 bind 未 listen"与 Windows 保留段，
+     * 那两种情况下我们会以为端口空闲、把 serve spawn 出去、然后白等满健康预算。
+     *
+     * <p>刻意**不设** {@code SO_REUSEADDR}：Windows 上它会允许绑到别人已监听的端口，
+     * 那样这个探测就永远说"空闲"，等于没测。
+     */
+    static boolean portFree(int port) {
+        try (ServerSocket s = new ServerSocket()) {
+            s.bind(new InetSocketAddress("127.0.0.1", port));
+            return true;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    /**
+     * 等端口空出来（最多 {@link #STOP_WAIT_MS}）。
+     * 停掉自己的旧进程后端口可能还在 TIME_WAIT / 尚未完全释放，直接判"被占"会误报，
+     * 所以这里做短暂轮询 —— 但**只**为吸收这个收尾窗口，不做长等待。
+     */
+    private boolean waitForPortFree(int port) {
+        long deadline = System.currentTimeMillis() + STOP_WAIT_MS;
+        while (true) {
+            if (portChecker.free(port)) {
+                return true;
+            }
+            if (System.currentTimeMillis() >= deadline) {
+                return false;
+            }
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+    }
+
     private String detectVersion() {
         String exe = resolveExecutable();
         if (exe == null) {
@@ -587,6 +659,15 @@ public class EditorProcess {
 
     void setProber(Prober prober) {
         this.prober = prober;
+    }
+
+    /**
+     * 注入端口可用性判断。单测里默认设为"永远空闲"：那些用例用 HTTP stub **故意占着**
+     * 编辑器端口来模拟"serve 已就绪"，用真实 bind 探测必然报被占。
+     * 端口前置探测本身的正确性由 {@code occupiedPortDegradesImmediatelyWithoutSpawning} 覆盖。
+     */
+    void setPortChecker(PortChecker portChecker) {
+        this.portChecker = portChecker;
     }
 
     void setVersionDetector(Supplier<String> versionDetector) {
