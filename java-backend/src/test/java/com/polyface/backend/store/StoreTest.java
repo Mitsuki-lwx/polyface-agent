@@ -292,4 +292,57 @@ class StoreTest {
         // 不存在
         assertThat(store.activateTemplate(99999)).isFalse();
     }
+
+    // ==================== M7-1: 统一资产库（asset / asset_link） ====================
+
+    @Test
+    void assetCrudFiltersAndLinks() {
+        Store store = newStore();
+        long img = store.insertAsset("image", "generated", "封面A", "covers/a/cover.png",
+                "image/png", 123L, 1080, 1440, 0d, "sha-a", "[\"封面\"]");
+        long aud = store.insertAsset("audio", "upload", "配乐", "assets/aa/sha-b.mp3",
+                "audio/mpeg", 456L, 0, 0, 0d, "sha-b", "[]");
+        long vid = store.insertAsset("video", "upload", "口播", "abc.mp4",
+                "video/mp4", 789L, 0, 0, 0d, "sha-c", "[]");
+
+        var row = store.getAsset(img).orElseThrow();
+        assertThat(row.kind()).isEqualTo("image");
+        assertThat(row.source()).isEqualTo("generated");
+        assertThat(row.relPath()).isEqualTo("covers/a/cover.png");
+        assertThat(row.sizeBytes()).isEqualTo(123L);
+        assertThat(row.width()).isEqualTo(1080);
+        assertThat(row.tagsJson()).isEqualTo("[\"封面\"]");
+        assertThat(row.createdAt()).isNotBlank();
+
+        // kind 多值 + name 模糊 + 分页（最新在前）
+        assertThat(store.listAssets(List.of("audio", "video"), null, 50, 0))
+                .extracting(Store.AssetRow::id).containsExactly(vid, aud);
+        assertThat(store.listAssets(List.of(), "封面", 50, 0))
+                .extracting(Store.AssetRow::id).containsExactly(img);
+        assertThat(store.listAssets(null, null, 1, 1))
+                .extracting(Store.AssetRow::id).containsExactly(aud);
+        assertThat(store.countAssets(List.of("audio", "video"), null)).isEqualTo(2);
+        assertThat(store.countAssets(null, "封面")).isEqualTo(1);
+
+        // sha 计数（删除语义的判据）
+        assertThat(store.assetsBySha("sha-b")).extracting(Store.AssetRow::id).containsExactly(aud);
+        assertThat(store.assetsBySha("")).isEmpty();
+        assertThat(store.assetsBySha(null)).isEmpty();
+
+        // link：幂等判定 + 解链计数
+        long linkId = store.insertAssetLink(img, "draft", 1L);
+        assertThat(linkId).isPositive();
+        assertThat(store.hasAssetLink(img, "draft", 1L)).isTrue();
+        assertThat(store.hasAssetLink(img, "draft", 2L)).isFalse();
+        assertThat(store.hasAssetLink(img, "material", 1L)).isFalse();
+        store.insertAssetLink(img, "material", 5L);
+        assertThat(store.linksOf(img)).hasSize(2);
+        assertThat(store.linksOf(aud)).isEmpty();
+        assertThat(store.deleteAssetLinksByAsset(img)).isEqualTo(2);
+        assertThat(store.linksOf(img)).isEmpty();
+
+        assertThat(store.deleteAsset(img)).isTrue();
+        assertThat(store.getAsset(img)).isEmpty();
+        assertThat(store.deleteAsset(img)).isFalse();
+    }
 }

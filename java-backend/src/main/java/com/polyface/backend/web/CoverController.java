@@ -1,7 +1,5 @@
 package com.polyface.backend.web;
 
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.function.Supplier;
 
@@ -20,6 +18,7 @@ import org.springframework.web.server.ResponseStatusException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.polyface.backend.asset.AssetService;
 import com.polyface.backend.client.PythonClient;
 import com.polyface.backend.media.MediaDir;
 import com.polyface.backend.store.Store;
@@ -44,12 +43,14 @@ public class CoverController {
     private final PythonClient python;
     private final Store store;
     private final MediaDir mediaDir;
+    private final AssetService assetService;
     private final ObjectMapper mapper = new ObjectMapper();
 
-    public CoverController(PythonClient python, Store store, MediaDir mediaDir) {
+    public CoverController(PythonClient python, Store store, MediaDir mediaDir, AssetService assetService) {
         this.python = python;
         this.store = store;
         this.mediaDir = mediaDir;
+        this.assetService = assetService;
     }
 
     /** 请求体可缺省：platform 缺省用草稿自身平台，theme 缺省则不下发（Python 用默认主题）。 */
@@ -66,8 +67,9 @@ public class CoverController {
                 ? body.platform().trim()
                 : draft.platformCode();
 
+        String title = deriveTitle(draft);
         ObjectNode req = mapper.createObjectNode();
-        req.put("title", deriveTitle(draft));
+        req.put("title", title);
         req.put("platform", platform);
         if (body != null && body.theme() != null && !body.theme().isBlank()) {
             req.put("theme", body.theme().trim());
@@ -85,9 +87,18 @@ public class CoverController {
         out.put("height", py.path("height").asInt(0));
         out.put("elapsed_ms", py.path("elapsed_ms").asInt(0));
         out.put("hint", py.path("hint").asText(""));
-        String url = toMediaUrl(py.path("path").asText(""));
-        if (url != null) {
-            out.put("url", url);
+        String relPath = relPathOf(py.path("path").asText(""));
+        if (relPath != null) {
+            out.put("url", MediaController.mediaUrl(relPath));
+        }
+        // 自动登记（docs/73 §7）：登记是附加价值，失败只告警 —— 绝不能因它挂了让封面生成失败
+        if ("ok".equals(out.path("status").asText()) && relPath != null) {
+            try {
+                long assetId = assetService.register(relPath, "generated", title, "封面");
+                assetService.link(assetId, "draft", id);
+            } catch (Exception e) {
+                log.warn("封面资产登记失败（不影响封面生成）draft={} rel={}", id, relPath, e);
+            }
         }
         return ResponseEntity.ok(out);
     }
@@ -134,8 +145,8 @@ public class CoverController {
         return "";
     }
 
-    /** 产物绝对路径 → 可访问 url；不在媒体目录内则返回 null（不托管根目录外的文件）。 */
-    private String toMediaUrl(String rawPath) {
+    /** 产物绝对路径 → 相对 media 根的路径；不在媒体目录内则返回 null（不托管根目录外的文件）。 */
+    private String relPathOf(String rawPath) {
         if (rawPath == null || rawPath.isBlank()) {
             return null;
         }
@@ -145,13 +156,7 @@ public class CoverController {
             log.warn("封面产物不在媒体目录内，无法托管：{}", abs);
             return null;
         }
-        String rel = root.relativize(abs).toString().replace('\\', '/');
-        StringBuilder sb = new StringBuilder("/api/media");
-        for (String seg : rel.split("/")) {
-            // 逐段编码：保留 '/' 作为分隔符；空格必须编码成 %20（URLEncoder 默认 '+' 在路径里非法）
-            sb.append('/').append(URLEncoder.encode(seg, StandardCharsets.UTF_8).replace("+", "%20"));
-        }
-        return sb.toString();
+        return root.relativize(abs).toString().replace('\\', '/');
     }
 
     /** 转发 Python：4xx 原样透传，连接失败 502（照抄 IngestController 的处理风格）。 */

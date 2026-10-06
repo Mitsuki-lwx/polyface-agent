@@ -1,6 +1,8 @@
 package com.polyface.backend.web;
 
 import java.io.IOException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -44,8 +46,13 @@ public class MediaController {
                 .body(new FileSystemResource(target));
     }
 
-    /** 按扩展名给出 Content-Type；未知类型退化为二进制流，交给浏览器按下载处理。 */
-    private static MediaType contentTypeOf(String filename) {
+    /**
+     * 按扩展名给出 Content-Type；未知类型退化为二进制流，交给浏览器按下载处理。
+     *
+     * <p>public 供资产登记（M7-1）复用同一张表 —— 上传白名单与托管 MIME 若各写一份，
+     * 迟早出现"存得下、取出来类型不对"。
+     */
+    public static MediaType contentTypeOf(String filename) {
         int dot = filename.lastIndexOf('.');
         String ext = dot < 0 ? "" : filename.substring(dot + 1).toLowerCase();
         return switch (ext) {
@@ -68,5 +75,23 @@ public class MediaController {
             case "txt", "md" -> MediaType.TEXT_PLAIN;
             default -> MediaType.APPLICATION_OCTET_STREAM;
         };
+    }
+
+    /**
+     * 相对 media 根的路径 → 可访问 url（逐段 URL 编码，空格→%20）。
+     *
+     * <p>资产 DTO（M7-1）与封面产物（M6-1）共用，避免两处编码规则不一致导致
+     * 含空格/中文的路径在前端是死链。
+     */
+    public static String mediaUrl(String relPath) {
+        StringBuilder sb = new StringBuilder("/api/media");
+        for (String seg : relPath.replace('\\', '/').split("/")) {
+            if (seg.isEmpty()) {
+                continue;
+            }
+            // 逐段编码：保留 '/' 作分隔符；空格必须 %20（URLEncoder 的 '+' 在路径里非法）
+            sb.append('/').append(URLEncoder.encode(seg, StandardCharsets.UTF_8).replace("+", "%20"));
+        }
+        return sb.toString();
     }
 }

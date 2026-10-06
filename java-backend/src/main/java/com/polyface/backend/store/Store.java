@@ -66,6 +66,16 @@ public class Store {
                               String createdAt, String updatedAt) {
     }
 
+    /** 资产（M7-1）：二进制素材一条记录；rel_path 相对 media 根（两种布局并存）。 */
+    public record AssetRow(long id, String kind, String source, String name, String relPath,
+                           String mime, long sizeBytes, int width, int height, double durationSec,
+                           String sha256, String tagsJson, String createdAt) {
+    }
+
+    /** 资产关联（M7-1）：owner_kind=material|draft，owner_id 为对应表主键。 */
+    public record AssetLinkRow(long id, long assetId, String ownerKind, long ownerId, String createdAt) {
+    }
+
     private final String jdbcUrl;
     private final Path dbPath;
     private volatile boolean schemaReady = false;
@@ -133,7 +143,25 @@ public class Store {
                         + "builtin INTEGER NOT NULL DEFAULT 0, origin_id INTEGER,"
                         + "version INTEGER NOT NULL DEFAULT 1,"
                         + "status TEXT NOT NULL DEFAULT 'active', source_note TEXT,"
-                        + "created_at TEXT, updated_at TEXT)"
+                        + "created_at TEXT, updated_at TEXT)",
+                // M7-1 统一资产库（ADR-021）：二进制资产（图片/音频/视频/时间线）。
+                // 与 material（文本素材）刻意分表，不迁移 —— 见 ADR-021 决策 1。
+                // duration_sec 本里程碑恒为 0（ffprobe 在 Python 侧，接线属后续任务）。
+                "CREATE TABLE IF NOT EXISTS asset ("
+                        + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                        + "kind TEXT NOT NULL, source TEXT NOT NULL, name TEXT,"
+                        + "rel_path TEXT NOT NULL, mime TEXT,"
+                        + "size_bytes INTEGER DEFAULT 0, width INTEGER DEFAULT 0, height INTEGER DEFAULT 0,"
+                        + "duration_sec REAL DEFAULT 0, sha256 TEXT,"
+                        + "tags_json TEXT DEFAULT '[]', created_at TEXT)",
+                // 关联表：空 links 即"独立资产"，**不**为独立资产插 standalone 行（§2）
+                "CREATE TABLE IF NOT EXISTS asset_link ("
+                        + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                        + "asset_id INTEGER NOT NULL, owner_kind TEXT NOT NULL, owner_id INTEGER NOT NULL,"
+                        + "created_at TEXT)",
+                // 两条索引各自独立一条（sqlite-jdbc 单次 execute 只跑首条语句）
+                "CREATE INDEX IF NOT EXISTS idx_asset_link_asset ON asset_link(asset_id)",
+                "CREATE INDEX IF NOT EXISTS idx_asset_kind ON asset(kind)"
         };
         try (Connection c = DriverManager.getConnection(jdbcUrl); Statement st = c.createStatement()) {
             for (String sql : statements) {
@@ -779,6 +807,223 @@ public class Store {
             return rs.next() ? rs.getInt(1) : 0;
         } catch (java.sql.SQLException e) {
             throw new RuntimeException("countBuiltinTemplates failed", e);
+        }
+    }
+
+    // ---------------- asset / asset_link（M7-1 统一资产库）----------------
+
+    private static final String ASSET_COLS =
+            "id, kind, source, name, rel_path, mime, size_bytes, width, height, duration_sec, "
+                    + "sha256, tags_json, created_at";
+
+    private AssetRow mapAsset(ResultSet rs) throws java.sql.SQLException {
+        return new AssetRow(
+                rs.getLong("id"), rs.getString("kind"), rs.getString("source"), rs.getString("name"),
+                rs.getString("rel_path"), rs.getString("mime"),
+                rs.getLong("size_bytes"), rs.getInt("width"), rs.getInt("height"),
+                rs.getDouble("duration_sec"), rs.getString("sha256"),
+                rs.getString("tags_json"), rs.getString("created_at"));
+    }
+
+    /** 插入一条资产记录，返回主键。去重靠 sha256 判断，不在这一层做（§3 允许同 sha 多条记录）。 */
+    public long insertAsset(String kind, String source, String name, String relPath, String mime,
+                            long sizeBytes, int width, int height, double durationSec,
+                            String sha256, String tagsJson) {
+        String sql = "INSERT INTO asset(kind, source, name, rel_path, mime, size_bytes, width, height, "
+                + "duration_sec, sha256, tags_json, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)";
+        try (Connection c = open();
+             PreparedStatement ps = c.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+            ps.setString(1, kind);
+            ps.setString(2, source);
+            ps.setString(3, name);
+            ps.setString(4, relPath);
+            ps.setString(5, mime);
+            ps.setLong(6, Math.max(0L, sizeBytes));
+            ps.setInt(7, Math.max(0, width));
+            ps.setInt(8, Math.max(0, height));
+            ps.setDouble(9, Math.max(0d, durationSec));
+            ps.setString(10, sha256);
+            ps.setString(11, tagsJson == null || tagsJson.isBlank() ? "[]" : tagsJson);
+            ps.setString(12, LocalDateTime.now().toString());
+            ps.executeUpdate();
+            try (ResultSet rs = ps.getGeneratedKeys()) {
+                return rs.next() ? rs.getLong(1) : -1L;
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("insertAsset failed", e);
+        }
+    }
+
+    public Optional<AssetRow> getAsset(long id) {
+        String sql = "SELECT " + ASSET_COLS + " FROM asset WHERE id=?";
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setLong(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return Optional.of(mapAsset(rs));
+                }
+            }
+            return Optional.empty();
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("getAsset failed", e);
+        }
+    }
+
+    /**
+     * 资产列表：kind 多值（空=不限）、q 按 name 模糊匹配；最新在前。
+     * 与 {@link #countAssets} 共用 where 构造，避免两处条件漂移。
+     */
+    public List<AssetRow> listAssets(List<String> kinds, String q, int limit, int offset) {
+        StringBuilder sql = new StringBuilder("SELECT " + ASSET_COLS + " FROM asset");
+        List<String> args = appendAssetWhere(sql, kinds, q);
+        sql.append(" ORDER BY id DESC LIMIT ? OFFSET ?");
+        List<AssetRow> out = new ArrayList<>();
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql.toString())) {
+            int i = bindAssetWhere(ps, args);
+            ps.setInt(i++, Math.max(1, limit));
+            ps.setInt(i, Math.max(0, offset));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(mapAsset(rs));
+                }
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("listAssets failed", e);
+        }
+        return out;
+    }
+
+    /** 与 {@link #listAssets} 同一筛选条件的总数（前端分页显示用）。 */
+    public int countAssets(List<String> kinds, String q) {
+        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM asset");
+        List<String> args = appendAssetWhere(sql, kinds, q);
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql.toString())) {
+            bindAssetWhere(ps, args);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getInt(1) : 0;
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("countAssets failed", e);
+        }
+    }
+
+    /** 追加 where 子句并返回占位符参数（按顺序）。 */
+    private static List<String> appendAssetWhere(StringBuilder sql, List<String> kinds, String q) {
+        List<String> conds = new ArrayList<>();
+        List<String> args = new ArrayList<>();
+        if (kinds != null && !kinds.isEmpty()) {
+            conds.add("kind IN (" + "?,".repeat(kinds.size() - 1) + "?)");
+            args.addAll(kinds);
+        }
+        if (q != null && !q.isBlank()) {
+            conds.add("name LIKE ?");
+            args.add("%" + q.trim() + "%");
+        }
+        if (!conds.isEmpty()) {
+            sql.append(" WHERE ").append(String.join(" AND ", conds));
+        }
+        return args;
+    }
+
+    private static int bindAssetWhere(PreparedStatement ps, List<String> args) throws java.sql.SQLException {
+        int i = 1;
+        for (String a : args) {
+            ps.setString(i++, a);
+        }
+        return i;
+    }
+
+    /** 删除资产记录（**不动** asset_link 与物理文件；删除语义编排在 AssetService）。 */
+    public boolean deleteAsset(long id) {
+        String sql = "DELETE FROM asset WHERE id=?";
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setLong(1, id);
+            return ps.executeUpdate() > 0;
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("deleteAsset failed", e);
+        }
+    }
+
+    /** 同一 sha 的资产记录（删除时判断"是否还有别的记录引用这份文件"）。 */
+    public List<AssetRow> assetsBySha(String sha256) {
+        String sql = "SELECT " + ASSET_COLS + " FROM asset WHERE sha256=?";
+        List<AssetRow> out = new ArrayList<>();
+        if (sha256 == null || sha256.isBlank()) {
+            return out;
+        }
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, sha256);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(mapAsset(rs));
+                }
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("assetsBySha failed", e);
+        }
+        return out;
+    }
+
+    /** 建立资产↔宿主关联，返回主键（幂等由调用方先查 {@link #hasAssetLink} 保证）。 */
+    public long insertAssetLink(long assetId, String ownerKind, long ownerId) {
+        String sql = "INSERT INTO asset_link(asset_id, owner_kind, owner_id, created_at) VALUES(?,?,?,?)";
+        try (Connection c = open();
+             PreparedStatement ps = c.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+            ps.setLong(1, assetId);
+            ps.setString(2, ownerKind);
+            ps.setLong(3, ownerId);
+            ps.setString(4, LocalDateTime.now().toString());
+            ps.executeUpdate();
+            try (ResultSet rs = ps.getGeneratedKeys()) {
+                return rs.next() ? rs.getLong(1) : -1L;
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("insertAssetLink failed", e);
+        }
+    }
+
+    /** 解链：返回删除行数（删除资产的第 1 步）。 */
+    public int deleteAssetLinksByAsset(long assetId) {
+        String sql = "DELETE FROM asset_link WHERE asset_id=?";
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setLong(1, assetId);
+            return ps.executeUpdate();
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("deleteAssetLinksByAsset failed", e);
+        }
+    }
+
+    /** 某资产的全部关联（AssetDTO.links）。 */
+    public List<AssetLinkRow> linksOf(long assetId) {
+        String sql = "SELECT id, asset_id, owner_kind, owner_id, created_at FROM asset_link "
+                + "WHERE asset_id=? ORDER BY id";
+        List<AssetLinkRow> out = new ArrayList<>();
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setLong(1, assetId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(new AssetLinkRow(rs.getLong("id"), rs.getLong("asset_id"),
+                            rs.getString("owner_kind"), rs.getLong("owner_id"),
+                            rs.getString("created_at")));
+                }
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("linksOf failed", e);
+        }
+        return out;
+    }
+
+    public boolean hasAssetLink(long assetId, String ownerKind, long ownerId) {
+        String sql = "SELECT 1 FROM asset_link WHERE asset_id=? AND owner_kind=? AND owner_id=? LIMIT 1";
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setLong(1, assetId);
+            ps.setString(2, ownerKind);
+            ps.setLong(3, ownerId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("hasAssetLink failed", e);
         }
     }
 }

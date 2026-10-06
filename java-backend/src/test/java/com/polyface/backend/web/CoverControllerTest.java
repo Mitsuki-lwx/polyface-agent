@@ -164,4 +164,51 @@ class CoverControllerTest {
         mockMvc.perform(get("/api/media/covers/nope/cover.png"))
                 .andExpect(status().isNotFound());
     }
+
+    /** ⑤ 封面生成成功必须自动登记（docs/73 §7）：image/generated，并 link 到该 draft。 */
+    @Test
+    void okRegistersGeneratedAssetLinkedToDraft() throws Exception {
+        Path png = mediaDir.root().resolve("covers").resolve("draft-reg").resolve("cover.png");
+        Files.createDirectories(png.getParent());
+        Files.write(png, new byte[]{(byte) 0x89, 'P', 'N', 'G', 7, 7});
+
+        ObjectNode resp = mapper.createObjectNode();
+        resp.put("status", "ok");
+        resp.put("path", png.toString());
+        resp.put("width", 1080);
+        resp.put("height", 1440);
+        when(python.composeCover(any())).thenReturn(resp);
+
+        mockMvc.perform(post("/api/drafts/" + draftId + "/cover"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ok"));
+
+        Store.AssetRow row = store.listAssets(java.util.List.of("image"), "草稿标题", 50, 0).stream()
+                .filter(r -> "covers/draft-reg/cover.png".equals(r.relPath()))
+                .findFirst().orElseThrow();
+        org.junit.jupiter.api.Assertions.assertEquals("generated", row.source());
+        org.junit.jupiter.api.Assertions.assertEquals("image", row.kind());
+        org.junit.jupiter.api.Assertions.assertEquals("草稿标题", row.name());
+        org.junit.jupiter.api.Assertions.assertEquals("image/png", row.mime());
+        org.junit.jupiter.api.Assertions.assertEquals(6L, row.sizeBytes());
+        org.junit.jupiter.api.Assertions.assertTrue(store.hasAssetLink(row.id(), "draft", draftId));
+    }
+
+    /** ⑥ 降级（needs_manual）不登记 —— 没有产物就没有资产。 */
+    @Test
+    void needsManualDoesNotRegisterAsset() throws Exception {
+        ObjectNode resp = mapper.createObjectNode();
+        resp.put("status", "needs_manual");
+        resp.put("path", "");
+        resp.put("hint", "未找到 gimpish");
+        when(python.composeCover(any())).thenReturn(resp);
+
+        mockMvc.perform(post("/api/drafts/" + draftId + "/cover"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("needs_manual"));
+
+        org.junit.jupiter.api.Assertions.assertTrue(
+                store.listAssets(java.util.List.of("image"), "草稿标题", 50, 0).stream()
+                        .noneMatch(r -> "covers/draft-needs/cover.png".equals(r.relPath())));
+    }
 }

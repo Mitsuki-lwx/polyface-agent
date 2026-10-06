@@ -174,6 +174,27 @@
     </div>
 
     <div class="card" style="margin-top:14px">
+      <h2>📚 素材库 <span style="font-weight:400;color:var(--sub);font-size:11px" id="assetMeta"></span></h2>
+      <div style="font-size:12px;color:var(--sub);margin-bottom:8px">
+        图片 / 音频 / 视频等<b>资产</b>，供稿件与成片引用。<br>
+        ⓘ 与上面的「素材历史」不同：那里是<b>文本素材</b>（用于再次生成稿件），这里是<b>资产</b>。
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+        <input id="assetQ" placeholder="搜索名称…" style="flex:1;min-width:110px">
+        <select id="assetKind" style="width:auto">
+          <option value="">全部类型</option>
+          <option value="image">图片</option>
+          <option value="audio">音频</option>
+          <option value="video">视频</option>
+          <option value="timeline">时间线</option>
+        </select>
+        <button class="ghost sm" id="btnAssetUpload">+ 上传</button>
+        <input type="file" id="assetFile" style="display:none">
+      </div>
+      <div class="side-list" id="assetList"><div class="empty">加载中…</div></div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
       <h2>④ 创作者画像 <span style="font-weight:400;color:var(--sub);font-size:11px" id="profMeta"></span></h2>
       <div style="font-size:12px;color:var(--sub);margin-bottom:8px">为 AI 提供"我是谁 / 我做什么 / 给谁看 / 不要什么"，影响 brief 与成稿风格</div>
       <input id="profVoice" placeholder="品牌声音（理性干货 / 真诚种草 / 犀利观点 …）">
@@ -318,6 +339,8 @@ async function init(){
   bindM5Handlers();
   bindIngestHandlers();
   loadTemplates();
+  bindAssetHandlers();
+  loadAssets();
   refreshRetro();
 }
 function renderPlats(list){
@@ -717,6 +740,97 @@ function wireEditorButton(coverUrl){
       btn.disabled = false;
       if(!open) btn.textContent = old;
     }
+  };
+}
+
+// ============ M7-1: 统一资产库（图片/音频/视频/时间线）============
+// 与上面的「素材历史」是两回事：那是文本素材（material 表），这里是资产（asset 表）。
+const ASSET_KIND_LABEL = { image: "图片", audio: "音频", video: "视频", timeline: "时间线" };
+const ASSET_KIND_ICON  = { image: "🖼", audio: "🎵", video: "🎬", timeline: "🎞" };
+
+function fmtBytes(n){
+  if(!n) return "0 B";
+  if(n < 1024) return n + " B";
+  if(n < 1024*1024) return (n/1024).toFixed(1) + " KB";
+  return (n/1024/1024).toFixed(1) + " MB";
+}
+
+async function loadAssets(){
+  const q = ($("assetQ")?.value || "").trim();
+  const kind = $("assetKind")?.value || "";
+  const box = $("assetList");
+  if(!box) return;
+  const params = new URLSearchParams();
+  if(kind) params.set("kind", kind);
+  if(q) params.set("q", q);
+  let data;
+  try{ data = await j("GET", "/api/assets?" + params.toString()); }
+  catch(e){ box.innerHTML = `<div class="empty">素材库加载失败：${esc(e.message)}</div>`; return; }
+
+  const meta = $("assetMeta");
+  if(meta) meta.textContent = data.total ? `共 ${data.total} 项` : "";
+  if(!data.items.length){
+    box.innerHTML = `<div class="empty">${q || kind ? "没有匹配的素材" : "素材库还是空的 —— 生成封面或上传文件后会自动出现在这里"}</div>`;
+    return;
+  }
+  box.innerHTML = "";
+  data.items.forEach(a=>{
+    const d = document.createElement("div");
+    d.className = "side-item";
+    d.style.cursor = "default";
+    const icon = ASSET_KIND_ICON[a.kind] || "📄";
+    // 图片给真缩略图；其余给图标 + 体积（视频缩略图要 ffmpeg，属后续）
+    const thumb = a.kind === "image"
+      ? `<img src="${esc(a.url)}" alt="" loading="lazy"
+             style="width:100%;max-height:120px;object-fit:cover;border-radius:6px;margin-bottom:6px;background:#f3f4f6">`
+      : "";
+    const dim = a.width && a.height ? ` · ${a.width}×${a.height}` : "";
+    const linkTxt = (a.links && a.links.length)
+      ? `已用于 ${a.links.length} 处`
+      : "未关联";
+    d.innerHTML = `${thumb}
+      <b>${icon} ${esc(a.name || "(未命名)")}</b>
+      <div style="color:#9ca3af;margin-top:2px">${esc(ASSET_KIND_LABEL[a.kind] || a.kind)} · ${fmtBytes(a.size_bytes)}${dim} · ${esc(a.source)}</div>
+      <div style="color:#9ca3af">${esc(linkTxt)} · ${esc((a.created_at||"").slice(0,16))}</div>
+      <div style="margin-top:6px;display:flex;gap:6px">
+        <a class="ghost sm" href="${esc(a.url)}" target="_blank" rel="noopener"
+           style="font-size:11px;padding:2px 8px;border:1px solid var(--line);border-radius:6px;text-decoration:none">查看</a>
+        <button class="ghost sm" data-del="${a.id}" style="font-size:11px">删除</button>
+      </div>`;
+    d.querySelector("[data-del]").onclick = async ()=>{
+      if(!confirm(`删除素材「${a.name || a.id}」？\n\n若没有其它稿件在用它，文件也会被删掉。`)) return;
+      try{
+        const r = await j("DELETE", `/api/assets/${a.id}`);
+        await loadAssets();
+        // 如实告诉用户文件到底删没删 —— 这是 docs/73 §6 的语义，不能含糊
+        alert(r.file_removed ? "已删除，文件已从磁盘移除。" : "已删除记录；文件仍被其它记录引用，已保留。");
+      }catch(e){ alert("删除失败：" + e.message); }
+    };
+    box.appendChild(d);
+  });
+}
+
+function bindAssetHandlers(){
+  const q = $("assetQ"), kind = $("assetKind"), file = $("assetFile");
+  if(!q) return;
+  let timer = null;
+  q.oninput = ()=>{ clearTimeout(timer); timer = setTimeout(loadAssets, 300); };  // 输入防抖
+  kind.onchange = loadAssets;
+  $("btnAssetUpload").onclick = ()=> file.click();
+  file.onchange = async ()=>{
+    const f = file.files && file.files[0];
+    if(!f) return;
+    const fd = new FormData();
+    fd.append("file", f);
+    fd.append("name", f.name);
+    const btn = $("btnAssetUpload"), old = btn.textContent;
+    btn.disabled = true; btn.textContent = "⏳ 上传中…";
+    try{
+      const r = await fetch("/api/assets/upload", {method:"POST", body: fd});
+      if(!r.ok){ let d = "上传失败"; try{ d = (await r.json()).detail || d; }catch(e){} throw new Error(d); }
+      await loadAssets();
+    }catch(e){ alert("上传失败：" + e.message); }
+    finally{ btn.disabled = false; btn.textContent = old; file.value = ""; }
   };
 }
 

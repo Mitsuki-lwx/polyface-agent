@@ -35,6 +35,9 @@ class IngestControllerTest {
     @Autowired
     private MockMvc mockMvc;
 
+    @Autowired
+    private com.polyface.backend.store.Store store;
+
     private static String slash(Path p) {
         return p.toString().replace("\\", "/");
     }
@@ -105,5 +108,39 @@ class IngestControllerTest {
     void deleteUnknownMediaReturns404() throws Exception {
         mockMvc.perform(delete("/api/ingest/media/deadbeef0000.mp4"))
                 .andExpect(status().isNotFound());
+    }
+
+    /** 上传成功后必须自动登记（docs/73 §7）：视频/音频按扩展名分 kind，source=upload。 */
+    @Test
+    void uploadRegistersAsset() throws Exception {
+        MockMultipartFile video = new MockMultipartFile(
+                "file", "口播-登记.mp4", "video/mp4", "fake-video-bytes".getBytes());
+        String mediaId = mediaIdOf(mockMvc.perform(multipart(UPLOAD).file(video))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString());
+
+        com.polyface.backend.store.Store.AssetRow videoRow = assetByRelPath("video", mediaId);
+        org.junit.jupiter.api.Assertions.assertEquals("upload", videoRow.source());
+        org.junit.jupiter.api.Assertions.assertEquals("video", videoRow.kind());
+        org.junit.jupiter.api.Assertions.assertEquals("video/mp4", videoRow.mime());
+        org.junit.jupiter.api.Assertions.assertEquals("口播-登记.mp4", videoRow.name());
+        org.junit.jupiter.api.Assertions.assertEquals("fake-video-bytes".length(), videoRow.sizeBytes());
+
+        MockMultipartFile audio = new MockMultipartFile(
+                "file", "背景乐.mp3", "audio/mpeg", "fake-audio-bytes".getBytes());
+        String audioMediaId = mediaIdOf(mockMvc.perform(multipart(UPLOAD).file(audio))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString());
+        org.junit.jupiter.api.Assertions.assertEquals("audio", assetByRelPath("audio", audioMediaId).kind());
+    }
+
+    private static String mediaIdOf(String json) throws Exception {
+        return new com.fasterxml.jackson.databind.ObjectMapper().readTree(json).path("media_id").asText();
+    }
+
+    private com.polyface.backend.store.Store.AssetRow assetByRelPath(String kind, String relPath) {
+        return store.listAssets(java.util.List.of(kind), null, 200, 0).stream()
+                .filter(r -> relPath.equals(r.relPath()))
+                .findFirst().orElseThrow(() -> new AssertionError("未登记资产：" + relPath));
     }
 }

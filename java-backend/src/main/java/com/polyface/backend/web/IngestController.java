@@ -24,6 +24,7 @@ import org.springframework.web.server.ResponseStatusException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.polyface.backend.asset.AssetService;
 import com.polyface.backend.client.PythonClient;
 import com.polyface.backend.media.MediaDir;
 
@@ -48,11 +49,13 @@ public class IngestController {
     private final PythonClient python;
     private final ObjectMapper mapper = new ObjectMapper();
     private final Path mediaDir;
+    private final AssetService assetService;
 
-    public IngestController(PythonClient python, MediaDir mediaDir) {
+    public IngestController(PythonClient python, MediaDir mediaDir, AssetService assetService) {
         this.python = python;
         // 媒体目录的唯一来源见 MediaDir：与封面产物 / /api/media 托管共用同一根目录
         this.mediaDir = mediaDir.root();
+        this.assetService = assetService;
     }
 
     // ---------------- DTO ----------------
@@ -75,6 +78,14 @@ public class IngestController {
         Path dest = mediaDir.resolve(mediaId);
         file.transferTo(dest);
         log.info("media uploaded: {} ({} bytes) from {}", mediaId, file.getSize(), original);
+
+        // 自动登记（docs/73 §7）：入料即入库，用户不用"记得去存进素材库"。
+        // 登记是附加价值，失败只告警 —— 绝不能因它挂了让入料失败
+        try {
+            assetService.register(mediaId, "upload", original, null);
+        } catch (Exception e) {
+            log.warn("入料资产登记失败（不影响入料）media={}", mediaId, e);
+        }
 
         ObjectNode out = mapper.createObjectNode();
         out.put("media_id", mediaId);
