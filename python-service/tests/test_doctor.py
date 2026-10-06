@@ -234,6 +234,63 @@ def test_llm_mode_real_mentions_data_boundary(tmp_path):
     assert "发送到" in c.detail, "真实模式必须提示正文会出网"
 
 
+# ---------------------------------------------------------------- 封面编辑器（M6-2）
+
+def _fake_gimpish(root: Path, version: str = "0.1.0") -> Path:
+    """造一个 node_modules/gimpish 布局的假安装（只要 package.json 版本可读即可）。"""
+    pkg = root / "node_modules" / "gimpish"
+    (pkg / "bin").mkdir(parents=True, exist_ok=True)
+    (pkg / "bin" / "gimpish.js").write_text("// stub\n", encoding="utf-8")
+    (pkg / "package.json").write_text('{"name":"gimpish","version":"%s"}' % version, encoding="utf-8")
+    return pkg / "bin" / "gimpish.js"
+
+
+def test_find_gimpish_prefers_env_over_dotenv(tmp_path, monkeypatch):
+    _write_env(tmp_path, "GIMPISH_PATH=/from/dotenv\n")
+    from_env = _fake_gimpish(tmp_path / "env")
+    monkeypatch.setenv("POLYFACE_GIMPISH", str(from_env))
+    monkeypatch.setattr(doctor.shutil, "which", lambda _n: None)
+    assert doctor.find_gimpish(tmp_path) == from_env, "环境变量优先级必须高于 .env"
+
+
+def test_find_gimpish_reads_dotenv_and_resolves_js_in_dir(tmp_path, monkeypatch):
+    exe = _fake_gimpish(tmp_path / "vendor")
+    _write_env(tmp_path, f"GIMPISH_PATH={exe.parent}\n")   # 指向**目录**，应解析到其中的 gimpish.js
+    monkeypatch.delenv("POLYFACE_GIMPISH", raising=False)
+    monkeypatch.setattr(doctor.shutil, "which", lambda _n: None)
+    found = doctor.find_gimpish(tmp_path)
+    assert found is not None and found.name == "gimpish.js", "目录应解析到其中的 gimpish.js"
+
+
+def test_gimpish_version_reads_package_json(tmp_path):
+    exe = _fake_gimpish(tmp_path, version="9.9.9")
+    assert doctor.gimpish_version(exe) == "9.9.9"
+
+
+def test_check_editor_missing_is_non_blocking_with_install_hint(tmp_path, monkeypatch):
+    monkeypatch.delenv("POLYFACE_GIMPISH", raising=False)
+    monkeypatch.setattr(doctor.shutil, "which", lambda _n: None)
+    c = doctor.check_editor(tmp_path)
+    assert c.ok is True and c.blocking is False, "可选依赖缺失不能阻塞启动"
+    assert "npm install -g gimpish" in c.hint
+
+
+def test_check_editor_warns_when_version_differs_from_verified(tmp_path, monkeypatch):
+    exe = _fake_gimpish(tmp_path, version="9.9.9")
+    monkeypatch.setenv("POLYFACE_GIMPISH", str(exe))
+    c = doctor.check_editor(tmp_path)
+    assert c.ok is True and c.blocking is False
+    assert doctor.VERIFIED_GIMPISH in c.hint, "版本不符时必须点名已验证版本"
+    assert "e2e_editor" in c.hint, "版本不符时必须提示重跑内嵌编辑器的端到端"
+
+
+def test_check_editor_verified_version_has_no_warning(tmp_path, monkeypatch):
+    exe = _fake_gimpish(tmp_path, version=doctor.VERIFIED_GIMPISH)
+    monkeypatch.setenv("POLYFACE_GIMPISH", str(exe))
+    c = doctor.check_editor(tmp_path)
+    assert c.ok is True and c.hint == ""
+
+
 # ---------------------------------------------------------------- venv / pip
 
 def _stub_venv(monkeypatch, tmp_path, *, pip_ok: bool, import_ok: bool):

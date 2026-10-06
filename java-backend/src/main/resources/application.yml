@@ -22,6 +22,14 @@ polyface:
     fast-timeout-sec: ${POLYFACE_LLM_FAST_TIMEOUT_SEC:60}
   media:
     dir: ""                     # 留空则用 {data-dir}/media（FR-51 媒体副本目录）
+  # 内嵌编辑器（M6-2）：受管的 gimpish serve 子进程，端口只监听 127.0.0.1
+  editor:
+    enabled: ${POLYFACE_EDITOR_ENABLED:true}   # 关掉则 /api/editor/open 直接 needs_manual，不起进程
+    port: ${POLYFACE_EDITOR_PORT:8765}
+  gimpish:
+    # gimpish 入口；留空则依次看 POLYFACE_GIMPISH、PATH（docs/68 §7）。
+    # 刻意不在 yml 里绑环境变量：定位优先级由 EditorProcess 一处实现，避免两处规则打架
+    path: ""
   # Langfuse 可观测（FR-71）：默认关闭，密钥一律环境变量注入、不落仓库
   langfuse:
     enabled: ${LANGFUSE_ENABLED:false}

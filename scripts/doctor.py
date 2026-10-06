@@ -38,6 +38,9 @@ DEFAULT_PY_PORT = 8000
 
 REQUIRED_PY_PKGS = ("fastapi", "uvicorn", "pydantic_settings")
 
+# 已验证的封面编辑器版本（ADR-020 / docs/68 §6）。升它必须重跑 scripts/e2e_editor.py。
+VERIFIED_GIMPISH = "0.1.0"
+
 
 @dataclass
 class Check:
@@ -291,12 +294,74 @@ def check_llm_mode(root: Path) -> Check:
                  blocking=False)
 
 
+def find_gimpish(root: Path) -> Path | None:
+    """定位 gimpish：`.env` 的 GIMPISH_PATH > 环境变量 POLYFACE_GIMPISH > PATH。
+
+    与 Python 侧 `app/pipeline/cover.py::_gimpish_bin` 保持**同一优先级**，
+    否则会出现"封面能生成、但体检说没装"这种自相矛盾的报告。
+    """
+    candidates: list[Path] = []
+    env_file = root / "python-service" / ".env"
+    if env_file.is_file():
+        for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if line.startswith("GIMPISH_PATH="):
+                value = line.split("=", 1)[1].strip()
+                if value:
+                    candidates.append(Path(value))
+    from_env = os.environ.get("POLYFACE_GIMPISH", "").strip()
+    if from_env:
+        candidates.append(Path(from_env))
+
+    for cand in candidates:
+        if cand.is_file():
+            return cand
+        for name in ("gimpish.cmd", "gimpish", "gimpish.js"):
+            if (cand / name).is_file():
+                return cand / name
+    found = shutil.which("gimpish")
+    return Path(found) if found else None
+
+
+def gimpish_version(exe: Path) -> str:
+    """从 `node_modules/gimpish/package.json` 读版本。
+
+    为什么不跑 `gimpish --version`：实测 0.1.0 **没有**该选项（会报 unknown option）。
+    """
+    for parent in exe.parents:
+        if parent.name == "gimpish":
+            pkg = parent / "package.json"
+            if pkg.is_file():
+                try:
+                    return json.loads(pkg.read_text(encoding="utf-8")).get("version", "")
+                except (OSError, ValueError):
+                    return ""
+    return ""
+
+
+def check_editor(root: Path) -> Check:
+    """封面编辑器（gimpish）：**可选依赖** —— 缺失只让封面功能降级，不影响其余功能。"""
+    exe = find_gimpish(root)
+    if exe is None:
+        return Check("封面编辑器", True,
+                     "未检测到 gimpish → 「生成封面 / 在编辑器里改封面」会降级为提示安装",
+                     f"npm install -g gimpish（需 Node ≥ 20.19）；本项目已验证版本 "
+                     f"{VERIFIED_GIMPISH}", blocking=False)
+    version = gimpish_version(exe)
+    detail = f"{exe}" + (f"（版本 {version}）" if version else "（版本未知）")
+    if version and version != VERIFIED_GIMPISH:
+        return Check("封面编辑器", True, detail,
+                     f"已验证版本为 {VERIFIED_GIMPISH}；其他版本的**内嵌编辑器 UI 未验证**，"
+                     f"升级后请重跑 scripts/e2e_editor.py", blocking=False)
+    return Check("封面编辑器", True, detail, blocking=False)
+
+
 def run_all(root: Path | None = None, java_port: int = DEFAULT_JAVA_PORT,
             py_port: int = DEFAULT_PY_PORT) -> list[Check]:
     root = root or project_root()
     checks = [check_java(), check_python(), check_venv(root), check_jar(root)]
     checks += check_ports(java_port, py_port)
-    checks += [check_data_dir(root), check_llm_mode(root)]
+    checks += [check_data_dir(root), check_llm_mode(root), check_editor(root)]
     return checks
 
 

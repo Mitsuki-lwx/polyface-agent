@@ -127,3 +127,39 @@
 - **真实作者审美**：本规格只保证确定性与排版基本规则，**不保证"好看"**
 - 素材原图入封面（抠图/背景去除，gimpish 有 `remove-bg`，未接）
 - gimpish 的 `serve`/MCP 路径未接（当前只走 CLI，最小依赖面）
+
+## 9. 附：gimpish `serve` 的 HTTP 面（M6-2 将用到，2026-10-06 实测）
+
+M6-2 要内嵌它的编辑器，这里是先探明的接口面，**含一个必须记住的坑**。
+
+| 端点 | 作用 |
+|---|---|
+| `GET /api/scene` | 完整场景 JSON |
+| `GET /api/geometry` | 每层包围盒 + `move`/`rotate`/`scale` 标志（可直接做命中测试） |
+| `GET /api/history` | `{undo, redo}` 栈深 |
+| `GET /api/bundle` | 打包 `.gimpish`（场景 + 资产） |
+| `POST /api/import?name=<f>` | 原始字节导入为图层 |
+| `POST /api/layer/:id/transform` | 改位置（**见下方坑**） |
+| `POST /api/layer/:id/order` | 调整层序（body `{index}`） |
+| `DELETE /api/layer/:id` | 删层 |
+| `POST /api/undo` / `POST /api/redo` | 撤销/重做 |
+
+**其它实测结论**
+
+- 首页响应头**无** `X-Frame-Options`、**无** CSP → **可以 iframe 内嵌**。
+- 只监听 `127.0.0.1`（实测 URL 形态 `http://127.0.0.1:<port>`），无鉴权 —— 与 polyface 现有姿态一致。
+- `gimpish serve --port <n> --scene <dir-or-file>`，进程监视场景目录，外部改动会推送给页面。
+
+### ⚠️ 坑：transform **只认增量**，且**静默忽略**未知字段
+
+```
+起点 (540,700)
+POST {"dx":60,"dy":-100}  → (600,600)  ✅ 生效
+POST {"x":5,"y":5}        → (600,600)  ⚠️ 未生效，但**照样返回 {"ok":true}**
+POST {"dx":0,"dy":0}      → (600,600)  无变化
+```
+
+**两条纪律**（M6-2 实现必须遵守）：
+
+1. 改位置要**自己记当前坐标算增量**（`dx = 目标 - 当前`），不能直接下发绝对坐标；
+2. **不能靠 `{"ok":true}` 判断是否生效** —— 必须回读 `GET /api/scene` 校验。

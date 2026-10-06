@@ -215,6 +215,39 @@
 
 ---
 
+## ADR-020 编辑器集成形态：**HTTP + 内嵌**（MCP 当前不用）
+
+- 状态：Accepted（2026-10-06 用户确认「MCP 和内嵌哪个更方便」后定案）
+- 背景：ADR-019 定了"独立进程 + 官方接口"，但 gimpish 同时提供 CLI / HTTP(`serve`) / MCP 三种面。
+  需要定下 M6-2 具体走哪条。
+- 调研（2026-10-06 一手实测）：
+
+  | 事实 | 证据 |
+  |---|---|
+  | **npm 发布版没有 MCP** | `gimpish@0.1.0` 的 CLI 命令只有 init/add/layers/save/preview/render/export/layer/draw/**serve**，**无 mcp**；包内 grep `mcp` 无匹配 |
+  | MCP 只在**未发布**的 main，且由 **Electron app** 暴露（`127.0.0.1:8767/mcp`） | main 的 README；npm 0.1.0 的渲染链是 **sharp**，比 Electron 轻一个量级 |
+  | `serve` 的 HTTP API 在 0.1.0 **已可用** | `GET /api/scene`、`/api/geometry`（含包围盒与 move/rotate/scale 标志）、`/api/history`、`/api/bundle`；`POST /api/layer/:id/transform`、`/api/undo`、`/api/redo`、`/api/import` |
+  | serve 页面**可被 iframe 内嵌** | 首页响应头**无** `X-Frame-Options`、**无** CSP |
+  | polyface 当前**不是**工具调用型 agent | `grep -n "tools\|tool_choice\|function_call" python-service/app/llm.py` → 空；管线是确定性编排 |
+
+- 决策：
+  1. **M6-2 走「HTTP + iframe 内嵌」**：`gimpish serve` 作为受管后台进程，polyface 用它的 HTTP API 做结构化编辑，
+     工作台用 iframe 把它嵌进来给用户手改。
+  2. **MCP 当前不采用**。理由不是"MCP 不好"，而是**现在三个前提都不成立**：
+     ① 发布版没有 MCP；② polyface 的 LLM 调用链没有工具调用能力；③ 上游模型（deepseek-v4-pro /
+     glm-5.2 / sensenova-6.8-flash-lite）的 function calling 兼容性未验证。
+     而且 MCP 的定位是"给**外部** agent 用"——**polyface 自己就是那个编排者**，自己调自己的 MCP 是空转。
+  3. **MCP 留作演进路径**：当"让 LLM 自主决定怎么改图"成为真需求、且 gimpish 把 MCP 发到 npm 时，再按 ADR-019 的
+     "编辑器适配器"接口新增一条适配器，**编排层不动**。
+- 后果：
+  - 多一个 Node 子进程要管（端口、健康检查、生命周期、退出清理）—— 归 M6-2；
+  - 要承担 gimpish 编辑器 UI 的稳定性（它是"给人用的编辑器窗口"，不是库）；
+  - **必须记住的接口坑**（实测）：`POST /api/layer/:id/transform` **只认增量 `dx/dy`**，
+    传绝对 `x/y` 会被**静默忽略并照样返回 `{"ok":true}`** → 调用方必须自己算增量，
+    且**不能靠 `ok:true` 判断生效**，要回读 `/api/scene` 校验。已记入 `docs/64` §9。
+
+---
+
 ## 决策记录表（速览）
 
 | ADR | 主题 | 状态 |
@@ -238,3 +271,4 @@
 | 017 | **数据边界修正**：区分"只存本机"与"正文出网"；弃用"数据不出本机"表述 | ✅ |
 | 018 | **自动成片定位＝核心方向 · 当前后置**（弃用"专项"措辞）；首发 B1 图文成片；TTS 选型暂未决 | ✅ |
 | 019 | **交付形态改向**：撤销「无需 Node/无需数据库」；改为**桌面壳 + 后台编辑器 + agent 编排**；首个适配器 gimpish，OpenCut 预留 | ✅ |
+| 020 | **编辑器集成形态 = HTTP + iframe 内嵌**；MCP 当前不用（发布版没有 / 无工具调用 / 模型未验证） | ✅ |

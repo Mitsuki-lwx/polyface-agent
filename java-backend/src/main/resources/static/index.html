@@ -660,7 +660,12 @@ function paintDraft(d){
       if(r.status === "ok" && r.url){
         box.innerHTML = `<div class="meta">✅ 封面已生成 · ${r.width}×${r.height} · ${r.elapsed_ms}ms</div>
           <img src="${esc(r.url)}" alt="封面" style="display:block;max-width:100%;margin-top:8px;border:1px solid var(--line);border-radius:10px">
-          <div style="margin-top:6px;font-size:12px"><a href="${esc(r.url)}" target="_blank" rel="noopener">在新窗口打开 ↗</a></div>`;
+          <div style="margin-top:6px;font-size:12px">
+            <a href="${esc(r.url)}" target="_blank" rel="noopener">在新窗口打开 ↗</a>
+            <button id="btnOpenEditor" style="font-size:12px;margin-left:10px">✏️ 在编辑器中打开</button>
+          </div>
+          <div id="editorBox" style="margin-top:10px"></div>`;
+        wireEditorButton(r.url);
       } else {
         // needs_manual 是**降级**不是失败：中性提示 + 安装指引，不标红
         box.innerHTML = `<div class="meta">🖼 需手动处理：${esc(r.hint || "未安装封面渲染工具")}</div>`;
@@ -669,6 +674,36 @@ function paintDraft(d){
       box.innerHTML = `<div class="qa-warn" style="border-color:#f0b4ab;color:#b03a2e">封面生成失败：${esc(e.message)}</div>`;
     }finally{
       btnCover.disabled = false; btnCover.textContent = old;
+    }
+  };
+}
+
+// 在编辑器里改封面（M6-2）：gimpish serve 由 Java 侧当受管子进程拉起，这里只负责内嵌它的页面。
+// 编辑器与工作台不同源，所以只能展示、**读不到它内部的 DOM**（不假装能读）。
+function wireEditorButton(coverUrl){
+  const btn = $("btnOpenEditor"), edBox = $("editorBox");
+  if(!btn || !edBox) return;
+  let open = false;
+  btn.onclick = async ()=>{
+    if(open){ edBox.innerHTML = ""; open = false; btn.textContent = "✏️ 在编辑器中打开"; return; }
+    const old = btn.textContent;
+    btn.disabled = true; btn.textContent = "⏳ 启动编辑器…";
+    try{
+      // 传媒体目录内的相对路径（不是绝对路径）：Java 侧统一用 MediaDir 校验越界
+      const relDir = coverUrl.replace(/^\/api\/media\//, "").replace(/\/[^/]*$/, "");
+      const r = await j("POST", "/api/editor/open", {path: relDir});
+      if(r.status === "ok" && r.url){
+        edBox.innerHTML = `<iframe src="${esc(r.url)}" title="封面编辑器"
+          style="width:100%;height:720px;border:1px solid var(--line);border-radius:10px;background:#fff"></iframe>`;
+        open = true; btn.textContent = "✖ 收起编辑器";
+      }else{
+        edBox.innerHTML = `<div class="meta">✏️ 需手动处理：${esc(r.hint || "编辑器不可用")}</div>`;
+      }
+    }catch(e){
+      edBox.innerHTML = `<div class="meta">✏️ 编辑器启动失败：${esc(e.message)}</div>`;
+    }finally{
+      btn.disabled = false;
+      if(!open) btn.textContent = old;
     }
   };
 }
