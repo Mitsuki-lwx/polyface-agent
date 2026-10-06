@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     # faster-whisper 模型尺寸（可选依赖；可用 POLYFACE_ASR_MODEL 覆盖）
     asr_model: str = "small"
 
+    # 封面成图（M6-1）：后台图像编辑器 gimpish
+    # 留空则用 PATH 中的 gimpish（也可用环境变量 POLYFACE_GIMPISH 指向可执行文件或入口 js）
+    gimpish_path: str = ""
+
     # ===== LLM 运行时加固（FR-70）=====
     # 单次请求超时（秒）
     llm_timeout_sec: int = 60

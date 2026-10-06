@@ -124,6 +124,15 @@ public class PythonClient {
         return get("/usage/summary?limit=" + Math.max(1, Math.min(limit, 500)));
     }
 
+    /**
+     * 封面成图（M6-1）：标题 → 平台封面 PNG。
+     * 走长任务预算：渲染耗时受 gimpish 冷启动/导出影响，不受短任务 60s 约束。
+     * 工具缺失/渲染失败由 Python 降级为 {@code needs_manual}（HTTP 200），非异常。
+     */
+    public JsonNode composeCover(JsonNode body) {
+        return post(genClient, "/compose/cover", body);
+    }
+
     private JsonNode post(String uri, Object body) {
         return post(client, uri, body);
     }

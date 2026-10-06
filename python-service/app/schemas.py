@@ -71,3 +71,29 @@ class TranscribeResponse(BaseModel):
     source: IngestSource = "none"
     chars: int = 0
     hint: str = ""
+
+
+# ============================================================ 封面成图(M6-1)
+CoverStatus = Literal["ok", "needs_manual"]
+CoverPlatform = Literal["xhs", "douyin", "bilibili"]
+
+
+class CoverRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=60, description="封面主标题")
+    subtitle: str = Field("", max_length=80, description="副标题(可选)")
+    platform: CoverPlatform = Field("xhs", description="xhs|douyin|bilibili")
+    theme: str = Field("violet", description="配色主题：violet|ink|sunset")
+    out_dir: str = Field("", description="输出目录(绝对路径)；留空用 {data-dir}/media/covers")
+    file_stem: str = Field("", description="文件名前缀(可选)")
+
+
+class CoverResponse(BaseModel):
+    """封面产物。gimpish 缺失/渲染失败降级为 needs_manual + hint，不抛 5xx。"""
+    status: CoverStatus
+    editor: str = "gimpish"
+    path: str = ""
+    scene_path: str = ""
+    width: int = 0
+    height: int = 0
+    elapsed_ms: int = 0
+    hint: str = ""

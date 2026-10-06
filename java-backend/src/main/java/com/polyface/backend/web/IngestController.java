@@ -8,7 +8,6 @@ import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -26,6 +25,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.polyface.backend.client.PythonClient;
+import com.polyface.backend.media.MediaDir;
 
 /**
  * 音视频入料（FR-51）：受理本机媒体文件 → 转发 Python 探测/转写 → 返回文字。
@@ -49,16 +49,10 @@ public class IngestController {
     private final ObjectMapper mapper = new ObjectMapper();
     private final Path mediaDir;
 
-    public IngestController(PythonClient python,
-                            @Value("${polyface.media.dir:}") String mediaDirOverride,
-                            @Value("${polyface.data-dir:../data}") String dataDir) throws IOException {
+    public IngestController(PythonClient python, MediaDir mediaDir) {
         this.python = python;
-        String dir = (mediaDirOverride == null || mediaDirOverride.isBlank())
-                ? Path.of(dataDir).toAbsolutePath().resolve("media").toString()
-                : mediaDirOverride;
-        this.mediaDir = Path.of(dir).toAbsolutePath().normalize();
-        Files.createDirectories(this.mediaDir);
-        log.info("media dir: {}", this.mediaDir);
+        // 媒体目录的唯一来源见 MediaDir：与封面产物 / /api/media 托管共用同一根目录
+        this.mediaDir = mediaDir.root();
     }
 
     // ---------------- DTO ----------------

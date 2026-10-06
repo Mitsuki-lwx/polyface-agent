@@ -617,8 +617,10 @@ function paintDraft(d){
         <button id="btnSaveDraft" style="font-size:12px;font-weight:600">💾 保存修改</button>
         <button id="btnExpMd" style="font-size:12px">⬇️ 导出 .md</button>
         <button id="btnExpTxt" style="font-size:12px">⬇️ 导出 .txt</button>
+        <button id="btnCover" style="font-size:12px">🖼 生成封面</button>
         <span id="edState" style="font-size:11px;color:var(--sub)"></span>
       </div>
+      <div id="coverBox" style="margin-top:10px"></div>
       <div style="font-size:11px;color:var(--sub);margin-top:8px;line-height:1.6">
         ⓘ 质检为自动筛查，仅覆盖已知规则与模型自评，<b>不代表事实无误</b>；发布前请人工终审，事实以你的素材为准。
         <br>ⓘ 编辑不会自动重跑质检——改动后请自行核对（尤其数字与事实）。
@@ -643,6 +645,32 @@ function paintDraft(d){
   };
   $("btnExpMd").onclick = ()=>{ location.href = `/api/drafts/${draftId}/export?format=md`; };
   $("btnExpTxt").onclick = ()=>{ location.href = `/api/drafts/${draftId}/export?format=txt`; };
+
+  // 封面成图（M6-1）：渲染在 Python（gimpish），前端只负责触发与展示
+  const btnCover = $("btnCover");
+  btnCover.onclick = async ()=>{
+    const box = $("coverBox");
+    const old = btnCover.textContent;
+    btnCover.disabled = true;                 // 渲染耗时不可控（冷启动/导出），禁用以防重复触发
+    btnCover.textContent = "⏳ 渲染中…";
+    box.innerHTML = '<div class="meta">正在渲染封面…</div>';
+    try{
+      // 不带 body：平台与主题由后端按草稿默认决定
+      const r = await j("POST", `/api/drafts/${draftId}/cover`);
+      if(r.status === "ok" && r.url){
+        box.innerHTML = `<div class="meta">✅ 封面已生成 · ${r.width}×${r.height} · ${r.elapsed_ms}ms</div>
+          <img src="${esc(r.url)}" alt="封面" style="display:block;max-width:100%;margin-top:8px;border:1px solid var(--line);border-radius:10px">
+          <div style="margin-top:6px;font-size:12px"><a href="${esc(r.url)}" target="_blank" rel="noopener">在新窗口打开 ↗</a></div>`;
+      } else {
+        // needs_manual 是**降级**不是失败：中性提示 + 安装指引，不标红
+        box.innerHTML = `<div class="meta">🖼 需手动处理：${esc(r.hint || "未安装封面渲染工具")}</div>`;
+      }
+    }catch(e){
+      box.innerHTML = `<div class="qa-warn" style="border-color:#f0b4ab;color:#b03a2e">封面生成失败：${esc(e.message)}</div>`;
+    }finally{
+      btnCover.disabled = false; btnCover.textContent = old;
+    }
+  };
 }
 
 // ============ M4: 创作者画像 / 复盘报告 / 效果录入 ============

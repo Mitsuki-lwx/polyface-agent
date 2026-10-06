@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import dna, llm, observability, trace, usage
 from .config import get_settings, parse_cors_origins, service_version
+from .pipeline.cover import CoverInvalid, CoverToolMissing, compose_cover
 from .pipeline.generate import generate
 from .pipeline.ingest import run_probe, run_transcribe
 from .pipeline.learn import run_learn
@@ -14,6 +15,8 @@ from .pipeline.understand import run_understand
 from .schemas import (
     AnalyzeRequest,
     AnalyzeResponse,
+    CoverRequest,
+    CoverResponse,
     ProbeRequest,
     ProbeResponse,
     TranscribeRequest,
@@ -163,3 +166,20 @@ def do_probe(req: ProbeRequest) -> ProbeResponse:
 def do_transcribe(req: TranscribeRequest) -> TranscribeResponse:
     """音视频 → 文字：字幕优先，ASR 可选，失败降级 needs_manual（不抛 5xx）。"""
     return run_transcribe(req.path, req.mode)
+
+
+# ============================================================ 封面成图(M6-1)
+
+@app.post("/compose/cover", response_model=CoverResponse)
+def do_compose_cover(req: CoverRequest) -> CoverResponse:
+    """标题 → 平台封面 PNG（后台编辑器 gimpish 渲染，见 ADR-019）。
+
+    工具缺失/渲染失败一律降级 `needs_manual` + hint，**不抛 5xx**（同入料策略）；
+    只有入参非法（空标题/未知平台）才是 400。
+    """
+    try:
+        return CoverResponse(**compose_cover(
+            title=req.title, subtitle=req.subtitle, platform=req.platform,
+            theme=req.theme, out_dir=req.out_dir, file_stem=req.file_stem))
+    except (CoverInvalid, CoverToolMissing) as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
