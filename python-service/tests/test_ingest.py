@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.pipeline import ingest, media
+from app.pipeline import asr, ingest, media
 from app.pipeline.media import MediaInvalid, srt_to_text
 
 client = TestClient(app)
@@ -138,7 +138,9 @@ def test_probe_endpoint_ok(samples):
     body = r.json()
     assert body["recommended_mode"] == "subtitle"
     assert body["ffmpeg_available"] is True
-    assert body["asr_available"] is False      # 本机未装 ASR
+    # 断言"**如实反映**本机装没装 ASR"，而不是"一定没装" ——
+    # 后者钉的是环境而不是行为：装了 faster-whisper 的机器上会假失败（本机刚装就踩了）
+    assert body["asr_available"] == asr.is_available()
 
 
 @requires_ffmpeg

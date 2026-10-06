@@ -46,3 +46,9 @@ Thumbs.db
 
 # ===== generated evidence (regenerate by running scripts/) =====
 outputs/browser-shots/
+
+# ===== 粗剪测试素材（由 scripts/make_fixture.py 生成）=====
+outputs/roughcut-fixture/
+
+# ===== 粗剪端到端产物（由 scripts/e2e_roughcut.py 生成）=====
+outputs/roughcut-e2e/

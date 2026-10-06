@@ -22,6 +22,11 @@ INSTALL_HINT = (
     "（首次使用会下载模型，约 244MB）；或直接粘贴文案后再解析。"
 )
 
+# Whisper 对中文常输出**繁体**（实测同一段音频："怎麽把一篇長文"）。
+# 给一句简体中文的 initial_prompt 就能把它拉回简体（实测繁体字数 7 → 0），
+# 且标点保留完整；用 "简体中文" 这种短词反而会把标点吃掉，所以用完整句子。
+ZH_SIMPLIFIED_PROMPT = "以下是普通话的句子。"
+
 
 def is_available() -> bool:
     """faster-whisper 是否可导入。"""
@@ -55,3 +60,34 @@ def transcribe(wav_path: str, language: str = "zh") -> str:
     model = _load_model(size)
     segments, _info = model.transcribe(wav_path, language=language, vad_filter=True)
     return "".join(getattr(s, "text", "") for s in segments).strip()
+
+
+def transcribe_segments(wav_path: str, language: str = "zh") -> list[dict]:
+    """带时间戳的转写：返回 `[{start, end, text}]`。粗剪出字幕用（FR-52 的前置）。
+
+    **为什么不用 `transcribe()`**：它把 `segments` 拼成纯文本，时间戳直接丢了；
+    而字幕没有时间戳就等于没有。
+
+    **为什么要自己解码音频**（而不是把视频路径直接丢给模型）：
+    实测 `faster-whisper 1.2.1` 与 `av 19` 不兼容 —— 它内部走 PyAV 解码时会调
+    `av.open(..., metadata_errors="ignore")`，而 av19 已移除该参数，直接抛 `TypeError`。
+    传 **float32 数组**时不会走那条解码路径，于是绕开了这个坑。
+    （音频仍由 ffmpeg 解成 16k 单声道 wav —— 那是我们本来就要做的一步。）
+    """
+    if not is_available():
+        raise RuntimeError(INSTALL_HINT)
+    import wave
+
+    import numpy as np
+
+    with wave.open(str(wav_path), "rb") as w:
+        if w.getnchannels() != 1 or w.getframerate() != 16000:
+            raise RuntimeError(
+                f"转写要求 16kHz 单声道 wav，收到 {w.getframerate()}Hz/{w.getnchannels()}ch")
+        audio = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+
+    model = _load_model(model_size())
+    segments, _info = model.transcribe(audio, language=language, vad_filter=True,
+                                       initial_prompt=ZH_SIMPLIFIED_PROMPT)
+    return [{"start": float(s.start), "end": float(s.end), "text": (s.text or "").strip()}
+            for s in segments if (s.text or "").strip()]
