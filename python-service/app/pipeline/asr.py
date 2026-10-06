@@ -62,8 +62,12 @@ def transcribe(wav_path: str, language: str = "zh") -> str:
     return "".join(getattr(s, "text", "") for s in segments).strip()
 
 
-def transcribe_segments(wav_path: str, language: str = "zh") -> list[dict]:
+def transcribe_segments(wav_path: str, language: str = "zh", *,
+                        on_progress=None, total_sec: float | None = None) -> list[dict]:
     """带时间戳的转写：返回 `[{start, end, text}]`。粗剪出字幕用（FR-52 的前置）。
+
+    `on_progress`：可选进度回调。`segments` 是**生成器**，边出边报，
+    所以进度是真实的（不是猜的），百分比按 `seg.end / total_sec` 换算。
 
     **为什么不用 `transcribe()`**：它把 `segments` 拼成纯文本，时间戳直接丢了；
     而字幕没有时间戳就等于没有。
@@ -87,7 +91,16 @@ def transcribe_segments(wav_path: str, language: str = "zh") -> list[dict]:
         audio = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
 
     model = _load_model(model_size())
-    segments, _info = model.transcribe(audio, language=language, vad_filter=True,
-                                       initial_prompt=ZH_SIMPLIFIED_PROMPT)
-    return [{"start": float(s.start), "end": float(s.end), "text": (s.text or "").strip()}
-            for s in segments if (s.text or "").strip()]
+    raw, _info = model.transcribe(audio, language=language, vad_filter=True,
+                                  initial_prompt=ZH_SIMPLIFIED_PROMPT)
+    total = total_sec or (len(audio) / 16000)
+    out: list[dict] = []
+    for s in raw:
+        text = (s.text or "").strip()
+        if text:
+            out.append({"start": float(s.start), "end": float(s.end), "text": text})
+        if on_progress and total > 0:
+            on_progress(min(100.0, float(s.end) / total * 100))
+    if on_progress:
+        on_progress(100.0)
+    return out

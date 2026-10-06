@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import tempfile
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
@@ -72,6 +73,18 @@ class RoughcutParams:
             p = cls(**{k: v for k, v in data.items() if k in known})
         return p
 
+    @classmethod
+    def config_keys(cls, config_path: Path | None) -> set[str]:
+        """配置文件里**真的写了**哪些项。用来在"参数来源"里区分 默认 / 配置文件 / 命令行。"""
+        if not config_path or not config_path.is_file():
+            return set()
+        try:
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return set()
+        known = {f.name for f in fields(cls)}
+        return {k for k in data if k in known}
+
     def merged(self, **overrides) -> "RoughcutParams":
         """命令行覆盖：只接受非 None 的值（None = 用户没传，保持原值）。"""
         data = asdict(self)
@@ -89,7 +102,9 @@ DEFAULT_CONFIG_NAME = "roughcut.json"
 
 # ---------------------------------------------------------------- 探测（T2）
 
-def _run(cmd: list[str], timeout: int = 600) -> subprocess.CompletedProcess:
+def _run(cmd: list[str], timeout: int = 600, on_raw=None) -> subprocess.CompletedProcess:
+    if on_raw:
+        on_raw(" ".join(cmd))
     return subprocess.run(cmd, capture_output=True, text=True,
                           encoding="utf-8", errors="replace", timeout=timeout)
 
@@ -100,19 +115,66 @@ def _run_in(cwd: Path, cmd: list[str], timeout: int = 600) -> subprocess.Complet
                           encoding="utf-8", errors="replace", timeout=timeout)
 
 
+def _run_ffmpeg(cmd: list[str], *, cwd: Path | None = None, timeout: int = 1800,
+                expected_sec: float | None = None,
+                on_progress=None, on_raw=None) -> tuple[int, str]:
+    """跑 ffmpeg，返回 `(退出码, stderr 文本)`。
+
+    `on_progress` 给了就用 `-progress pipe:1` 解析真实进度：
+    **进度走 stdout、错误走临时文件** —— 两路都开管道容易死锁，
+    而 stderr 只在最后才需要，落临时文件最简单。
+
+    `on_raw` 只在**详细档**由调用方接上：它看到的是我们**实际在跑什么命令** ——
+    这是 normal 与 verbose 之间唯一稳定存在的差异（成功时 ffmpeg 的 stderr 是空的，
+    光靠错误行撑不起"详细档更详细"）。
+    """
+    if on_raw:
+        on_raw(" ".join(cmd))
+    if on_progress is None:
+        cp = subprocess.run(cmd, capture_output=True, text=True, cwd=str(cwd) if cwd else None,
+                            encoding="utf-8", errors="replace", timeout=timeout)
+        if on_raw and cp.stderr.strip():
+            for line in cp.stderr.strip().splitlines():
+                on_raw(line)
+        return cp.returncode, cp.stderr
+
+    cmd = cmd[:1] + ["-nostats", "-progress", "pipe:1"] + cmd[1:]
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as errf:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=errf, text=True,
+                                encoding="utf-8", errors="replace",
+                                cwd=str(cwd) if cwd else None)
+        for line in proc.stdout:
+            key, _, value = line.strip().partition("=")
+            if key == "out_time_us" and expected_sec:
+                try:
+                    pct = float(value) / 1_000_000 / expected_sec * 100
+                except ValueError:
+                    continue
+                on_progress(pct)
+            elif key == "progress" and value == "end":
+                on_progress(100.0)
+        proc.wait(timeout=timeout)
+        errf.seek(0)
+        err = errf.read()
+        if on_raw and err.strip():
+            for line in err.strip().splitlines():
+                on_raw(line)
+        return proc.returncode, err
+
+
 def require_ffmpeg() -> None:
     if not has_ffmpeg():
         raise ToolMissing("未检测到 ffmpeg。请安装后重试（或设 FFMPEG_PATH / POLYFACE_FFMPEG 指向它）。")
 
 
-def probe(path: str | Path) -> dict:
+def probe(path: str | Path, *, on_raw=None) -> dict:
     """探测媒体信息。失败时给**互不相同**的明确原因，而不是甩 ffmpeg 日志。"""
     require_ffmpeg()
     src = Path(path)
     if not src.is_file():
         raise InputMissing(f"输入文件不存在：{src}")
     cp = _run([_ffmpeg_bin("ffprobe"), "-v", "error", "-print_format", "json",
-               "-show_format", "-show_streams", str(src)])
+               "-show_format", "-show_streams", str(src)], on_raw=on_raw)
     if cp.returncode != 0:
         raise InputMissing(f"无法识别为媒体文件：{src}\n{cp.stderr.strip()[-200:]}")
     info = json.loads(cp.stdout or "{}")
@@ -137,11 +199,11 @@ _SIL_START = re.compile(r"silence_start:\s*([\d.]+)")
 _SIL_END = re.compile(r"silence_end:\s*([\d.]+)")
 
 
-def detect_pauses(path: str | Path, noise_db: int, min_sec: float) -> list[tuple[float, float]]:
+def detect_pauses(path: str | Path, noise_db: int, min_sec: float, *, on_raw=None) -> list[tuple[float, float]]:
     """返回静音段 [(起, 止)]。纯解析 ffmpeg 输出，无随机性。"""
     cp = _run([_ffmpeg_bin("ffmpeg"), "-hide_banner", "-nostats",
                "-i", str(path), "-af", f"silencedetect=noise={noise_db}dB:d={min_sec}",
-               "-f", "null", "-"])
+               "-f", "null", "-"], on_raw=on_raw)
     starts = [float(x) for x in _SIL_START.findall(cp.stderr)]
     ends = [float(x) for x in _SIL_END.findall(cp.stderr)]
     return list(zip(starts, ends))
@@ -171,25 +233,27 @@ def _select_expr(cuts: list[tuple[float, float]]) -> str:
 
 
 def cut_video(src: str | Path, dst: str | Path, cuts: list[tuple[float, float]],
-              crf: int = 23, preset: str = "veryfast") -> None:
+              crf: int = 23, preset: str = "veryfast", *,
+              on_progress=None, expected_sec: float | None = None, on_raw=None) -> None:
     if not cuts:
         raise RoughcutError("没有可剪的停顿（未找到停顿或阈值过大）")
     expr = _select_expr(cuts)
-    cp = _run([_ffmpeg_bin("ffmpeg"), "-y", "-v", "error", "-i", str(src),
-               "-vf", f"select='not({expr})',setpts=N/FRAME_RATE/TB",
-               "-af", f"aselect='not({expr})',asetpts=N/SR/TB",
-               "-c:v", "libx264", "-preset", preset, "-crf", str(crf), "-pix_fmt", "yuv420p",
-               "-c:a", "aac", "-b:a", "128k", str(dst)])
-    if cp.returncode != 0:
-        raise RoughcutError(f"剪裁失败：{cp.stderr.strip()[-300:]}")
+    cmd = [_ffmpeg_bin("ffmpeg"), "-y", "-v", "error", "-i", str(src),
+           "-vf", f"select='not({expr})',setpts=N/FRAME_RATE/TB",
+           "-af", f"aselect='not({expr})',asetpts=N/SR/TB",
+           "-c:v", "libx264", "-preset", preset, "-crf", str(crf), "-pix_fmt", "yuv420p",
+           "-c:a", "aac", "-b:a", "128k", str(dst)]
+    rc_, err = _run_ffmpeg(cmd, expected_sec=expected_sec, on_progress=on_progress, on_raw=on_raw)
+    if rc_ != 0:
+        raise RoughcutError(f"剪裁失败：{err.strip()[-300:]}")
 
 
 # ---------------------------------------------------------------- 转写与字幕（T7–T9）
 
-def extract_wav(src: str | Path, dst: str | Path, rate: int = 16000) -> None:
+def extract_wav(src: str | Path, dst: str | Path, rate: int = 16000, *, on_raw=None) -> None:
     """抽 16k 单声道 wav。**必须走 ffmpeg**：faster-whisper 内部的 PyAV 解码在 av19 上已坏。"""
     cp = _run([_ffmpeg_bin("ffmpeg"), "-y", "-v", "error", "-i", str(src),
-               "-vn", "-ac", "1", "-ar", str(rate), "-c:a", "pcm_s16le", str(dst)])
+               "-vn", "-ac", "1", "-ar", str(rate), "-c:a", "pcm_s16le", str(dst)], on_raw=on_raw)
     if cp.returncode != 0:
         raise RoughcutError(f"抽取音轨失败：{cp.stderr.strip()[-300:]}")
 
@@ -228,15 +292,17 @@ def _subtitle_vf(srt: Path, params: RoughcutParams) -> tuple[str, Path]:
 
 
 def burn_subtitles(src: str | Path, dst: str | Path, srt: str | Path,
-                   params: RoughcutParams) -> None:
+                   params: RoughcutParams, *, on_progress=None,
+                   expected_sec: float | None = None, on_raw=None) -> None:
     srt = Path(srt).resolve()
     vf, cwd = _subtitle_vf(srt, params)
-    cp = _run_in(cwd, [_ffmpeg_bin("ffmpeg"), "-y", "-v", "error",
-                       "-i", str(Path(src).resolve()), "-vf", vf,
-                       "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-                       "-pix_fmt", "yuv420p", "-c:a", "copy", str(Path(dst).resolve())])
-    if cp.returncode != 0:
-        raise RoughcutError(f"烧字幕失败：{cp.stderr.strip()[-300:]}")
+    cmd = [_ffmpeg_bin("ffmpeg"), "-y", "-v", "error",
+           "-i", str(Path(src).resolve()), "-vf", vf,
+           "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+           "-pix_fmt", "yuv420p", "-c:a", "copy", str(Path(dst).resolve())]
+    rc_, err = _run_ffmpeg(cmd, cwd=cwd, expected_sec=expected_sec, on_progress=on_progress, on_raw=on_raw)
+    if rc_ != 0:
+        raise RoughcutError(f"烧字幕失败：{err.strip()[-300:]}")
 
 
 def preview_frame(src: str | Path, dst: str | Path, srt: str | Path | None,

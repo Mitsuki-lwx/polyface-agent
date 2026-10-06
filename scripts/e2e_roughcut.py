@@ -187,6 +187,75 @@ def main() -> int:
         check("§2f 改字号 → 渲染结果确实不同", fa.read_bytes() != fb.read_bytes(),
               f"{fa.stat().st_size}B vs {fb.stat().st_size}B")
 
+    # ---------- §obs 可观测（docs/checklist_observability.md）----------
+    obs_ev = WORK / f"obs-{RUN}.jsonl"
+    obs_out = WORK / f"obs-{RUN}.mp4"
+    cp = run_cli(str(fixture), "--yes", "--events", str(obs_ev), "--heartbeat", "1",
+                 "-o", str(obs_out))
+    check("§obs-a 正常档跑通且事件文件落盘", cp.returncode == 0 and obs_ev.is_file(),
+          cp.stderr.strip()[:80])
+    evs = [json.loads(x) for x in obs_ev.read_text(encoding="utf-8").splitlines()] if obs_ev.is_file() else []
+    kinds = {(e["stage"], e["kind"]) for e in evs}
+    stages = sorted({e["stage"] for e in evs})
+    info("事件阶段", stages)
+    need = ["探测", "找停顿", "剪裁", "抽音轨", "转写", "烧字幕"]
+    missing = [s for s in need if (s, "start") not in kinds or (s, "end") not in kinds]
+    check("§obs-b 每个阶段都有 start 与 end", not missing, f"缺 {missing}" if missing else f"{len(evs)} 条事件")
+    check("§obs-c 事件带 schema 版本且逐行可解析",
+          bool(evs) and all(e["version"] == 1 for e in evs))
+    check("§obs-d 事件里不含素材内容（脱敏）",
+          not any(("大家好" in json.dumps(e, ensure_ascii=False)) or
+                  ("四月" in json.dumps(e, ensure_ascii=False)) for e in evs))
+    # ⚠️ 单调性是**按阶段**说的：剪裁跑到 100% 后，转写会从 0 重新开始 ——
+    # 全局比较会把这种正常的"新阶段重新计数"误判成进度倒退。
+    by_stage: dict[str, list[float]] = {}
+    for e in evs:
+        if e["kind"] == "progress" and "pct" in e["fields"]:
+            by_stage.setdefault(e["stage"], []).append(e["fields"]["pct"])
+    bad = {k: v for k, v in by_stage.items() if v != sorted(v) or max(v) > 100}
+    check("§obs-e 进度按阶段单调不减且 ≤100", bool(by_stage) and not bad,
+          f"{sum(len(v) for v in by_stage.values())} 次上报；异常 {bad}" if bad else
+          f"{sum(len(v) for v in by_stage.values())} 次上报 / {len(by_stage)} 个阶段")
+    beats = [e for e in evs if e.get("message") == "心跳"]
+    check("§obs-f 慢阶段有心跳（转写 ≥1 次）", len(beats) >= 1, f"{len(beats)} 次")
+
+    # 报告里的耗时必须与事件文件对得上
+    rep = {ln.split()[0]: float(ln.split()[1].rstrip("s"))
+           for ln in cp.stdout.splitlines()
+           if ln.startswith("  ") and len(ln.split()) == 2 and ln.split()[1].endswith("s")}
+    ev_dur = {e["stage"]: e["elapsed_ms"] / 1000 for e in evs if e["kind"] == "end"}
+    if "转写" in rep and "转写" in ev_dur:
+        check("§obs-g 报告耗时与事件文件一致（≤0.5s）",
+              abs(rep["转写"] - ev_dur["转写"]) <= 0.5, f"报告 {rep['转写']}s / 事件 {ev_dur['转写']:.2f}s")
+    else:
+        check("§obs-g 报告耗时与事件文件一致（≤0.5s）", False, f"rep={rep} ev={ev_dur}")
+
+    # 安静档：没有阶段行，但产物一致
+    quiet_out = WORK / f"quiet-{RUN}.mp4"
+    cp_q = run_cli(str(fixture), "--yes", "--level", "quiet", "--no-events",
+                   "--heartbeat", "0", "-o", str(quiet_out))
+    check("§obs-h 安静档没有阶段行", "▶" not in cp_q.stdout and "✓" not in cp_q.stdout,
+          f"{len(cp_q.stdout.splitlines())} 行")
+    check("§obs-i 安静档仍产出成片", quiet_out.is_file() and quiet_out.stat().st_size > 10_000)
+    # 三档比较必须**同一心跳设置**：否则比的是"心跳谁多"，不是"详细程度"
+    cp_n = run_cli(str(fixture), "--yes", "--level", "normal", "--no-events",
+                   "--heartbeat", "0", "-o", str(WORK / f"nm-{RUN}.mp4"))
+    cp_v = run_cli(str(fixture), "--yes", "--level", "verbose", "--no-events",
+                   "--heartbeat", "0", "-o", str(WORK / f"vb-{RUN}.mp4"))
+    counts = [len(x.splitlines()) for x in (cp_q.stdout, cp_n.stdout, cp_v.stdout)]
+    check("§obs-j 三档输出行数严格递增", counts[0] < counts[1] < counts[2], counts)
+    check("§obs-k 详细档能看到实际执行的命令", "ffmpeg" in cp_v.stdout and "    | " in cp_v.stdout)
+
+    # 事件目录不可写 → 业务必须照跑完
+    blocker = WORK / "blocker-file"
+    blocker.write_text("x", encoding="utf-8")
+    ro_out = WORK / f"ro-{RUN}.mp4"
+    cp_ro = run_cli(str(fixture), "--yes", "--events", str(blocker / "e.jsonl"),
+                    "-o", str(ro_out))
+    check("§obs-l 事件目录不可写 → 业务仍成功且告警",
+          cp_ro.returncode == 0 and ro_out.is_file() and "[warn]" in cp_ro.stdout,
+          f"rc={cp_ro.returncode}")
+
     print("\n===== 汇总 =====")
     passed = sum(1 for _, ok in results if ok)
     print(f"  {passed}/{len(results)} 通过")
