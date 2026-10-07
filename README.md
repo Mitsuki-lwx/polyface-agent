@@ -201,6 +201,7 @@ polyface/
 | `LLM_MOCK` | `.env` | `true` | `false` 才走真实模型（需 Key） |
 | `LLM_BASE_URL` / `LLM_MODEL` | `.env` | SenseNova | 换服务商改这两项 |
 | `LLM_TIMEOUT_SEC` | `.env` | `60` | **单次**模型调用超时 |
+| `LLM_JSON_RETRIES` | `.env` | `2` | 模型返回的 JSON 解析失败时的重试次数。模型偶发返回坏 JSON 是常态，不重试的话一次就整个平台失败 |
 | `LLM_PARALLEL` | `.env` | `false` | 多平台并行。默认串行（上游限流） |
 | `CORS_ORIGINS` | `.env` | 空 | 留空 = 不启用跨域（推荐） |
 | `FFMPEG_PATH` | `.env` | 空 | 音视频入料用；空则找 PATH |

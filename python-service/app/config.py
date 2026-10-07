@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     llm_timeout_sec: int = 60
     # 单模型最大尝试次数（含首次）
     llm_max_attempts: int = 3
+    # **JSON 解析失败**的重试次数（在 llm_max_attempts 之外另算，含首次）。
+    # 为什么需要：模型偶发返回坏 JSON 是常态（实测冒烟 4 次草稿调用里中 2 次），
+    # 而 `chat()` 的重试只管网络/限流 —— 解析发生在它返回**之后**，
+    # 不重试的话一次坏 JSON 就整个平台失败（LLMParseError 直接冒到调用方）。
+    # 取 2 而不是沿用 llm_max_attempts：避免与模型链重试相乘导致最坏情况爆炸。
+    llm_json_retries: int = 2
     # 模型降级链的**追加**项（主模型不可用时依次尝试）
     # 实测结论：deepseek-v4-pro / glm-5.2 / sensenova-6.8-flash-lite 稳定可用；
     #          kimi-k3 常限流、sensenova-u1-* 报 model is not found → 不作备选

@@ -210,13 +210,40 @@ def chat(prompt: str, system: str | None = None, *, temperature: float = 0.4,
 
 def chat_json(prompt: str, system: str | None = None, *, temperature: float = 0.2,
               model: str | None = None, scene: str = "", platform: str | None = None) -> dict:
-    """调用真实 LLM 并解析为 JSON（容错剥离 markdown fence）。"""
-    raw = chat(prompt, system=system, temperature=temperature,
-               model=model, scene=scene, platform=platform)
-    try:
-        return parse_json(raw)
-    except ValueError as e:
-        raise LLMParseError(str(e)) from e
+    """调用真实 LLM 并解析为 JSON（容错剥离 markdown fence）。
+
+    **解析失败要重试**（`LLM_JSON_RETRIES`，默认 2）：
+    `chat()` 的重试只管网络/限流/额度，而 JSON 解析发生在它返回**之后** ——
+    不在这里重试的话，模型偶发返回一次坏 JSON 就会让整个平台生成失败。
+    实测（2026-10-07 冒烟）：4 次草稿调用里 2 次中招，报 `LLMParseError: Expecting ',' delimiter`。
+    """
+    s = get_settings()
+    attempts = max(1, int(s.llm_json_retries))
+    tid = current_trace_id()
+    last: LLMParseError | None = None
+
+    for attempt in range(1, attempts + 1):
+        raw = chat(prompt, system=system, temperature=temperature,
+                   model=model, scene=scene, platform=platform)
+        try:
+            return parse_json(raw)
+        except ValueError as e:
+            last = LLMParseError(str(e))
+            # 进用量日志：否则「这件事多常发生」只能靠翻日志猜（模型未知 ——
+            # chat() 只返回正文，不返回它最终用了链上的哪个模型）
+            usage.record_call(trace_id=tid, scene=scene, platform=platform,
+                              model="", attempt=attempt, ok=False,
+                              error_type="LLMParseError", prompt_chars=len(prompt),
+                              completion_chars=len(raw or ""))
+            if attempt < attempts:
+                wait = backoff_seconds(attempt - 1)
+                logger.warning("LLM JSON 解析失败(第%d/%d次) → %.1fs 后重试：%s",
+                               attempt, attempts, wait, e)
+                time.sleep(wait)
+                continue
+            logger.warning("LLM JSON 解析失败，放弃（attempt=%d/%d）：%s", attempt, attempts, e)
+
+    raise last or LLMParseError("解析失败")
 
 
 def parse_json(raw: str) -> dict:
