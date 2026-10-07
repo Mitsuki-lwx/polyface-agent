@@ -173,6 +173,9 @@ if ! "$VPY" "$(native_path "$ROOT/scripts/doctor.py")" --quiet; then
   echo "存在阻塞项，请按上方提示处理后重试。"
   exit 1
 fi
+# doctor.py --quiet 成功时**什么都不打印**，标题下面会是一片空白 ——
+# 补一行明确回执，否则用户看不出体检到底过没过（docs/62 §8 跟进项）。
+echo "[OK  ] 体检通过"
 echo
 echo "============================================================"
 echo " 准备完成。运行 scripts/start.sh 启动。"

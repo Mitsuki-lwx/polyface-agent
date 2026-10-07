@@ -38,7 +38,7 @@
 :: 解压 polyface-<版本>.zip 后，在该目录下：
 scripts\setup.bat     :: 首次运行：建 venv、装依赖、生成 .env
 scripts\start.bat     :: 启动（自动打开浏览器）
-scripts\stop.bat      :: 停止
+scripts\stop.bat      :: 停止（脚本/CI 里加 -y 跳过确认）
 ```
 
 **macOS / Linux**
@@ -47,7 +47,7 @@ scripts\stop.bat      :: 停止
 # 解压 polyface-<版本>.zip 后，在该目录下：
 bash scripts/setup.sh     # 首次运行：建 venv、装依赖、生成 .env
 bash scripts/start.sh     # 启动（自动打开浏览器）
-bash scripts/stop.sh      # 停止
+bash scripts/stop.sh      # 停止（脚本/CI 里加 -y 跳过确认）
 ```
 
 发布包自带预构建的 `polyface.jar`，**不需要装 Maven**。
@@ -222,7 +222,7 @@ polyface/
 **Q：启动后浏览器打不开 / 页面空白？**
 先跑 `python scripts\doctor.py`（macOS/Linux 用 `python3 scripts/doctor.py`）。最常见是端口 8080 或 8000 被别的程序占用，自检会直接报出来并提示两条出路：
 
-1. 用 `scripts\stop.bat`（或 `scripts/stop.sh`）清理旧进程后重试；
+1. 用 `scripts\stop.bat`（或 `scripts/stop.sh`）清理旧进程后重试（非交互：加 `-y`）；
 2. **直接换端口，不用改脚本**：
    ```bash
    POLYFACE_JAVA_PORT=18080 POLYFACE_PY_PORT=18000 bash scripts/start.sh

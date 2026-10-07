@@ -5,6 +5,9 @@
 # 按端口精确结束本应用进程（端口可用 POLYFACE_JAVA_PORT / POLYFACE_PY_PORT 覆盖）。
 # **不误杀**：先查进程名，只结束 java / python 系；其它程序只提示、不动手。
 # 结束前需确认（docs/25 B2/B3）—— 免得误杀你自己在跑的脚本。
+# 脚本 / CI 里用 -y 跳过确认（docs/62 §8 跟进项）。
+#
+#   用法：bash scripts/stop.sh [-y|--yes] [-h|--help]
 # ============================================================
 set -euo pipefail
 
@@ -12,6 +15,26 @@ set -euo pipefail
 PORTS=("${POLYFACE_JAVA_PORT:-8080}" "${POLYFACE_PY_PORT:-8000}")
 LABELS=("Java 后端" "Python LLM 服务")
 SAFE_PROCS="java javaw python python3 pythonw"
+
+# ---------------------------------------------------------- 参数
+# -y / --yes：跳过确认。**不带参数时行为与以前完全一致**（交互式询问）。
+ASSUME_YES=0
+for arg in "$@"; do
+  case "$arg" in
+    -y|--yes) ASSUME_YES=1 ;;
+    -h|--help)
+      echo "用法：bash scripts/stop.sh [-y|--yes]"
+      echo "  -y, --yes   不询问，直接结束占用端口的 java / python 进程"
+      echo "  -h, --help  显示本帮助"
+      echo
+      echo "端口可用 POLYFACE_JAVA_PORT / POLYFACE_PY_PORT 覆盖。"
+      echo "只结束占用这两个端口的 java / python 进程；其它程序一律跳过。"
+      exit 0 ;;
+    *)
+      echo "[警告] 未知参数：$arg（只认 -y / --yes / -h / --help）" >&2
+      exit 2 ;;
+  esac
+done
 
 is_windows() {
   case "$(uname -s 2>/dev/null || echo unknown)" in
@@ -72,16 +95,20 @@ kill_pid() {
 echo "即将检查端口 ${PORTS[0]}（Java 后端）与 ${PORTS[1]}（Python LLM 服务）。"
 echo "只会结束占用这两个端口的 java / python 进程；其它程序一律跳过。"
 echo
-printf '确认继续？[y/N] '
-if ! read -r -t 60 ans; then
-  echo
-  echo "（60 秒无输入）已取消，未结束任何进程。"
-  exit 0
+if [ "$ASSUME_YES" -eq 1 ]; then
+  echo "（已指定 -y，跳过确认）"
+else
+  printf '确认继续？[y/N] '
+  if ! read -r -t 60 ans; then
+    echo
+    echo "（60 秒无输入）已取消，未结束任何进程。"
+    exit 0
+  fi
+  case "$ans" in
+    [yY]*) ;;
+    *) echo "已取消，未结束任何进程。"; exit 0 ;;
+  esac
 fi
-case "$ans" in
-  [yY]*) ;;
-  *) echo "已取消，未结束任何进程。"; exit 0 ;;
-esac
 echo
 
 echo "正在查找 Polyface 进程..."
