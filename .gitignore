@@ -56,3 +56,8 @@ outputs/roughcut-e2e/
 # ===== 粗剪任务端到端产物（scripts/e2e_roughcut_jobs.py）=====
 outputs/roughcut-jobs-e2e/
 outputs/gen-e2e/
+
+# ===== 评测集（docs/spec_eval.md）=====
+# 素材**冻结进仓库**（它是测试基准，必须随代码走），
+# 但跑分**报告**是产物，不进仓库 —— 只保留 eval/corpus/
+eval/reports/

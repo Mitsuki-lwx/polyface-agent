@@ -32,6 +32,7 @@ from ..schemas_gen import (
     QaReport,
     UserTemplate,
 )
+from . import zhnum
 from .prompts import (
     BRIEF_SYSTEM,
     CLIP_SYSTEM,
@@ -86,6 +87,36 @@ def _numbers_in(text: str) -> dict[str, str]:
         out.setdefault(_norm_num(tok), tok)
     return out
 
+
+
+def _num_value(tok: str) -> float | None:
+    """阿拉伯数字 token → 数值。`1179万`→11790000.0，`5.2%`→5.2，`99`→99.0。"""
+    t = tok.strip().rstrip("%")
+    mult = 1.0
+    if t.endswith(("万", "w", "W")):
+        mult, t = 10000.0, t[:-1]
+    elif t.endswith("亿"):
+        mult, t = 100000000.0, t[:-1]
+    t = t.replace(",", "")
+    try:
+        return float(t) * mult
+    except ValueError:
+        return None
+
+
+def _num_values(text: str, *, strict: bool = False) -> dict[float, str]:
+    """文本里数字的**数值** → 原始写法（阿拉伯 + 中文数字统一归一化）。
+
+    `strict` 见 `_rule_qa` 里的用法说明：素材侧宽松、稿件侧严格。
+    """
+    out: dict[float, str] = {}
+    for norm, original in _numbers_in(text).items():   # {归一化形式: 原文}
+        v = _num_value(norm)
+        if v is not None:
+            out.setdefault(v, original)                 # 展示用原文，别改写成归一化形式
+    for v in zhnum.numbers_in(text, strict=strict):
+        out.setdefault(float(v), str(v))
+    return out
 
 
 def _clip(text: str, n: int) -> str:
@@ -300,13 +331,20 @@ def _rule_qa(dna: dict, draft: DraftPayload, mat: StructuredMaterial) -> tuple[l
 
     # 事实约束：正文中出现的数字若在素材事实清单无依据 → warning(不硬拦，交由人工/LLM)
     # 合并为一条：原先每个数字刷一条，4 条噪声会把同批真告警挤出视野（docs/52 D4）。
+    #
+    # ⚠️ 比的是**数值**，且两边不对称（2026-10-07 修）：
+    #   - 素材侧宽松：中文数字都算依据 —— 否则素材写「九十九」、稿件写「99」会误报
+    #     （实测就是这样给用户报了「无依据的数字: 400、99」）
+    #   - 稿件侧严格：只查像数字的中文数字（带单位或 ≥2 位）——
+    #     否则「迈出这一步」里的「一」会被当成一个数字去比对，又是一类误报
+    # 展示仍用**原文**（用户写的是 3w，不要给他改写成 3万）。
     fact_text = " ".join(f.text for f in mat.facts)
-    in_body, in_facts = _numbers_in(draft.body), _numbers_in(fact_text)
-    unsupported = sorted(n for n in in_body if n not in in_facts)
+    allowed = set(_num_values(fact_text, strict=False))
+    body_vals = _num_values(draft.body, strict=True)
+    unsupported = [tok for v, tok in sorted(body_vals.items()) if v not in allowed]
     if unsupported:
-        # 展示原文（用户写的是 3w，不要给他改写成 3万）
         warnings.append("正文含素材中无依据的数字: "
-                        + "、".join(in_body[n] for n in unsupported) + "（请确认或删除）")
+                        + "、".join(unsupported) + "（请确认或删除）")
     return issues, warnings
 
 

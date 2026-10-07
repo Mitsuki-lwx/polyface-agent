@@ -123,3 +123,33 @@ def test_norm_num_keeps_original_for_display():
 def test_decimal_and_int_are_distinct():
     """3b. `3.5亿` 与 `35亿` 不是同一个数。"""
     assert _numbers_in("3.5亿") != _numbers_in("35亿")
+
+
+# ============================================================ 中文数字（2026-10-07 修）
+
+def test_no_warning_when_material_uses_chinese_numeral():
+    """**实测误报的回归**：素材事实写「定价九十九」，稿件写「99」—— 那是有依据的。
+
+    修前会给用户报「正文含素材中无依据的数字: 400、99（请确认或删除）」，
+    让他去删一个明明有依据的数。
+    """
+    assert num_warnings("我搭了付费专栏，定价99，卖了400多份。", "付费专栏定价九十九，卖了四百多份") == []
+
+
+def test_chinese_numeral_fabrication_still_caught():
+    """归一化之后**真幻觉照样要抓** —— 别把校验修成永远不报。"""
+    w = num_warnings("我搭了付费专栏，定价199，卖了400多份。", "付费专栏定价九十九，卖了四百多份")
+    assert len(w) == 1 and "199" in w[0]
+
+
+def test_no_warning_for_idiomatic_chinese_numeral():
+    """「迈出这一步」「两下搞定」不是事实数字 —— 别把它当数字去比对。"""
+    assert num_warnings("迈出这一步并不难，两下就想明白了。", "素材里一个数字都没有") == []
+
+
+def test_bare_unit_char_is_not_a_number():
+    """「去年赚了 777 万」里的那个「万」单独出现时不是数字，不能解析成 10000。"""
+    w = num_warnings("去年赚了 777 万。", "无数字素材")
+    assert len(w) == 1
+    assert "777" in w[0]
+    assert "10000" not in w[0]

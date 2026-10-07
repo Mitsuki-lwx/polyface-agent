@@ -337,6 +337,34 @@ polyface/
 | 专项 | 11-74：模板管理 / 示例学习 / 音视频入料 / Release 打包 / LLM 加固 / 平台 DNA 调研 / 质检加固 / 事实闭环 / 长任务预算 / 启动脚本加固 / 发布包内验证 / **编辑器适配器与封面成图** / **编辑器进程编排与内嵌** / **统一资产库** —— 每项都是 task + spec + checklist + 交付说明 四件套 |
 | 评估 | 71 产品路线再评估（对照「AI 轻量剪映」的差距清单：素材库 / 多模态 / 编排 / harness / 粗剪细剪） |
 
+### 评测集（防退化）—— 给改 prompt 的人用
+
+**问题**：改一句 system prompt，以前唯一能发现退化的方式是人工看几篇稿子。
+328 项 Python + 90 项 Java 测试全绿**不能**说明 prompt 没退化 —— 它们跑在 `LLM_MOCK=true` 下。
+
+**做法**：一批**冻结素材** + 一组**机械性质断言** + 真实跑分。见 `docs/spec_eval.md`。
+
+```bash
+# 只算成本，不发请求
+python scripts/eval/run_eval.py --dry-run
+
+# 全矩阵（5 平台 × 10 条）；中断可续跑
+python scripts/eval/run_eval.py
+
+# 小规模试跑 / 单平台
+python scripts/eval/run_eval.py --limit 2 --platforms xhs
+
+# 与上次对比（prompt 指纹不同会标为「不可比」，不静默比较）
+python scripts/eval/run_eval.py --baseline eval/reports/<时间戳>/report.json
+
+# 看当前 prompt 指纹
+python scripts/eval/fingerprint.py
+```
+
+> ⚠️ **它不测什么**：报告只说明「**同一批输入下产出有没有变差**」。
+> 它**不能**说明产品有没有用 —— 那是第三关（`docs/50`）的事，需要一位真实作者。
+> 这句话也印在每份报告抬头。
+
 ## 合规声明
 
 本工具**只处理你自有或已获授权的素材**；产出"改写建议稿"而非搬运；**不提供自动发布**，

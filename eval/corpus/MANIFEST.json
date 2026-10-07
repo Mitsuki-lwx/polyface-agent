@@ -1,0 +1,136 @@
+{
+  "_note": "素材集清单。**改动本文件等同于改动测试基准**，必须显式提交并在 PR 里说明。",
+  "version": "v1",
+  "count": 10,
+  "spec": {
+    "chars_min": 300,
+    "chars_max": 2000,
+    "min_numbers": 3,
+    "min_entities": 2,
+    "min_claims": 2
+  },
+  "gen": {
+    "model_configured": "deepseek-v4-flash",
+    "models_used": {
+      "glm-5.2": 5,
+      "deepseek-v4-flash": 7,
+      "deepseek-v4-pro": 1
+    },
+    "mock": false,
+    "temperature": 0.9,
+    "ts": "2026-10-07T18:29:15",
+    "prompt_fingerprint": "50bb64dff13578a1"
+  },
+  "items": [
+    {
+      "id": "m01",
+      "title": "辞职一年，我靠什么活下来",
+      "topic": "个人成长与职业转折（辞职/转行/第一次独立做成一件事）",
+      "features": {
+        "chars": 436,
+        "numbers": 4,
+        "entities": 4,
+        "claims": 2
+      }
+    },
+    {
+      "id": "m02",
+      "title": "副业两年，我的收入结构和踩过的坑",
+      "topic": "副业与收入结构（做副业多久、赚了多少、踩了什么坑）",
+      "features": {
+        "chars": 476,
+        "numbers": 14,
+        "entities": 2,
+        "claims": 2
+      }
+    },
+    {
+      "id": "m03",
+      "title": "用Notion搞定全家日程管理",
+      "topic": "效率工具与方法（自己怎么用某个工具/流程把事做完）",
+      "features": {
+        "chars": 1334,
+        "numbers": 9,
+        "entities": 3,
+        "claims": 2
+      }
+    },
+    {
+      "id": "m04",
+      "title": "9块9的战争还没打完",
+      "topic": "行业观察（某个行业最近发生了什么变化，自己的判断）",
+      "features": {
+        "chars": 794,
+        "numbers": 8,
+        "entities": 2,
+        "claims": 2
+      }
+    },
+    {
+      "id": "m05",
+      "title": "从跑1公里就喘到半马：我坚持跑步180天的体感数据",
+      "topic": "健康与运动（坚持某项运动的真实变化，含体感数据）",
+      "features": {
+        "chars": 964,
+        "numbers": 46,
+        "entities": 6,
+        "claims": 3
+      }
+    },
+    {
+      "id": "m06",
+      "title": "零基础在职考CPA，我如何用6个月压线通过税法？",
+      "topic": "学习与考试（备考某个证书/技能的过程与结果）",
+      "features": {
+        "chars": 607,
+        "numbers": 13,
+        "entities": 4,
+        "claims": 3
+      }
+    },
+    {
+      "id": "m07",
+      "title": "从零开始做小红书账号的六个月复盘",
+      "topic": "内容创作（自己做账号的经历：选题、涨粉、数据）",
+      "features": {
+        "chars": 1275,
+        "numbers": 4,
+        "entities": 6,
+        "claims": 2
+      }
+    },
+    {
+      "id": "m08",
+      "title": "五万块年终奖的三个月复盘",
+      "topic": "理财与消费（一笔具体的钱怎么安排的，结果如何）",
+      "features": {
+        "chars": 562,
+        "numbers": 5,
+        "entities": 3,
+        "claims": 2
+      }
+    },
+    {
+      "id": "m09",
+      "title": "一个人去关西四天三晚，花了四千出头",
+      "topic": "旅行与生活（一次具体的出行经历，含时间与花费）",
+      "features": {
+        "chars": 1057,
+        "numbers": 19,
+        "entities": 6,
+        "claims": 4
+      }
+    },
+    {
+      "id": "m10",
+      "title": "那次跟总监吵完架才学会的向上沟通",
+      "topic": "职场沟通（一次具体的沟通事件与复盘）",
+      "features": {
+        "chars": 965,
+        "numbers": 7,
+        "entities": 2,
+        "claims": 2
+      }
+    }
+  ]
+}
