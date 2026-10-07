@@ -153,3 +153,24 @@ def test_bare_unit_char_is_not_a_number():
     assert len(w) == 1
     assert "777" in w[0]
     assert "10000" not in w[0]
+
+
+def test_no_warning_for_emoji_keycap_markers():
+    """**全量跑分实测的误报**：稿件用小标题 `2️⃣ 再做复利：…`。
+
+    `_numbers_in` 会把键帽里的 `2` 当成数字主张，报「素材里找不到依据的数字: ['2']」。
+    键帽形态是 `数字 + (变体选择符) + U+20E3`，`_LIST_MARKER_RE` 抓不到。
+    """
+    body = "2️⃣ 再做复利：99元专栏，三个月卖出400多份\n3️⃣ 换个思路：不挤独木桥"
+    assert num_warnings(body, "付费专栏定价99，卖了400多份") == []
+
+
+def test_keycap_stripped_but_real_numbers_kept():
+    got = _numbers_in("2️⃣ 再做复利：99元专栏，三个月卖出400多份")
+    assert "2" not in got
+    assert "99" in got and "400" in got
+
+
+def test_keycap_variants_are_stripped():
+    """`1️⃣` `#️⃣` `*️⃣` 都不该留下数字。"""
+    assert _numbers_in("1️⃣ 甲\n#️⃣ 乙") == {}

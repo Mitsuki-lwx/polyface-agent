@@ -62,6 +62,12 @@ _LIST_MARKER_RE = re.compile(
     r"(?m)(?:^[^\w\s]{0,4}[ \t]*|[ \t])\d{1,2}[ \t]*(?:[、)）．]|\.[ \t])(?![ \t]*\d)"
 )
 
+# emoji 数字键帽（`1️⃣` `2️⃣` `#️⃣`）同样是分点标记，不是数字主张。
+# 实测（2026-10-07 全量跑分）：稿件用小标题 `2️⃣ 再做复利：…`，`_numbers_in` 把那个
+# `2` 当成数字主张 → 误报「素材里找不到依据的数字: ['2']」。
+# 形态是 `数字 + (变体选择符) + U+20E3`，所以单靠 `_LIST_MARKER_RE` 抓不到。
+_KEYCAP_RE = re.compile(r"[0-9#*]\ufe0f?\u20e3")
+
 _UNIT_ALIAS_RE = re.compile(r"[wW]$")
 _EMOJI_LEAD = re.compile(r"^[\U0001F300-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF]+[\s·:：]*")
 
@@ -81,9 +87,10 @@ def _numbers_in(text: str) -> dict[str, str]:
       1. `\\b` 在中文语境下失效 → 改用数字 lookaround（见 `_NUM_RE` 注释）
       2. 分点序号被当事实数字 → 提取前用 `_LIST_MARKER_RE` 剥离
       3. `3w` 漏检 → 单位类补 `w/W`，并归一化为「万」
+      4. emoji 数字键帽（`2️⃣`）被当数字主张 → 提取前用 `_KEYCAP_RE` 剥离（2026-10-07 补）
     """
     out: dict[str, str] = {}
-    for tok in _NUM_RE.findall(_LIST_MARKER_RE.sub(" ", text)):
+    for tok in _NUM_RE.findall(_KEYCAP_RE.sub(" ", _LIST_MARKER_RE.sub(" ", text))):
         out.setdefault(_norm_num(tok), tok)
     return out
 
