@@ -142,6 +142,17 @@ def test_diff_is_incomparable_when_model_changed(tmp_path):
 
 # ---------------------------------------------------------------- 成本
 
+def test_auto_timeout_scales_with_platforms():
+    """**踩过的坑**：写死 600s 会把 5 平台的正常长跑误判成超时，整条素材的格子全废。
+
+    实测单平台 101~250s，5 平台轻松超 10 分钟。
+    """
+    assert R.auto_timeout(1) >= 600            # 有底
+    assert R.auto_timeout(5) > 600             # 必须随平台数增长
+    assert R.auto_timeout(5) > R.auto_timeout(2)
+    assert R.auto_timeout(0) >= 600            # 防御：平台数为 0 也不崩
+
+
 def test_estimate_counts_cells_and_calls():
     est = R.estimate([{"id": "m01"}, {"id": "m02"}], ["xhs", "douyin"])
     assert est["materials"] == 2 and est["platforms"] == 2 and est["cells"] == 4

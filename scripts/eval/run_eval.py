@@ -262,6 +262,18 @@ def render_md(r: dict, items: list[dict]) -> str:
 
 # ---------------------------------------------------------------- 主流程
 
+def auto_timeout(n_platforms: int) -> int:
+    """按平台数推算单条素材的墙钟上限。
+
+    为什么需要它：实测**单平台**端到端 101~250s（`docs/46`），5 平台轻松超过 10 分钟。
+    写死一个 600s 的默认值会把正常的长跑**误判成超时** —— 整条素材的格子全废，
+    污染基线（这个坑我在启动全量跑时踩到过）。
+
+    400s/平台 + 600s 底：够宽，又不至于在真挂住时无限等。
+    """
+    return max(600, 400 * max(1, n_platforms))
+
+
 def estimate(items: list[dict], platforms: list[str]) -> dict:
     """粗算成本：每平台约 3~4 次 LLM 调用（brief/draft/qa + 可能的 clip），
     理解阶段每条素材 1 次。"""
@@ -279,7 +291,8 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0, help="只用前 N 条素材（0=全部）")
     ap.add_argument("--platforms", default=",".join(DEFAULT_PLATFORMS))
     ap.add_argument("--no-reuse", action="store_true", help="忽略已有结果，全部重跑")
-    ap.add_argument("--timeout", type=int, default=600, help="单条素材墙钟上限（秒）")
+    ap.add_argument("--timeout", type=int, default=0,
+                    help="单条素材墙钟上限（秒）。0=自动（按平台数算），-1=不限")
     ap.add_argument("--jobs", type=int, default=1, help="并行跑几条素材（默认 1=串行）")
     ap.add_argument("--rules", default="", help="断言阈值 JSON 文件（覆盖默认值）")
     ap.add_argument("--baseline", type=Path, default=None, help="基线 report.json")
@@ -298,7 +311,9 @@ def main() -> int:
 
     if args.dry_run:
         est = estimate(items, platforms)
-        print(json.dumps({**est, "dry_run": True, "no_llm_request_sent": True},
+        eff = args.timeout if args.timeout != 0 else auto_timeout(len(platforms))
+        print(json.dumps({**est, "per_material_timeout_sec": eff if eff > 0 else "不限",
+                          "dry_run": True, "no_llm_request_sent": True},
                          ensure_ascii=False, indent=2))
         return 0
 
@@ -320,8 +335,13 @@ def main() -> int:
         else:
             todo.append(it)
 
+    timeout = args.timeout if args.timeout != 0 else auto_timeout(len(platforms))
+    if timeout < 0:
+        timeout = 0
+    print(f"单条素材超时上限：{timeout or '不限'}s")
+
     def process(it: dict) -> tuple[str, dict]:
-        raw = run_one(it, platforms, args.timeout)
+        raw = run_one(it, platforms, timeout)
         if raw["_meta"]["status"] != "ok":
             res = {p: {"ok": False, "kind": "call_failed",
                        "reason": raw["_meta"].get("error", "调用失败"), "assertions": []}
