@@ -7,17 +7,20 @@
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import math
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from .. import dna as dna_lib
 from .. import llm, trace
 from ..config import get_settings
 from ..pipeline.understand import run_understand
+from ..pipeline.runlog import RunLog
 from ..schemas import AnalyzeRequest, StructuredMaterial
 from ..schemas_gen import (
     Brief,
@@ -359,27 +362,77 @@ def run_qa(dna: dict, draft: DraftPayload, mat: StructuredMaterial) -> QaReport:
 
 
 # ---------------------------------------------------------------- orchestrator
+def _open_log(events_path: str | None):
+    """按需打开事件出口。
+
+    - 没给路径 → 返回 None（**不创建任何文件**，向后兼容既有调用）
+    - 给了路径 → 用 `level="quiet"`：只落事件、**不往服务端 stdout 打**（那是服务日志，不是给人看的进度）
+
+    阶段事件底座在 `runlog.py`（带 version 的 JSONL）；这里只是把它接进生成流程。
+    """
+    if not events_path:
+        return None
+    try:
+        return RunLog(sink=Path(events_path), level="quiet")
+    except Exception as e:                      # noqa: BLE001 —— 观测绝不影响业务
+        logger.warning("事件出口初始化失败（生成继续）：%s", e)
+        return None
+
+
+class _NoopReporter:
+    """没有事件出口时的空实现 —— 让调用点不必到处写 if。"""
+
+    summary = ""
+    fields: dict = {}
+
+    def progress(self, pct: float) -> None:      # noqa: D102
+        pass
+
+    def done(self, summary: str = "", **fields) -> None:  # noqa: D102
+        pass
+
+
+@contextlib.contextmanager
+def _stage(log, name: str):
+    """有出口就发阶段事件，没有就什么都不做。"""
+    if log is None:
+        yield _NoopReporter()
+    else:
+        with log.stage(name) as r:
+            yield r
+
+
 def _generate_one(code: str, mat: StructuredMaterial, tone_override: str | None,
                   template: UserTemplate | None = None,
                   creator_profile: dict | None = None,
-                  retrospect_hints: list[str] | None = None) -> PlatformDraft:
+                  retrospect_hints: list[str] | None = None,
+                  log=None) -> PlatformDraft:
     dna = dna_lib.load_dna(code)
-    brief = run_brief(code, dna, mat, tone_override, template, creator_profile, retrospect_hints)
-    draft = run_draft(code, dna, mat, brief, template=template,
-                      creator_profile=creator_profile, retrospect_hints=retrospect_hints)
-    qa = run_qa(dna, draft, mat)
+    with _stage(log, f"平台:{code}:策略") as r:
+        brief = run_brief(code, dna, mat, tone_override, template, creator_profile, retrospect_hints)
+        r.done("策略完成")
+    with _stage(log, f"平台:{code}:成稿") as r:
+        draft = run_draft(code, dna, mat, brief, template=template,
+                          creator_profile=creator_profile, retrospect_hints=retrospect_hints)
+        r.done("成稿完成")
+    with _stage(log, f"平台:{code}:质检") as r:
+        qa = run_qa(dna, draft, mat)
+        r.done("通过" if qa.passed else f"未通过（{len(qa.issues)} 项）")
 
     # 真实模式下 QA 未通过 → 带反馈重写一轮
     if not qa.passed and not llm.is_mock():
         feedback = "；".join(qa.issues)
-        draft = run_draft(code, dna, mat, brief, feedback=feedback, template=template,
-                          creator_profile=creator_profile, retrospect_hints=retrospect_hints)
-        qa = run_qa(dna, draft, mat)
+        with _stage(log, f"平台:{code}:改写") as r:
+            draft = run_draft(code, dna, mat, brief, feedback=feedback, template=template,
+                              creator_profile=creator_profile, retrospect_hints=retrospect_hints)
+            qa = run_qa(dna, draft, mat)
+            r.done("改写后通过" if qa.passed else "改写后仍未通过")
 
     # 视频平台：成稿后附剪辑单（A 阶段）
-    clip = run_clip_sheet(dna, mat, draft, template)
-    if clip is not None:
-        draft = draft.model_copy(update={"clip_sheet": clip})
+    with _stage(log, f"平台:{code}:剪辑单"):
+        clip = run_clip_sheet(dna, mat, draft, template)
+        if clip is not None:
+            draft = draft.model_copy(update={"clip_sheet": clip})
 
     return PlatformDraft(
         platform_code=code,
@@ -397,13 +450,16 @@ def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
     省一次 LLM 调用，并保证「解析时看到的事实」== 「生成时用的事实」。
     """
     used_mock = llm.is_mock()
+    log = _open_log(getattr(req, "events_path", None))
     if req.confirmed_facts is not None:
         structured = req.confirmed_facts
         logger.info("using user-confirmed facts; skipping understand step (facts=%d)",
                     len(structured.facts or []))
     else:
         a_req = AnalyzeRequest(raw_text=req.raw_text, source_kind=req.source_kind, title=req.title)
-        structured, _ = run_understand(a_req)
+        with _stage(log, "理解") as r:
+            structured, _ = run_understand(a_req)
+            r.done(f"{len(structured.facts or [])} 条事实")
 
     # 校验平台合法性（统一提前报错）
     for code in req.platforms:
@@ -421,7 +477,7 @@ def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
         # 不包装则子线程内 trace_id 丢失（各平台各自生成新 trace）
         return trace.run_in_context(_generate_one, code, structured,
                                     req.tone_override, req.template,
-                                    req.creator_profile, req.retrospect_hints)
+                                    req.creator_profile, req.retrospect_hints, log)
 
     def _record_failure(code: str, exc: Exception) -> None:
         """单平台失败不致命：记录原因后继续，已完成平台的产物必须交付。"""

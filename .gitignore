@@ -55,3 +55,4 @@ outputs/roughcut-e2e/
 
 # ===== 粗剪任务端到端产物（scripts/e2e_roughcut_jobs.py）=====
 outputs/roughcut-jobs-e2e/
+outputs/gen-e2e/

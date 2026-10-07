@@ -85,7 +85,8 @@ public class Store {
     public record JobRow(long id, String kind, String status, String paramsJson,
                          Long inputAssetId, String inputPath, String outputPath,
                          String srtPath, String cutsPath, String workdir, String eventsPath,
-                         String error, String createdAt, String startedAt, String finishedAt) {
+                         String error, String resultJson,
+                         String createdAt, String startedAt, String finishedAt) {
     }
 
     private final String jdbcUrl;
@@ -182,7 +183,7 @@ public class Store {
                         + "kind TEXT NOT NULL, status TEXT NOT NULL,"
                         + "params_json TEXT, input_asset_id INTEGER, input_path TEXT,"
                         + "output_path TEXT, srt_path TEXT, cuts_path TEXT, workdir TEXT,"
-                        + "events_path TEXT, error TEXT,"
+                        + "events_path TEXT, error TEXT, result_json TEXT,"
                         + "created_at TEXT, started_at TEXT, finished_at TEXT)"
         };
         try (Connection c = DriverManager.getConnection(jdbcUrl); Statement st = c.createStatement()) {
@@ -192,8 +193,30 @@ public class Store {
             ensureDraftTemplateColumns(c);
             ensureTemplateStatusColumns(c);
             ensureFactsAndEditColumns(c);
+            ensureJobResultColumn(c);
         }
         log.info("SQLite schema ready");
+    }
+
+    /**
+     * 老库补列：`job.result_json`（M8 第二片）。
+     *
+     * <p>为什么要单独一列：生成任务需要回显**每个平台**的结果（成了几篇、哪几个失败、为什么），
+     * 而 `params_json` 是**输入**、`error` 只是一句话 —— 塞进去都会让"输入"和"输出"混在一起。
+     */
+    private void ensureJobResultColumn(Connection c) throws java.sql.SQLException {
+        java.util.Set<String> cols = new java.util.HashSet<>();
+        try (Statement st = c.createStatement(); ResultSet rs = st.executeQuery("PRAGMA table_info(job)")) {
+            while (rs.next()) {
+                cols.add(rs.getString("name"));
+            }
+        }
+        if (!cols.contains("result_json")) {
+            try (Statement st = c.createStatement()) {
+                st.execute("ALTER TABLE job ADD COLUMN result_json TEXT");
+                log.info("migrated: job.result_json added");
+            }
+        }
     }
 
     /**
@@ -1042,6 +1065,14 @@ public class Store {
     public static final String JOB_SUCCEEDED = "succeeded";
     public static final String JOB_FAILED = "failed";
     public static final String JOB_CANCELED = "canceled";
+    /**
+     * **部分失败**：多平台任务里有的成了、有的没成。
+     *
+     * <p>为什么需要它：只有 succeeded/failed 的话，"3 个平台成 2 个"只能二选一 ——
+     * 记 succeeded 会把失败藏起来，记 failed 又抹掉"已经产出了 2 篇"这个事实。
+     * 工作台要能一眼看出"要去看一眼失败的哪个"（见 docs/checklist_async_generate.md §3）。
+     */
+    public static final String JOB_PARTIAL = "partial";
 
     /** 建任务（初始 `queued`）。 */
     public long insertJob(String kind, String paramsJson, Long inputAssetId, String inputPath,
@@ -1075,6 +1106,21 @@ public class Store {
     public int markJobRunning(long id) {
         return updateJob("UPDATE job SET status=?, started_at=? WHERE id=?",
                 JOB_RUNNING, LocalDateTime.now().toString(), id);
+    }
+
+    /** 落终态 + 每平台结果（生成任务用）。 */
+    public int finishJobWithResult(long id, String status, String error, String resultJson) {
+        String sql = "UPDATE job SET status=?, error=?, result_json=?, finished_at=? WHERE id=?";
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, status);
+            ps.setString(2, error);
+            ps.setString(3, resultJson);
+            ps.setString(4, LocalDateTime.now().toString());
+            ps.setLong(5, id);
+            return ps.executeUpdate();
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("finishJobWithResult failed", e);
+        }
     }
 
     /** 落终态。`error` 只有失败时才有值。 */
@@ -1172,6 +1218,7 @@ public class Store {
                 rs.getString("params_json"), boxed, rs.getString("input_path"),
                 rs.getString("output_path"), rs.getString("srt_path"), rs.getString("cuts_path"),
                 rs.getString("workdir"), rs.getString("events_path"), rs.getString("error"),
+                rs.getString("result_json"),
                 rs.getString("created_at"), rs.getString("started_at"), rs.getString("finished_at"));
     }
 

@@ -86,6 +86,10 @@ class GenerateRequest(BaseModel):
     # 传入时**跳过理解阶段**（省一次 LLM 调用，且保证「所见即所用」）
     confirmed_facts: StructuredMaterial | None = Field(
         default=None, description="已确认事实(core_message/tone/audience/facts)；有则跳过 understand")
+    # M8 第二片：阶段事件出口。给了就写（带 version 的 JSONL），不给就**什么都不写**（向后兼容）。
+    # 用途：Java 侧的任务编排靠读这个文件算进度（见 docs/spec_async_generate.md §5）。
+    events_path: str | None = Field(
+        default=None, description="可选：阶段事件文件路径（绝对路径）；不传则不写任何文件")
 
 
 class GenerateFailure(BaseModel):

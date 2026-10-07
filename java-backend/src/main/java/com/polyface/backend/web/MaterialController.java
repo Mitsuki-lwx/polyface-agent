@@ -37,13 +37,16 @@ public class MaterialController {
     private final PythonClient python;
     private final Store store;
     private final com.polyface.backend.observability.LangfuseReporter langfuse;
+    private final com.polyface.backend.job.GenerateService generateService;
     private final ObjectMapper mapper = new ObjectMapper();
 
     public MaterialController(PythonClient python, Store store,
-                              com.polyface.backend.observability.LangfuseReporter langfuse) {
+                              com.polyface.backend.observability.LangfuseReporter langfuse,
+                              com.polyface.backend.job.GenerateService generateService) {
         this.python = python;
         this.store = store;
         this.langfuse = langfuse;
+        this.generateService = generateService;
     }
 
     // ---------------- DTO ----------------
@@ -176,52 +179,11 @@ public class MaterialController {
 
         try {
             // FR-33 复盘回写：自动拉画像 + 复盘建议，注入 Python 提示词
-            com.fasterxml.jackson.databind.node.ObjectNode pyBody = mapper.createObjectNode();
-            pyBody.put("raw_text", m.rawText());
-            pyBody.put("source_kind", m.sourceKind() == null ? "general" : m.sourceKind());
-            if (m.title() != null) pyBody.put("title", m.title());
-            var arr = pyBody.putArray("platforms");
-            req.platforms().forEach(arr::add);
-            if (req.tone_override() != null) pyBody.put("tone_override", req.tone_override());
-            if (effectiveTemplate != null && !effectiveTemplate.isNull()) {
-                pyBody.set("template", effectiveTemplate);
-            }
-            // 创作者画像（FR-32→FR-33）
-            store.getProfile().ifPresent(p -> {
-                com.fasterxml.jackson.databind.node.ObjectNode pn = mapper.createObjectNode();
-                pn.put("brand_voice", p.brandVoice());
-                pn.put("domain", p.domain());
-                pn.put("audience", p.audience());
-                pn.put("avoid", p.avoid());
-                pyBody.set("creator_profile", pn);
-            });
-            // 复盘建议（FR-31→FR-33）：从数据库读最近 10 条 retro
-            var hints = store.listRetros(10);
-            if (!hints.isEmpty()) {
-                var hArr = pyBody.putArray("retrospect_hints");
-                for (Store.RetroRow r : hints) {
-                    hArr.add("[" + r.platformCode() + "] " + r.insight());
-                }
-            }
-            // 事实确认闭环（FR-34）：已确认的事实作为生成唯一依据，Python 侧跳过重复理解
-            // 注：facts_json 存的是**数组**，此处按 StructuredMaterial 结构包装
-            if (m.factsConfirmed() && m.factsJson() != null && !m.factsJson().isBlank()) {
-                try {
-                    JsonNode factsArr = mapper.readTree(m.factsJson());
-                    if (factsArr != null && factsArr.isArray() && !factsArr.isEmpty()) {
-                        ObjectNode cf = mapper.createObjectNode();
-                        cf.put("core_message", m.coreMessage() == null ? "" : m.coreMessage());
-                        cf.put("tone", m.tone() == null ? "" : m.tone());
-                        cf.put("audience", m.audience() == null ? "" : m.audience());
-                        cf.set("facts", factsArr);
-                        pyBody.set("confirmed_facts", cf);
-                        log.info("material {} 使用已确认事实，将跳过重复理解", id);
-                    }
-                } catch (Exception e) {
-                    log.warn("facts_json 解析失败，回退为重新理解：{}", e.getMessage());
-                }
-            }
-            JsonNode genResp = python.postGenerate(pyBody);
+            // 组装请求体交给共用服务（M8 第二片）：同一份逻辑也给异步任务用，
+            // 抄两份必然漂移（画像/复盘/已确认事实这几块最容易漏一处）
+            ObjectNode pyBody = generateService.buildBody(m, req.platforms(), effectiveTemplate,
+                    req.tone_override(), null);
+            JsonNode genResp = generateService.callPython(pyBody);
             boolean mock = genResp.path("used_mock").asBoolean(false);
 
             ObjectNode out = mapper.createObjectNode();
@@ -234,25 +196,18 @@ public class MaterialController {
             ArrayNode draftsOut = out.putArray("drafts");
 
             JsonNode pyDrafts = genResp.path("drafts");
-            for (JsonNode pd : pyDrafts) {
-                String code = pd.path("platform_code").asText("?");
-                String name = pd.path("platform_name").asText(code);
-                boolean passed = pd.path("qa").path("passed").asBoolean(false);
-                String status = passed ? "qa_passed" : "needs_review";
-
-                long draftId = store.insertDraft(
-                        id, code, name,
-                        pd.path("brief").toString(),
-                        pd.path("draft").toString(),
-                        pd.path("qa").toString(),
-                        status, tplId, tplVer);
-
+            // 落库走共用服务（**唯一一份**）；它按 pyDrafts 顺序返回，故可按下标对齐回响应
+            java.util.List<com.polyface.backend.job.GenerateService.StoredDraft> stored =
+                    generateService.storeDrafts(id, pyDrafts, tplId, tplVer);
+            for (int i = 0; i < stored.size(); i++) {
+                com.polyface.backend.job.GenerateService.StoredDraft sd = stored.get(i);
+                JsonNode pd = pyDrafts.get(i);
                 ObjectNode d = draftsOut.addObject();
-                d.put("id", draftId);
+                d.put("id", sd.id());
                 d.put("material_id", id);
-                d.put("platform_code", code);
-                d.put("platform_name", name);
-                d.put("status", status);
+                d.put("platform_code", sd.platformCode());
+                d.put("platform_name", sd.platformName());
+                d.put("status", sd.status());
                 if (tplId != null) {
                     d.put("template_id", tplId);
                     d.put("template_version", tplVer);

@@ -562,43 +562,106 @@ function renderFailures(list){
 
 $("btnGenerate").onclick = async (opts)=>{
   const plats = (opts && opts.platforms && opts.platforms.length) ? opts.platforms : selectedPlats();
-  const btn=$("btnGenerate"); btn.disabled=true; btn.innerHTML='<span class="spinner"></span> 生成中…';
-  const n = plats.length;
-  $("genStatus").textContent = n > 1
-    ? `生成中（${n} 个平台，每个约 1~4 分钟，上游限流时更久）…`
-    : "生成中（brief→draft→qa，遇限流自动重试）…";
+  const btn=$("btnGenerate"); btn.disabled=true; btn.innerHTML='<span class="spinner"></span> 已发起…';
   $("genStatus").style.color="var(--sub)";
   $("traceLine").textContent="";
   renderFailures([]);
-  const startedAt = Date.now();
   try{
     const sel = $("tplSelect").value;
-    const body = {
+    // M8 第二片：生成改走**后台任务** —— 同步 fetch 在多平台串行时必然超时，
+    // 而且超时后前端只知道"失败"，看不到跑到哪了。
+    const r = await j("POST", "/api/jobs", {
+      kind: "generate",
+      material_id: currentMaterialId,
       platforms: plats,
-      tone_override: null,
       template_id: sel ? +sel : null,
       template: sel ? null : buildTemplate()
-    };
-    const r = await j("POST", `/api/materials/${currentMaterialId}/generate`, body);
-    drafts = r.drafts || [];
-    const secs = ((Date.now() - startedAt)/1000).toFixed(0);
-    const okN = (r.ok_count != null) ? r.ok_count : drafts.length;
-    const failN = (r.fail_count != null) ? r.fail_count : 0;
-    if(failN > 0){
-      $("genStatus").textContent = `⚠️ 部分完成（成功 ${okN} / 失败 ${failN}，${secs}s）`;
-      $("genStatus").style.color = "var(--brand)";
-    }else{
-      $("genStatus").textContent = `✅ 完成（${r.used_mock?"mock":"真实"}，成功 ${okN}，${secs}s）`;
-      $("genStatus").style.color = "var(--ok)";
-    }
-    renderTabsFromDb(r.drafts, null);
-    renderFailures(r.failures || []);
-    await showTraceSummary(r);
-    loadHistory();
+    });
+    pollGenerateJob(r.job_id, plats.length);
   }catch(e){
     $("genStatus").textContent="❌ "+e.message; $("genStatus").style.color="var(--brand)";
-  } finally { btn.disabled=false; btn.innerHTML="🚀 一键生成多平台稿件"; }
+    btn.disabled=false; btn.innerHTML="🚀 一键生成多平台稿件";
+  }
 };
+
+// 生成任务的轮询：进度显示「第 n/m 个平台 · 当前阶段」；结束后刷新稿件 + 给失败平台重试入口
+let genPollTimer = null;
+function stopGenPolling(){ if(genPollTimer){ clearInterval(genPollTimer); genPollTimer = null; } }
+
+async function pollGenerateJob(jobId, total){
+  stopGenPolling();
+  const btn=$("btnGenerate");
+  const tick = async ()=>{
+    let job;
+    try{ job = await j("GET", `/api/jobs/${jobId}`); }
+    catch(e){ stopGenPolling(); $("genStatus").textContent="❌ 任务查询失败："+e.message;
+              btn.disabled=false; btn.innerHTML="🚀 一键生成多平台稿件"; return; }
+    const p = job.progress || {};
+    // 平台级进度来自 Java 写的「平台」事件（fields.index/total）；阶段级来自 Python 写的阶段事件
+    const stage = p.stage || "";
+    $("genStatus").textContent = `生成中 · ${stage || "排队中"}`
+      + (p.pct != null ? ` (${p.pct}%)` : "")
+      + ` · 已完成 ${(p.done_stages||[]).length} 步`
+      + (p.stalled ? " · ⚠️ 疑似卡住" : "");
+    if(["succeeded","failed","partial","canceled"].includes(job.status)){
+      stopGenPolling();
+      btn.disabled=false; btn.innerHTML="🚀 一键生成多平台稿件";
+      await onGenerateJobDone(job, total);
+    }
+  };
+  await tick();
+  genPollTimer = setInterval(tick, 1000);
+}
+
+async function onGenerateJobDone(job, total){
+  const res = job.result || {};
+  const okN = res.ok_count || 0, failN = res.fail_count || 0;
+  const secs = job.started_at && job.finished_at
+    ? Math.max(0, Math.round((new Date(job.finished_at) - new Date(job.started_at))/1000)) : null;
+  if(job.status === "canceled"){
+    $("genStatus").textContent = "已取消";
+    $("genStatus").style.color = "var(--sub)";
+  }else if(job.status === "partial"){
+    $("genStatus").textContent = `⚠️ 部分完成（成功 ${okN} / 失败 ${failN}${secs!=null?`，${secs}s`:""}）`;
+    $("genStatus").style.color = "var(--brand)";
+  }else if(job.status === "succeeded"){
+    $("genStatus").textContent = `✅ 完成（成功 ${okN}${secs!=null?`，${secs}s`:""}）`;
+    $("genStatus").style.color = "var(--ok)";
+  }else{
+    $("genStatus").textContent = `❌ 失败：${job.error || "未知原因"}`;
+    $("genStatus").style.color = "var(--brand)";
+  }
+  // 失败的平台：给原因 + 一键重试（只重跑失败的那些）
+  const failed = (res.failed || []);
+  renderFailures(failed.map(f=>({platform:f.platform_code, error:f.error})));
+  if(job.can_retry){
+    $("failLine").insertAdjacentHTML("beforeend",
+      `<div style="margin-top:6px"><button class="ghost sm" id="btnRetryFailed" style="font-size:12px">
+         🔁 只重试失败的 ${failed.length} 个平台</button></div>`);
+    $("btnRetryFailed").onclick = async ()=>{
+      const b=$("btnRetryFailed"); b.disabled=true; b.textContent="正在重试…";
+      try{
+        const r = await j("POST", `/api/jobs/${job.id}/retry`);
+        $("genStatus").textContent = `已发起重试（只跑 ${(r.platforms||[]).length} 个失败平台）…`;
+        pollGenerateJob(r.job_id, (r.platforms||[]).length);
+      }catch(e){ b.disabled=false; b.textContent="🔁 重试失败平台"; alertFallback(e.message); }
+    };
+  }
+  // 稿件已落库 —— 直接按素材重新拉一次，不在前端拼
+  if(okN > 0){
+    try{
+      const m = await j("GET", `/api/materials/${currentMaterialId}`);
+      renderTabsFromDb(m.drafts || [], null);
+      loadHistory();
+    }catch(e){ /* 拉不到也不影响上面的状态提示 */ }
+  }
+}
+
+function alertFallback(msg){
+  // 不用 alert（headless 下会阻塞页面）—— 就地显示
+  $("genStatus").textContent = "❌ " + msg;
+  $("genStatus").style.color = "var(--brand)";
+}
 
 function renderTabsFromDb(items){
   activePlat = items.length? items[0].platform_code : null;
