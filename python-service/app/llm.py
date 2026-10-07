@@ -19,11 +19,51 @@ import logging
 import random
 import time
 
+import httpx
+
 from . import observability, usage
 from .config import get_settings
 from .trace import current_trace_id
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================ 网关兼容
+
+def unwrap_data_envelope(raw: bytes) -> bytes:
+    """把 `{"data": {标准 OpenAI 响应}, "success": true}` 剥成标准形状。
+
+    **为什么需要**：有些网关（实测 Cline `api.cline.bot`）把成功响应多包一层 `data`，
+    而 OpenAI SDK 只认顶层 `choices` → `r.choices` 是 `None` → 调用方拿到
+    `TypeError: 'NoneType' object is not subscriptable`，**看着完全不像协议问题**
+    （排查时先怀疑了额度、模型、网络，都不是）。
+
+    **判据刻意收窄**，只在「有 `data`、`data` 是对象、且 `data` 里有 `choices`」时才剥：
+    标准 OpenAI 响应（顶层直接是 `id`/`object`/`choices`）不会被误动，
+    错误响应（`{"error": ...}`）也不碰。读不出来就原样放行。
+    """
+    try:
+        d = json.loads(raw)
+    except Exception:  # noqa: BLE001 — 不是 JSON 就原样放行
+        return raw
+    if (isinstance(d, dict) and "choices" not in d
+            and isinstance(d.get("data"), dict) and "choices" in d["data"]):
+        return json.dumps(d["data"]).encode("utf-8")
+    return raw
+
+
+class _UnwrapDataEnvelope(httpx.HTTPTransport):
+    """把响应体交给 `unwrap_data_envelope` 再返回（见该函数的说明）。"""
+
+    def handle_request(self, request):  # noqa: D102
+        resp = super().handle_request(request)
+        return httpx.Response(resp.status_code, headers=resp.headers,
+                              content=unwrap_data_envelope(resp.read()))
+
+
+def _http_client() -> httpx.Client:
+    """带信封兼容的 httpx 客户端。"""
+    return httpx.Client(transport=_UnwrapDataEnvelope())
 
 
 # ============================================================ 错误体系
@@ -150,7 +190,7 @@ def chat(prompt: str, system: str | None = None, *, temperature: float = 0.4,
     for mdl in chain:
         # 启用 Langfuse 时返回 drop-in 包装客户端（自动捕获 model/token）
         client = observability.openai_client(s.llm_base_url, s.llm_api_key,
-                                             float(s.llm_timeout_sec))
+                                             float(s.llm_timeout_sec), _http_client())
         for attempt in range(1, max(1, s.llm_max_attempts) + 1):
             started = time.time()
             try:

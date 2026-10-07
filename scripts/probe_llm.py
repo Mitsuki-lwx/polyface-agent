@@ -63,7 +63,10 @@ def probe_one(base: str, key: str, model: str) -> int:
     body = json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": "只回复两个字：可用"}],
-        "max_tokens": 8,
+        # ⚠️ 别设成 8：推理模型（deepseek-v4.1-flash 等）会把 token 全花在 reasoning 上，
+        # 正文为空 —— 网关直接回 {"error":"empty response content"}，看着像额度问题，
+        # 其实是探针把预算掐太死（2026-10-07 实测踩到）。
+        "max_tokens": 64,
         "temperature": 0,
     }).encode("utf-8")
 

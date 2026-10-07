@@ -77,16 +77,22 @@ def _get_client():
     return _client
 
 
-def openai_client(base_url: str, api_key: str, timeout: float):
-    """返回 OpenAI 客户端；启用观测时返回 Langfuse 包装版（自动埋点）。"""
+def openai_client(base_url: str, api_key: str, timeout: float, http_client=None):
+    """返回 OpenAI 客户端；启用观测时返回 Langfuse 包装版（自动埋点）。
+
+    `http_client` 由调用方提供（`llm._http_client()`）—— 某些网关的响应信封
+    不是标准 OpenAI 形状，需要在那层做兼容，本模块不关心细节。
+    """
     if enabled() and _get_client() is not None:
         try:
             from langfuse.openai import OpenAI as LfOpenAI
-            return LfOpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
+            return LfOpenAI(base_url=base_url, api_key=api_key, timeout=timeout,
+                            http_client=http_client)
         except Exception as e:  # noqa: BLE001
             logger.warning("Langfuse OpenAI 集成不可用，回退原生客户端：%s", e)
     from openai import OpenAI
-    return OpenAI(base_url=base_url, api_key=api_key, timeout=timeout, max_retries=0)
+    return OpenAI(base_url=base_url, api_key=api_key, timeout=timeout, max_retries=0,
+                  http_client=http_client)
 
 
 @contextlib.contextmanager

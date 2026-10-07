@@ -103,7 +103,9 @@ LLM_API_KEY=你的Key
 LLM_MOCK=false
 ```
 
-支持任意 OpenAI 兼容接口（商汤 SenseNova / DeepSeek / 通义 / OpenAI…），改 `LLM_BASE_URL` + `LLM_MODEL` 即可。
+支持任意 OpenAI 兼容接口（商汤 SenseNova / DeepSeek / 通义 / OpenAI / Cline…），改 `LLM_BASE_URL` + `LLM_MODEL` 即可。
+响应信封不是标准形状的网关也做了兼容（实测 Cline 会把成功响应多包一层 `data`，
+不处理的话 SDK 只会报 `TypeError: 'NoneType' object is not subscriptable`，看不出是协议问题）。
 
 ### 启动前自检（可选，出问题时很好用）
 
