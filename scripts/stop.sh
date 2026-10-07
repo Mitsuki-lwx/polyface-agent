@@ -2,7 +2,7 @@
 # ============================================================
 # Polyface 停止（macOS / Linux / Git Bash —— Windows 也可用 stop.bat）
 #
-# 按端口（8080 / 8000）精确结束本应用进程。
+# 按端口精确结束本应用进程（端口可用 POLYFACE_JAVA_PORT / POLYFACE_PY_PORT 覆盖）。
 # **不误杀**：先查进程名，只结束 java / python 系；其它程序只提示、不动手。
 # 结束前需确认（docs/25 B2/B3）—— 免得误杀你自己在跑的脚本。
 # ============================================================
@@ -45,7 +45,14 @@ proc_name() {
   local pid="$1"
   if is_windows; then
     # CSV 形如 "java.exe","38088","Console",... 取第一个字段
-    tasklist /FI "PID eq ${pid}" /FO CSV /NH 2>/dev/null \
+    #
+    # ⚠️ `MSYS2_ARG_CONV_EXCL='*'` 这个前缀**不能省**：Git Bash 会把 `/FI`、`/FO`
+    # 这类**斜杠参数当成路径**，转换成 `D:/Git/FI`，于是 tasklist 报
+    # 「无效参数/选项」→ 拿不到进程名 → stop.sh 永远"查不到进程名，不动手"。
+    # 实测：默认的 Git Bash（自动路径转换开着）下必现；只有刻意关掉转换
+    # （MSYS_NO_PATHCONV=1）时才碰巧能用 —— 所以这个缺陷藏了很久。
+    # 加前缀后**两种模式都正常**（实测过），比写 `//FI` 稳（那种写法只在转换开着时对）。
+    MSYS2_ARG_CONV_EXCL='*' tasklist /FI "PID eq ${pid}" /FO CSV /NH 2>/dev/null \
       | head -1 | cut -d, -f1 | tr -d '"'
     return 0
   fi
@@ -119,7 +126,7 @@ done
 # ---------------------------------------------------------- 复查
 echo
 if [ "$FOUND" -eq 0 ]; then
-  echo "没有发现正在运行的 Polyface 服务（端口 8080 / 8000 均空闲）。"
+  echo "没有发现正在运行的 Polyface 服务（端口 ${PORTS[0]} / ${PORTS[1]} 均空闲）。"
 else
   echo "已停止。正在复查端口..."
   sleep 1

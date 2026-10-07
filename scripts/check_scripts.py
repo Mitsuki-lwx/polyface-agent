@@ -98,6 +98,20 @@ PATH_VAR_ARG_RE = re.compile(
     r'"\$\{?([A-Za-z_]*'
     r'(?:DIR|PATH|FILE|JAR|HOME|ROOT|VENV)'
     r'[A-Za-z_]*)\}?[^"]*"')
+# S9：原生 Windows 程序的**斜杠参数**（`/FI` `/FO` `/NH` …）会被 Git Bash
+# 当成**路径**转换掉（`/FI` → `D:/Git/FI`），程序随即报「无效参数/选项」。
+# 与 S8 同源（都是 MSYS 路径转换），区别是：S8 管"路径参数"，S9 管"斜杠参数"。
+# 实测（2026-10-07）：`stop.sh` 的 `tasklist /FI` 在**默认 Git Bash** 下必现，
+# 只有刻意关掉转换时才碰巧能用 —— 所以藏了很久。
+# 修法是给那条命令加 `MSYS2_ARG_CONV_EXCL='*'` 前缀（两种模式都稳，
+# 比写 `//FI` 强：`//FI` 只在转换开着时才对）。
+NATIVE_SLASH_CMD_RE = re.compile(
+    r'(?<![\w./-])(?:tasklist|netstat|wmic|findstr|robocopy|ipconfig|netsh'
+    r'|schtasks|attrib|xcopy|reg|sc)\s')
+# 形如 /FI、/FO、/NH、/c:、/r 的短斜杠参数；排除路径（后面跟更多斜杠的）
+SLASH_FLAG_RE = re.compile(r'(?<![\w/])/[A-Za-z]{1,4}(?=[\s:\"\']|$)')
+MSYS_EXCL = "MSYS2_ARG_CONV_EXCL"
+
 # 会被**原生程序**读取的环境变量：值不参与 argv 转换，必须自己转
 NATIVE_ENVVARS = ("POLYFACE_DATA_DIR",)
 NATIVE_ENVVAR_RE = re.compile(
@@ -423,6 +437,15 @@ def check_sh(path: Path, code: set[int]) -> list[Issue]:
         if re.search(r"^\s*cd\s+\.\.", c):
             out.append(Issue("S6", "WARN", name, i,
                              "裸 cd .. 依赖当前目录，建议用绝对路径"))
+        # S9：原生程序的斜杠参数被 Git Bash 当路径转换（见常量区说明）
+        if (NATIVE_SLASH_CMD_RE.search(c) and SLASH_FLAG_RE.search(c)
+                and MSYS_EXCL not in c):
+            out.append(Issue(
+                "S9", "WARN", name, i,
+                "原生 Windows 程序的斜杠参数（/FI /FO …）会被 Git Bash 当成路径转换，"
+                "程序会报「无效参数/选项」—— 该行应加前缀 "
+                "MSYS2_ARG_CONV_EXCL='*'（比写 //FI 稳：那种写法只在转换开着时才对）"))
+
         # S8：见文件上方常量区的说明
         if "native_path" not in c:
             unsafe = [v for v in PATH_VAR_ARG_RE.findall(c) if v not in converted]

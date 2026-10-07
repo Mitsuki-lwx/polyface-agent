@@ -422,6 +422,33 @@ def test_finds_all_repo_scripts():
         assert expected in names, f"未发现 scripts/{expected}"
 
 
+# ---------------------------------------------------------------- S9
+# 原生程序的**斜杠参数**会被 Git Bash 当路径转换（/FI -> D:/Git/FI）。
+# 2026-10-07 实测：stop.sh 的 tasklist /FI 在默认 Git Bash 下必现。
+
+def test_s9_native_slash_flag_without_excl_is_flagged(tmp_path):
+    body = GOOD_SH + 'tasklist /FI "PID eq 123" /FO CSV /NH\n'
+    assert "S9" in rules(check(tmp_path, "a.sh", body))
+
+
+def test_s9_with_excl_prefix_is_ok(tmp_path):
+    body = (GOOD_SH
+            + "MSYS2_ARG_CONV_EXCL='*' tasklist /FI \"PID eq 123\" /FO CSV /NH\n")
+    assert "S9" not in rules(check(tmp_path, "a.sh", body))
+
+
+def test_s9_plain_dash_flags_are_not_flagged(tmp_path):
+    """短横线参数（-ano）不参与 MSYS 路径转换 —— 不该报。"""
+    body = GOOD_SH + "netstat -ano -p tcp | grep LISTENING\n"
+    assert "S9" not in rules(check(tmp_path, "a.sh", body))
+
+
+def test_s9_posix_path_argument_is_not_a_slash_flag(tmp_path):
+    """重定向到 /tmp/x.txt 是路径，不是斜杠参数 —— 不该报。"""
+    body = GOOD_SH + "netstat -ano -p tcp > /tmp/pf-netstat.txt\n"
+    assert "S9" not in rules(check(tmp_path, "a.sh", body))
+
+
 def test_repo_scripts_have_zero_issues():
     """**零误报守卫**。
 

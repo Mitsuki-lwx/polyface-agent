@@ -37,20 +37,33 @@ echo "============================================================"
 echo
 
 # ---------------------------------------------------------- 1. 找 Python
+#
+# ⚠️ **不能只看 `command -v`**：Windows 上 `python3` 常常解析到 Microsoft Store 的
+# **占位程序**（`...\WindowsApps\python3.exe`）—— 它什么都不输出、退出码非 0，
+# 但"命令确实存在"。只看 command -v 就会选到它，接着版本检查拿到**空串**，
+# 用户看到的是一句没法排查的「Python 版本过低（当前 ）」。
+# 实测（2026-10-07）就这么卡住了首次 setup。
+# 所以：**逐个候选真的执行一次**，能跑起来且版本够的才采用。
 PY=""
-for cand in python3 python; do
-  if command -v "$cand" >/dev/null 2>&1; then PY="$(command -v "$cand")"; break; fi
+found_but_unusable=""
+for cand in python3 python py; do
+  command -v "$cand" >/dev/null 2>&1 || continue
+  p="$(command -v "$cand")"
+  if "$p" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
+    PY="$p"
+    break
+  fi
+  [ -z "$found_but_unusable" ] && found_but_unusable="$p"
 done
 if [ -z "$PY" ]; then
-  echo "[阻塞] 未找到 Python。"
-  echo "        => 需 Python 3.11 或更高：https://www.python.org/downloads/"
-  exit 1
-fi
-
-# ---------------------------------------------------------- 2. 版本检查
-if ! "$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'; then
-  echo "[阻塞] Python 版本过低（当前 $("$PY" -V 2>&1)）。"
-  echo "        => 需 3.11 或更高：https://www.python.org/downloads/"
+  echo "[阻塞] 未找到可用的 Python（需 3.11 或更高）。"
+  if [ -n "$found_but_unusable" ]; then
+    echo "        探测到的 $found_but_unusable 跑不起来或版本过低。"
+    echo "        ⚠️ Windows 上常见原因：PATH 里的 python3 是 Microsoft Store 的占位程序，"
+    echo "           它会干扰探测 —— 请安装真实 Python 并把它放到 PATH 前面，"
+    echo "           或关闭「应用执行别名」里的 python3。"
+  fi
+  echo "        => https://www.python.org/downloads/"
   exit 1
 fi
 echo "[OK  ] Python $("$PY" -V 2>&1 | awk '{print $2}')（$PY）"

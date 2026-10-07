@@ -7,3 +7,9 @@ pyyaml>=6.0
 # dev / test
 pytest>=8.0
 httpx>=0.27
+
+# ── 可选依赖（**故意不装**，见 docs/58 / ADR-019）──────────────────────────
+# faster-whisper：粗剪/入料的本地语音转写。装了会拖进 torch（数百 MB），
+# 违背"本地一键启动"的卖点，所以不进默认安装；需要时自己
+#   pip install faster-whisper
+# 不装的表现见 README FAQ「粗剪需要装什么」—— 明确报错并给指引，不会静默降级。
