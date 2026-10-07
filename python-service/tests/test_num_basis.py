@@ -174,3 +174,27 @@ def test_keycap_stripped_but_real_numbers_kept():
 def test_keycap_variants_are_stripped():
     """`1️⃣` `#️⃣` `*️⃣` 都不该留下数字。"""
     assert _numbers_in("1️⃣ 甲\n#️⃣ 乙") == {}
+
+
+# ============================================================ 全量跑分实测的三处 bug（2026-10-07）
+
+def test_thousand_unit_is_recognised():
+    """`8千` 曾被拆成 `8` —— 单位类漏了「千」，与素材的「八千」对不上。"""
+    assert _numbers_in("月入稳定在8千-1万2") == {"8千": "8千", "1万2": "1万2"}
+    assert num_warnings("月入稳定在8千。", "月入稳定在八千") == []
+
+
+def test_abbreviated_form_matches_chinese_numeral():
+    """`2万3` 与「两万三」是同一个数。"""
+    assert num_warnings("卡里2万3。", "卡里就剩两万三") == []
+
+
+def test_zero_padded_section_marker_is_stripped():
+    """`**01 收入构成**` 是补零序号，不是数字主张。"""
+    assert _numbers_in("**01 收入构成：不是暴富**") == {}
+
+
+def test_plain_two_digit_number_is_not_eaten():
+    """补零序号规则**不能**误吃真数字。"""
+    assert _numbers_in("12 个月") == {"12": "12"}
+    assert _numbers_in("2023年全国") == {"2023": "2023"}

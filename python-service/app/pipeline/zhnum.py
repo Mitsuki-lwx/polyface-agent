@@ -72,6 +72,19 @@ def parse(text: str) -> int | None:
     return total + section
 
 
+def tokens_in(text: str, *, strict: bool = False) -> dict[int, str]:
+    """文本里中文数字的 **值 → 原文**。展示告警时要用原文（别把「九十九」显示成 99）。"""
+    out: dict[int, str] = {}
+    for m in _CN_RE.finditer(text or ""):
+        token = m.group(0)
+        if strict and not (len(token) >= 2 or any(c in UNITS for c in token)):
+            continue
+        v = parse(token)
+        if v is not None:
+            out.setdefault(v, token)
+    return out
+
+
 def numbers_in(text: str, *, strict: bool = False) -> set[int]:
     """文本里所有中文数字的**数值**集合。
 

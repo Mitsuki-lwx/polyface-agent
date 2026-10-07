@@ -32,7 +32,10 @@ from ..schemas_gen import (
     QaReport,
     UserTemplate,
 )
-from . import zhnum
+from .numberish import (  # noqa: F401 — 数字口径统一在 numberish，避免两处实现分叉
+    numbers_in as _numbers_in, num_value as _num_value,
+    num_values as _num_values, norm_num as _norm_num,
+)
 from .prompts import (
     BRIEF_SYSTEM,
     CLIP_SYSTEM,
@@ -46,85 +49,9 @@ from .prompts import (
 
 logger = logging.getLogger(__name__)
 
-# ⚠️ 不要用 `\b` 界定数字：汉字是 Unicode 词字符，`月入0做到3万` 在 `0` 与 `做` 之间
-# 没有词边界 → `0` 被丢弃；而 `月入0，` 处有边界 → `0` 保留。结果是**同一个数字在素材里
-# 隐身、在正文里现身**，必然误报。改用「前后都不是数字」判定，与邻接字符无关。
-# 同时把 `w/W`（「万」的通用简写）纳入单位类 —— 旧版漏了它，导致 `3w` 这类完全漏检。
-_DIGIT_UNIT = r"[%％万wWkK亿]"
-_NUM_RE = re.compile(rf"(?<!\d)\d+(?:\.\d+)?{_DIGIT_UNIT}?(?!\d)")
-
-# 分点/序号标记（`1.` `2、` `3）` `3．` …）不是数字主张，提取前先剥离。
-# 两条防线避免"把真数字当序号吃掉"：
-#   ① 只认 1~2 位（`2023` 这类年份够不到，不会被误剥）
-#   ② 半角句点必须**后接空白**才算序号 —— 否则 `营收 3.5亿` 会被剥成 `5亿`
-#      （中文标点 `、）．` 不存在小数点歧义，无须此约束）
-_LIST_MARKER_RE = re.compile(
-    r"(?m)(?:^[^\w\s]{0,4}[ \t]*|[ \t])\d{1,2}[ \t]*(?:[、)）．]|\.[ \t])(?![ \t]*\d)"
-)
-
-# emoji 数字键帽（`1️⃣` `2️⃣` `#️⃣`）同样是分点标记，不是数字主张。
-# 实测（2026-10-07 全量跑分）：稿件用小标题 `2️⃣ 再做复利：…`，`_numbers_in` 把那个
-# `2` 当成数字主张 → 误报「素材里找不到依据的数字: ['2']」。
-# 形态是 `数字 + (变体选择符) + U+20E3`，所以单靠 `_LIST_MARKER_RE` 抓不到。
-_KEYCAP_RE = re.compile(r"[0-9#*]\ufe0f?\u20e3")
-
-_UNIT_ALIAS_RE = re.compile(r"[wW]$")
-_EMOJI_LEAD = re.compile(r"^[\U0001F300-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF]+[\s·:：]*")
-
-
-def _norm_num(tok: str) -> str:
-    """把「万」的简写归一，使 `3w` 与 `3万` 可比（只作用于**紧跟数字**的单位）。"""
-    return _UNIT_ALIAS_RE.sub("万", tok)
-
-
-def _numbers_in(text: str) -> dict[str, str]:
-    """提取文本中的数字 token。
-
-    返回 `{归一化形式: 原文}` —— 归一化只用于**比较**（`3w` 与 `3万` 视为同一个数），
-    展示时必须用原文，否则会把用户写的 `3w` 改写成 `3万`，看着像被篡改。
-
-    三处修复对应 `docs/52` 的 D1/D2/D3：
-      1. `\\b` 在中文语境下失效 → 改用数字 lookaround（见 `_NUM_RE` 注释）
-      2. 分点序号被当事实数字 → 提取前用 `_LIST_MARKER_RE` 剥离
-      3. `3w` 漏检 → 单位类补 `w/W`，并归一化为「万」
-      4. emoji 数字键帽（`2️⃣`）被当数字主张 → 提取前用 `_KEYCAP_RE` 剥离（2026-10-07 补）
-    """
-    out: dict[str, str] = {}
-    for tok in _NUM_RE.findall(_KEYCAP_RE.sub(" ", _LIST_MARKER_RE.sub(" ", text))):
-        out.setdefault(_norm_num(tok), tok)
-    return out
-
-
-
-def _num_value(tok: str) -> float | None:
-    """阿拉伯数字 token → 数值。`1179万`→11790000.0，`5.2%`→5.2，`99`→99.0。"""
-    t = tok.strip().rstrip("%")
-    mult = 1.0
-    if t.endswith(("万", "w", "W")):
-        mult, t = 10000.0, t[:-1]
-    elif t.endswith("亿"):
-        mult, t = 100000000.0, t[:-1]
-    t = t.replace(",", "")
-    try:
-        return float(t) * mult
-    except ValueError:
-        return None
-
-
-def _num_values(text: str, *, strict: bool = False) -> dict[float, str]:
-    """文本里数字的**数值** → 原始写法（阿拉伯 + 中文数字统一归一化）。
-
-    `strict` 见 `_rule_qa` 里的用法说明：素材侧宽松、稿件侧严格。
-    """
-    out: dict[float, str] = {}
-    for norm, original in _numbers_in(text).items():   # {归一化形式: 原文}
-        v = _num_value(norm)
-        if v is not None:
-            out.setdefault(v, original)                 # 展示用原文，别改写成归一化形式
-    for v in zhnum.numbers_in(text, strict=strict):
-        out.setdefault(float(v), str(v))
-    return out
-
+# 分镜行开头的 emoji（）—— 属于剪辑单的文本处理，与数字口径无关
+_EMOJI_LEAD = re.compile(
+    r"^[\U0001F300-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF]+[\s·:：]*")
 
 def _clip(text: str, n: int) -> str:
     text = text.strip()

@@ -24,13 +24,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _bootstrap import ROOT  # noqa: E402,F401  （副作用：sys.path + .env）
 
-from app.pipeline.generate import _numbers_in  # noqa: E402
-from app.pipeline import zhnum  # noqa: E402
+# 数字口径**只有一份**（app/pipeline/numberish.py）—— 产品与评测共用，
+# 否则评测集测的不是线上那条路。
+from app.pipeline.numberish import numbers_in, num_values  # noqa: E402
 
 # 视频原生平台必须有剪辑单（docs/05 FR-52）
 VIDEO_NATIVE = {"douyin", "bilibili"}
 
-_YEAR_RE = re.compile(r"(?:19|20)\d{2}")
+# 必须**整词**匹配：`月收入在8000—12000元` 里的 `12000` 不能抠出 `2000` 当年份
+_YEAR_RE = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
 
 # 断言阈值默认值。**每一项都必须能被 rules 覆盖**（checklist §1）。
 # 跑分器应当用 platform-dna 里的真实约束覆盖它们。
@@ -60,46 +62,6 @@ def _rules(base: dict[str, Any] | None) -> dict[str, Any]:
     return {**DEFAULT_RULES, **(base or {})}
 
 
-def _num_value(tok: str) -> float | None:
-    """阿拉伯数字 token → 数值。`1179万`→11790000.0，`5.2%`→5.2，`99`→99.0。
-
-    归一化的目的：让「99」与「九十九」可比，让「1179万」与「11790000」可比。
-    """
-    t = tok.strip().rstrip("%")
-    mult = 1.0
-    if t.endswith(("万", "w", "W")):
-        mult, t = 10000.0, t[:-1]
-    elif t.endswith("亿"):
-        mult, t = 100000000.0, t[:-1]
-    t = t.replace(",", "")
-    try:
-        return float(t) * mult
-    except ValueError:
-        return None
-
-
-def _values_in(text: str, *, strict: bool = False) -> dict[float, str]:
-    """文本里所有数字的**数值** → 原始写法。
-
-    ⚠️ 必须同时收**中文数字**：素材里写「定价九十九」、稿件写成「99」时，
-    只比阿拉伯数字会把它误判成"素材里没有的数字"（2026-10-07 首次跑分实测到）。
-
-    **`strict` 不对称使用**（两边都踩过坑，所以刻意不对称）：
-    - 素材侧 `strict=False`：中文数字**都算依据**，宁可放过 ——
-      否则素材写「三」、稿件写「3」会被误报。
-    - 稿件侧 `strict=True`：只查**像数字的**中文数字（带单位或 ≥2 位），
-      否则「迈出这一步」里的「一」会被当成一个数字去比对，又是一类误报。
-    """
-    out: dict[float, str] = {}
-    for norm, original in _numbers_in(text).items():   # {归一化形式: 原文}
-        v = _num_value(norm)
-        if v is not None:
-            out.setdefault(v, original)                 # 展示用原文，别改写成归一化形式
-    for v in zhnum.numbers_in(text, strict=strict):
-        out.setdefault(float(v), str(v))
-    return out
-
-
 def _facts_text(structured: dict | None) -> str:
     facts = (structured or {}).get("facts") or []
     parts: list[str] = []
@@ -120,20 +82,25 @@ def a1_numbers_supported(ctx: dict) -> Result:
     （那是改写，不是编造）。中文数字与阿拉伯数字都会被归一化。
     """
     body = str((ctx.get("draft") or {}).get("body") or "")
-    allowed = set(_values_in(str((ctx.get("material") or {}).get("raw_text") or "")))
-    allowed |= set(_values_in(_facts_text(ctx.get("structured"))))
-    body_vals = _values_in(body, strict=True)
+    allowed = set(num_values(str((ctx.get("material") or {}).get("raw_text") or "")))
+    allowed |= set(num_values(_facts_text(ctx.get("structured"))))
+    body_vals = num_values(body, strict=True)
     unsupported = [tok for v, tok in sorted(body_vals.items()) if v not in allowed]
     return Result("A1 数字有依据", not unsupported,
                   "" if not unsupported else f"素材里找不到依据的数字：{unsupported}")
 
 
 def a2_no_foreign_years(ctx: dict) -> Result:
-    """不出现素材里没有的年份（AI 自加时间是最典型的一类幻觉）。"""
+    """不出现素材里没有的年份（AI 自加时间是最典型的一类幻觉）。
+
+    ⚠️ 素材侧的"已知年份"要按**数值**取，不能只比阿拉伯数字字面：
+    素材写「两千」、正文写「2000」是同一个年份（与 A1 同一个坑，实测踩到过）。
+    """
     body = str((ctx.get("draft") or {}).get("body") or "")
-    src = str((ctx.get("material") or {}).get("raw_text") or "") + " " + _facts_text(ctx.get("structured"))
-    known = set(_YEAR_RE.findall(src))
-    foreign = sorted(set(_YEAR_RE.findall(body)) - known)
+    src = (str((ctx.get("material") or {}).get("raw_text") or "") + " "
+           + _facts_text(ctx.get("structured")))
+    known = set(num_values(src, strict=False))
+    foreign = sorted({y for y in _YEAR_RE.findall(body) if float(y) not in known})
     return Result("A2 无素材外年份", not foreign,
                   "" if not foreign else f"素材里没有的年份：{foreign}")
 
