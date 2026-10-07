@@ -63,10 +63,10 @@ def probe_one(base: str, key: str, model: str) -> int:
     body = json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": "只回复两个字：可用"}],
-        # ⚠️ 别设成 8：推理模型（deepseek-v4.1-flash 等）会把 token 全花在 reasoning 上，
-        # 正文为空 —— 网关直接回 {"error":"empty response content"}，看着像额度问题，
-        # 其实是探针把预算掐太死（2026-10-07 实测踩到）。
-        "max_tokens": 64,
+        # ⚠️ 别设小：推理模型（deepseek-v4.1-flash 等）会先花掉一两百个 reasoning token
+        # 才吐正文。预算不够时正文为空，网关直接回 {"error":"empty response content"}，
+        # **看着像额度问题**。实测（2026-10-07）：8 → 空、64 → 空、256/1024 → 正常。
+        "max_tokens": 256,
         "temperature": 0,
     }).encode("utf-8")
 
@@ -84,6 +84,12 @@ def probe_one(base: str, key: str, model: str) -> int:
             raw = resp.read().decode("utf-8", "replace")
             dt = time.time() - t0
             data = json.loads(raw)
+            # 有些网关（实测 Cline）把成功响应包在 {"data": {...}, "success": true} 里。
+            # 不剥的话这里永远读到空内容，看着像"模型没回话"。
+            # 权威实现见 app/llm.py::unwrap_data_envelope（本脚本刻意不 import app，保持独立可跑）。
+            if (isinstance(data, dict) and "choices" not in data
+                    and isinstance(data.get("data"), dict) and "choices" in data["data"]):
+                data = data["data"]
             content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
             usage = data.get("usage") or {}
             print(f"[OK] HTTP {resp.status} · 耗时 {dt:.2f}s")
