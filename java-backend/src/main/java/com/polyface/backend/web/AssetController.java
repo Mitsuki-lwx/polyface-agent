@@ -32,8 +32,13 @@ import com.polyface.backend.store.Store;
 @RestController
 public class AssetController {
 
-    /** 允许的关联宿主：standalone 只是"没有 link"的语义，不作为一种可写入的 owner。 */
-    private static final Set<String> OWNER_KINDS = Set.of("material", "draft");
+    /**
+     * 允许的关联宿主。
+     *
+     * <p>`asset` 是 M8 第一片加的：粗剪产物要挂到**源视频**上（"这条成片是从哪个视频剪的"）。
+     * `standalone` 不是一种可写入的 owner —— 它只是"没有任何 link"的语义。
+     */
+    private static final Set<String> OWNER_KINDS = Set.of("material", "draft", "asset");
 
     private static final int DEFAULT_LIMIT = 50;
     /** 上限 200：素材库是缩略图网格，一次给太多只会拖垮浏览器。 */

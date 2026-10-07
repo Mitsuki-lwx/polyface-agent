@@ -63,7 +63,12 @@ public class AssetService {
         for (String e : List.of("mp4", "mov", "mkv", "avi", "webm", "flv", "m4v", "wmv", "mpg", "mpeg", "ts")) {
             m.put(e, "video");
         }
-        m.put("json", "timeline");
+        // `timeline` 是"时间轴类产物"：粗剪的剪点（json）与字幕（srt/vtt/ass）都归这里。
+        // ⚠️ 漏掉 srt 的后果实测过：粗剪产物登记时它抛错，把后面的**剪点登记与源视频关联**一起带崩，
+        // 于是"任务成功但素材库里只有成片、还看不到它从哪个视频来"。
+        for (String e : List.of("json", "srt", "vtt", "ass", "ssa")) {
+            m.put(e, "timeline");
+        }
         return Map.copyOf(m);
     }
 

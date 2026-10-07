@@ -52,3 +52,6 @@ outputs/roughcut-fixture/
 
 # ===== 粗剪端到端产物（由 scripts/e2e_roughcut.py 生成）=====
 outputs/roughcut-e2e/
+
+# ===== 粗剪任务端到端产物（scripts/e2e_roughcut_jobs.py）=====
+outputs/roughcut-jobs-e2e/

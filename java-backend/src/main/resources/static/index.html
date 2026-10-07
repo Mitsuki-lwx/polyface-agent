@@ -195,6 +195,24 @@
     </div>
 
     <div class="card" style="margin-top:14px">
+      <h2>✂️ 粗剪 <span style="font-weight:400;color:var(--sub);font-size:11px" id="rcMeta"></span></h2>
+      <div style="font-size:12px;color:var(--sub);margin-bottom:8px">
+        在素材库里点视频行的「✂️ 粗剪」发起。任务在后台跑，这里能看到进度；跑完产物自动回素材库。
+      </div>
+      <div id="rcForm" style="display:none;border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:10px">
+        <div id="rcFormTitle" style="font-size:12px;font-weight:600;margin-bottom:8px"></div>
+        <div id="rcParams" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+        <div style="margin-top:10px">
+          <button id="rcStart" class="sm">开始粗剪</button>
+          <button id="rcFormCancel" class="ghost sm">取消</button>
+          <span class="status-line" id="rcFormStatus"></span>
+        </div>
+      </div>
+      <div id="rcActive"></div>
+      <div class="side-list" id="rcJobs"><div class="empty">还没有粗剪任务</div></div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
       <h2>④ 创作者画像 <span style="font-weight:400;color:var(--sub);font-size:11px" id="profMeta"></span></h2>
       <div style="font-size:12px;color:var(--sub);margin-bottom:8px">为 AI 提供"我是谁 / 我做什么 / 给谁看 / 不要什么"，影响 brief 与成稿风格</div>
       <input id="profVoice" placeholder="品牌声音（理性干货 / 真诚种草 / 犀利观点 …）">
@@ -341,6 +359,8 @@ async function init(){
   loadTemplates();
   bindAssetHandlers();
   loadAssets();
+  bindRoughcutHandlers();
+  loadJobs();
   refreshRetro();
 }
 function renderPlats(list){
@@ -795,8 +815,11 @@ async function loadAssets(){
       <div style="margin-top:6px;display:flex;gap:6px">
         <a class="ghost sm" href="${esc(a.url)}" target="_blank" rel="noopener"
            style="font-size:11px;padding:2px 8px;border:1px solid var(--line);border-radius:6px;text-decoration:none">查看</a>
+        ${a.kind === "video" ? `<button class="ghost sm" data-cut="${a.id}" style="font-size:11px">✂️ 粗剪</button>` : ""}
         <button class="ghost sm" data-del="${a.id}" style="font-size:11px">删除</button>
       </div>`;
+    const cutBtn = d.querySelector("[data-cut]");
+    if(cutBtn) cutBtn.onclick = ()=> openRoughcutForm(a);
     d.querySelector("[data-del]").onclick = async ()=>{
       if(!confirm(`删除素材「${a.name || a.id}」？\n\n若没有其它稿件在用它，文件也会被删掉。`)) return;
       try{
@@ -832,6 +855,138 @@ function bindAssetHandlers(){
     }catch(e){ alert("上传失败：" + e.message); }
     finally{ btn.disabled = false; btn.textContent = old; file.value = ""; }
   };
+}
+
+// ============ M8 第一片: 粗剪任务（异步 + 进度）============
+// 进度**不是猜的**：后端从 CLI 写的阶段事件文件里读出来（docs/spec_observability.md）。
+let rcAsset = null;      // 当前在参数弹层里选中的视频
+let rcPollTimer = null;  // 轮询句柄 —— 任务结束**必须**停，否则会一直打接口
+
+async function openRoughcutForm(asset){
+  rcAsset = asset;
+  $("rcForm").style.display = "";
+  $("rcFormTitle").textContent = `粗剪：${asset.name || asset.id}`;
+  $("rcFormStatus").textContent = "读取默认参数…";
+  let d = {};
+  try{ d = await j("GET", "/api/jobs/params"); }catch(e){ /* 拿不到就用空 */ }
+  // 只放最影响结果的几项；其余保持 CLI 的默认（Python 侧是唯一来源）
+  const fields = [
+    ["pause_sec", "停顿阈值(秒)", d.pause_sec],
+    ["noise_db", "噪声门限(dB)", d.noise_db],
+    ["font_size", "字幕字号", d.font_size],
+    ["margin_v", "字幕距底(px)", d.margin_v],
+  ];
+  $("rcParams").innerHTML = fields.map(([k,label,v])=>
+    `<label style="font-size:11px;color:var(--sub)">${esc(label)}<br>
+       <input data-p="${k}" value="${esc(v ?? "")}" style="width:96px"></label>`).join("")
+    + `<label style="font-size:11px;color:var(--sub);display:flex;align-items:center;gap:4px">
+         <input type="checkbox" data-p="burn_subs" ${d.burn_subs === false ? "" : "checked"}> 烧字幕</label>`;
+  $("rcFormStatus").textContent = "";
+}
+
+function closeRoughcutForm(){ $("rcForm").style.display = "none"; rcAsset = null; }
+
+async function startRoughcut(){
+  if(!rcAsset) return;
+  const params = {};
+  document.querySelectorAll("#rcParams [data-p]").forEach(el=>{
+    const k = el.dataset.p;
+    if(el.type === "checkbox"){ params[k] = el.checked; return; }
+    const v = el.value.trim();
+    if(v !== "") params[k] = (k === "font") ? v : Number(v);
+  });
+  $("rcFormStatus").textContent = "正在发起…";
+  try{
+    const r = await j("POST", "/api/jobs", {kind:"roughcut", asset_id: rcAsset.id, params});
+    $("rcFormStatus").textContent = `已发起任务 #${r.job_id}`;
+    closeRoughcutForm();
+    pollJob(r.job_id);
+  }catch(e){ $("rcFormStatus").textContent = "发起失败：" + e.message; }
+}
+
+function renderActiveJob(j){
+  const p = j.progress || {};
+  const label = {queued:"排队中", running:"进行中", succeeded:"✅ 完成", failed:"❌ 失败", canceled:"已取消"}[j.status] || j.status;
+  let bar = "";
+  if(j.status === "running" || j.status === "queued"){
+    const pct = (typeof p.pct === "number") ? p.pct : null;
+    bar = `<div style="height:6px;background:#eee;border-radius:3px;overflow:hidden;margin:6px 0">
+             <div style="height:100%;width:${pct === null ? 8 : Math.max(2,pct)}%;
+                         background:var(--brand);transition:width .3s"></div></div>`;
+  }
+  const done = (p.done_stages || []).join(" → ");
+  const err = j.error ? `<div style="color:#b03a2e;margin-top:6px;white-space:pre-wrap">${esc(j.error)}</div>` : "";
+  const outs = j.outputs || {};
+  const links = Object.entries(outs).map(([k,u])=>
+    `<a href="${esc(u)}" target="_blank" rel="noopener" style="margin-right:8px">${esc(k.replace("_url",""))}</a>`).join("");
+  $("rcActive").innerHTML = `<div style="border:1px solid var(--line);border-radius:8px;padding:10px">
+    <b>任务 #${j.id}</b> · ${esc(label)}${p.stalled ? ' · <span style="color:#b03a2e">疑似卡死</span>' : ""}
+    <div style="font-size:12px;color:var(--sub);margin-top:4px">
+      ${j.input_name ? "输入：" + esc(j.input_name) + " · " : ""}
+      ${p.stage ? "当前阶段：" + esc(p.stage) : ""}${typeof p.pct === "number" ? ` (${p.pct}%)` : ""}
+      ${p.last_message ? " · " + esc(p.last_message) : ""}
+    </div>
+    ${bar}
+    ${done ? `<div style="font-size:11px;color:var(--sub)">已完成：${esc(done)}</div>` : ""}
+    ${err}
+    ${links ? `<div style="margin-top:6px;font-size:12px">产物：${links}</div>` : ""}
+    ${j.status === "running" || j.status === "queued"
+        ? `<div style="margin-top:8px"><button class="ghost sm" id="rcStop" style="font-size:11px">取消任务</button></div>` : ""}
+  </div>`;
+  const stop = $("rcStop");
+  if(stop) stop.onclick = async ()=>{
+    stop.disabled = true;
+    try{ await j("POST", `/api/jobs/${j.id}/cancel`); }catch(e){ /* 幂等，失败也无所谓 */ }
+    stopPolling();
+    loadJobs();
+  };
+}
+
+async function pollJob(id){
+  stopPolling();
+  const tick = async ()=>{
+    let job;
+    try{ job = await j("GET", `/api/jobs/${id}`); }
+    catch(e){ stopPolling(); $("rcActive").innerHTML = `<div class="meta">任务查询失败：${esc(e.message)}</div>`; return; }
+    renderActiveJob(job);
+    if(["succeeded","failed","canceled"].includes(job.status)){
+      stopPolling();                      // ← 任务结束必须停，否则一直打接口
+      loadJobs();
+      if(job.status === "succeeded") loadAssets();   // 产物已入素材库
+    }
+  };
+  await tick();
+  rcPollTimer = setInterval(tick, 1000);
+}
+
+function stopPolling(){
+  if(rcPollTimer){ clearInterval(rcPollTimer); rcPollTimer = null; }
+}
+
+async function loadJobs(){
+  let d;
+  try{ d = await j("GET", "/api/jobs?limit=20"); }
+  catch(e){ $("rcJobs").innerHTML = `<div class="empty">任务列表加载失败</div>`; return; }
+  const items = d.items || [];
+  $("rcMeta").textContent = items.length ? `最近 ${items.length} 条` : "";
+  if(!items.length){ $("rcJobs").innerHTML = '<div class="empty">还没有粗剪任务</div>'; return; }
+  $("rcJobs").innerHTML = items.map(j=>{
+    const label = {queued:"排队", running:"进行中", succeeded:"✅", failed:"❌", canceled:"已取消"}[j.status] || j.status;
+    return `<div class="side-item" data-job="${j.id}" style="cursor:pointer">
+      <b>#${j.id}</b> ${esc(label)} ${esc(j.input_name || "")}
+      <div style="color:#9ca3af">${esc((j.created_at||"").slice(0,19))}
+        ${j.progress && j.progress.stage ? " · " + esc(j.progress.stage) : ""}</div>
+    </div>`;
+  }).join("");
+  document.querySelectorAll("#rcJobs [data-job]").forEach(el=>{
+    el.onclick = ()=>{ $("rcForm").style.display = "none"; pollJob(Number(el.dataset.job)); };
+  });
+}
+
+function bindRoughcutHandlers(){
+  if(!$("rcStart")) return;
+  $("rcStart").onclick = startRoughcut;
+  $("rcFormCancel").onclick = closeRoughcutForm;
 }
 
 // ============ M4: 创作者画像 / 复盘报告 / 效果录入 ============

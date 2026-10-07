@@ -76,6 +76,18 @@ public class Store {
     public record AssetLinkRow(long id, long assetId, String ownerKind, long ownerId, String createdAt) {
     }
 
+    /**
+     * 一条异步任务（M8 第一片）。
+     *
+     * <p>`status` 只有五个取值：{@link #JOB_QUEUED} / {@link #JOB_RUNNING} /
+     * {@link #JOB_SUCCEEDED} / {@link #JOB_FAILED} / {@link #JOB_CANCELED} —— 不设"隐含态"。
+     */
+    public record JobRow(long id, String kind, String status, String paramsJson,
+                         Long inputAssetId, String inputPath, String outputPath,
+                         String srtPath, String cutsPath, String workdir, String eventsPath,
+                         String error, String createdAt, String startedAt, String finishedAt) {
+    }
+
     private final String jdbcUrl;
     private final Path dbPath;
     private volatile boolean schemaReady = false;
@@ -161,7 +173,17 @@ public class Store {
                         + "created_at TEXT)",
                 // 两条索引各自独立一条（sqlite-jdbc 单次 execute 只跑首条语句）
                 "CREATE INDEX IF NOT EXISTS idx_asset_link_asset ON asset_link(asset_id)",
-                "CREATE INDEX IF NOT EXISTS idx_asset_kind ON asset(kind)"
+                "CREATE INDEX IF NOT EXISTS idx_asset_kind ON asset(kind)",
+                // ===== M8 第一片：异步任务（粗剪）=====
+                // 为什么落库而不是放内存：**重启后必须还看得见上次跑到哪、成了还是败了** ——
+                // 分钟级任务里"重启一下进度就没了"是不可接受的（见 docs/spec_roughcut_jobs.md §4）。
+                "CREATE TABLE IF NOT EXISTS job ("
+                        + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                        + "kind TEXT NOT NULL, status TEXT NOT NULL,"
+                        + "params_json TEXT, input_asset_id INTEGER, input_path TEXT,"
+                        + "output_path TEXT, srt_path TEXT, cuts_path TEXT, workdir TEXT,"
+                        + "events_path TEXT, error TEXT,"
+                        + "created_at TEXT, started_at TEXT, finished_at TEXT)"
         };
         try (Connection c = DriverManager.getConnection(jdbcUrl); Statement st = c.createStatement()) {
             for (String sql : statements) {
@@ -1011,6 +1033,146 @@ public class Store {
             throw new RuntimeException("linksOf failed", e);
         }
         return out;
+    }
+
+    // ================= M8 第一片：异步任务（粗剪）=================
+
+    public static final String JOB_QUEUED = "queued";
+    public static final String JOB_RUNNING = "running";
+    public static final String JOB_SUCCEEDED = "succeeded";
+    public static final String JOB_FAILED = "failed";
+    public static final String JOB_CANCELED = "canceled";
+
+    /** 建任务（初始 `queued`）。 */
+    public long insertJob(String kind, String paramsJson, Long inputAssetId, String inputPath,
+                          String workdir, String eventsPath) {
+        String sql = "INSERT INTO job(kind, status, params_json, input_asset_id, input_path, "
+                + "workdir, events_path, created_at) VALUES(?,?,?,?,?,?,?,?)";
+        try (Connection c = open();
+             PreparedStatement ps = c.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+            ps.setString(1, kind);
+            ps.setString(2, JOB_QUEUED);
+            ps.setString(3, paramsJson);
+            if (inputAssetId == null) {
+                ps.setNull(4, java.sql.Types.INTEGER);
+            } else {
+                ps.setLong(4, inputAssetId);
+            }
+            ps.setString(5, inputPath);
+            ps.setString(6, workdir);
+            ps.setString(7, eventsPath);
+            ps.setString(8, LocalDateTime.now().toString());
+            ps.executeUpdate();
+            try (ResultSet rs = ps.getGeneratedKeys()) {
+                return rs.next() ? rs.getLong(1) : -1L;
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("insertJob failed", e);
+        }
+    }
+
+    /** 标记开始运行。 */
+    public int markJobRunning(long id) {
+        return updateJob("UPDATE job SET status=?, started_at=? WHERE id=?",
+                JOB_RUNNING, LocalDateTime.now().toString(), id);
+    }
+
+    /** 落终态。`error` 只有失败时才有值。 */
+    public int finishJob(long id, String status, String error, String outputPath,
+                         String srtPath, String cutsPath) {
+        String sql = "UPDATE job SET status=?, error=?, output_path=?, srt_path=?, cuts_path=?, "
+                + "finished_at=? WHERE id=?";
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, status);
+            ps.setString(2, error);
+            ps.setString(3, outputPath);
+            ps.setString(4, srtPath);
+            ps.setString(5, cutsPath);
+            ps.setString(6, LocalDateTime.now().toString());
+            ps.setLong(7, id);
+            return ps.executeUpdate();
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("finishJob failed", e);
+        }
+    }
+
+    private int updateJob(String sql, Object... args) {
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            for (int i = 0; i < args.length; i++) {
+                ps.setObject(i + 1, args[i]);
+            }
+            return ps.executeUpdate();
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("updateJob failed", e);
+        }
+    }
+
+    public Optional<JobRow> getJob(long id) {
+        String sql = "SELECT * FROM job WHERE id=?";
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setLong(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? Optional.of(readJob(rs)) : Optional.empty();
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("getJob failed", e);
+        }
+    }
+
+    /** 最近的任务（新的在前）。 */
+    public List<JobRow> listJobs(int limit) {
+        String sql = "SELECT * FROM job ORDER BY id DESC LIMIT ?";
+        List<JobRow> out = new ArrayList<>();
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setInt(1, Math.max(1, limit));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(readJob(rs));
+                }
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("listJobs failed", e);
+        }
+        return out;
+    }
+
+    /** 找出所有"上次没跑完"的任务（重启后要把它们标成失败 —— 见下）。 */
+    public List<JobRow> jobsInFlight() {
+        String sql = "SELECT * FROM job WHERE status IN (?,?) ORDER BY id";
+        List<JobRow> out = new ArrayList<>();
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, JOB_QUEUED);
+            ps.setString(2, JOB_RUNNING);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(readJob(rs));
+                }
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("jobsInFlight failed", e);
+        }
+        return out;
+    }
+
+    /** 只保留最近 keep 条，返回裁掉的行数（任务列表不该无限涨）。 */
+    public int pruneJobs(int keep) {
+        String sql = "DELETE FROM job WHERE id NOT IN (SELECT id FROM job ORDER BY id DESC LIMIT ?)";
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setInt(1, Math.max(1, keep));
+            return ps.executeUpdate();
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("pruneJobs failed", e);
+        }
+    }
+
+    private static JobRow readJob(ResultSet rs) throws java.sql.SQLException {
+        long assetId = rs.getLong("input_asset_id");
+        Long boxed = rs.wasNull() ? null : assetId;
+        return new JobRow(rs.getLong("id"), rs.getString("kind"), rs.getString("status"),
+                rs.getString("params_json"), boxed, rs.getString("input_path"),
+                rs.getString("output_path"), rs.getString("srt_path"), rs.getString("cuts_path"),
+                rs.getString("workdir"), rs.getString("events_path"), rs.getString("error"),
+                rs.getString("created_at"), rs.getString("started_at"), rs.getString("finished_at"));
     }
 
     public boolean hasAssetLink(long assetId, String ownerKind, long ownerId) {

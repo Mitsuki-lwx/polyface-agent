@@ -22,6 +22,13 @@ polyface:
     fast-timeout-sec: ${POLYFACE_LLM_FAST_TIMEOUT_SEC:60}
   media:
     dir: ""                     # 留空则用 {data-dir}/media（FR-51 媒体副本目录）
+  # 异步任务（M8 第一片）：Java 起子进程跑 scripts/roughcut.py
+  # 路径**相对启动目录**（与 data-dir 同约定）：源码模式=仓库根，发布包=包根
+  roughcut:
+    python: ${POLYFACE_ROUGHTCUT_PYTHON:python-service/.venv/Scripts/python.exe}
+    script: ${POLYFACE_ROUGHTCUT_SCRIPT:scripts/roughcut.py}
+    stall-sec: ${POLYFACE_ROUGHTCUT_STALL_SEC:300}   # 多久没新事件算疑似卡死
+    keep-jobs: ${POLYFACE_ROUGHTCUT_KEEP_JOBS:50}    # 任务列表保留条数
   # 内嵌编辑器（M6-2）：受管的 gimpish serve 子进程，端口只监听 127.0.0.1
   editor:
     enabled: ${POLYFACE_EDITOR_ENABLED:true}   # 关掉则 /api/editor/open 直接 needs_manual，不起进程

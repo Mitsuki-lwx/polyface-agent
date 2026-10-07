@@ -34,6 +34,28 @@ from app.pipeline.runlog import RunLog  # noqa: E402
 
 EXIT_OK, EXIT_ERR = 0, 1
 
+
+def setup_output_encoding() -> None:
+    """把 stdout/stderr 调成"不会因为一个符号就崩"。
+
+    两个坑叠在一起，实测都踩过：
+    - Windows 控制台默认 GBK，`✓` / `▶` 这类符号直接 `UnicodeEncodeError`；
+    - 被父进程（Java 的任务执行器）**重定向**时，父进程按 UTF-8 读，而 Python 按 GBK 写 → 中文乱码。
+
+    所以：**非终端（被重定向）就写 UTF-8**，终端则保持原编码但把不可编码字符替换掉（不崩）。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream.isatty():
+                stream.reconfigure(errors="replace")
+            else:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:                       # noqa: BLE001 —— 调不动就算了，不能因此起不来
+            pass
+
+
+setup_output_encoding()
+
 # 默认只问这几项 —— 其余展示当前值、可改但不主动问（问一长串会烦人）
 ASK_KEY = ("pause_sec",)
 PARAM_LABEL = {
@@ -89,6 +111,8 @@ def build_parser(base: rc.RoughcutParams) -> argparse.ArgumentParser:
 
     g = p.add_argument_group("行为")
     g.add_argument("--config", default=rc.DEFAULT_CONFIG_NAME, help="配置文件路径（不存在则用内置默认）")
+    g.add_argument("--print-defaults", action="store_true", default=S, dest="print_defaults",
+                   help="把本次生效的参数以 JSON 打印出来就退出（给工作台拿默认值用）")
     g.add_argument("--ask", choices=("key", "all", "none"), default=S,
                    help="开始前问哪些参数：key=只问最关键的 / all=逐项问 / none=不问（默认 key）")
     g.add_argument("--yes", action="store_true", default=S, help="不问，直接执行（等于 --ask none）")
@@ -142,6 +166,16 @@ def ask_all(params: rc.RoughcutParams, sources: dict[str, str]) -> rc.RoughcutPa
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+
+    # `--print-defaults` 要能**不带 input** 单独跑（工作台拿默认值时还没有任务），
+    # 所以先把它挑出来处理，不要让 argparse 因为缺位置参数而报错。
+    if "--print-defaults" in argv:
+        pre = argparse.ArgumentParser(add_help=False)
+        pre.add_argument("--config", default=rc.DEFAULT_CONFIG_NAME)
+        known, _ = pre.parse_known_args(argv)
+        print(json.dumps(rc.RoughcutParams.load(Path(known.config)).__dict__,
+                         ensure_ascii=False, indent=2))
+        return EXIT_OK
 
     # 两段解析：先只认 --config，据此拿到"本次生效的默认值"，再生成完整的帮助文本。
     pre = argparse.ArgumentParser(add_help=False)
