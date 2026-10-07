@@ -361,6 +361,11 @@ def main() -> int:
                     json.dumps(res, ensure_ascii=False, indent=2) + "\n",
                     encoding="utf-8", newline="\n")
                 print(f"  [完成] {mid} {res['_meta']['status']} {res['_meta']['elapsed_sec']}s")
+                try:
+                    write_report(out_dir, manifest, cells, platforms, items,
+                                 time.time() - t0, args.baseline)
+                except Exception as e:  # noqa: BLE001
+                    print(f"  [警告] 中途刷新报告失败（不影响跑分）：{e}")
     else:
         for it in todo:
             mid, res = process(it)
@@ -371,6 +376,13 @@ def main() -> int:
             n_ok = sum(1 for p in platforms if res.get(p, {}).get("ok"))
             print(f"  [完成] {mid} {res['_meta']['status']} "
                   f"{n_ok}/{len(platforms)} 通过 {res['_meta']['elapsed_sec']}s")
+            # 每跑完一条就刷新报告：整轮可能几小时，中途被中断（超时/断电/429）
+            # 时不能一个报告都没有 —— 那等于白跑。
+            try:
+                write_report(out_dir, manifest, cells, platforms, items,
+                             time.time() - t0, args.baseline)
+            except Exception as e:  # noqa: BLE001 — 刷新失败不该中断跑分
+                print(f"  [警告] 中途刷新报告失败（不影响跑分）：{e}")
 
     report = write_report(out_dir, manifest, cells, platforms, items,
                           time.time() - t0, args.baseline)
