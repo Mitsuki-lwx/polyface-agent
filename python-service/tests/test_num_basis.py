@@ -15,6 +15,7 @@ import pytest
 from pathlib import Path
 
 from app.pipeline.generate import _numbers_in, _norm_num, _rule_qa
+from app.pipeline.numberish import num_value
 from app.schemas import Fact, StructuredMaterial
 from app.schemas_gen import DraftPayload
 
@@ -291,3 +292,51 @@ def test_year_month_fix_does_not_break_decimals():
     """反例守卫：真小数不能被拆（`3.5亿` 不是「3 和 5亿」）。"""
     assert _numbers_in("营收 3.5亿") == {"3.5亿": "3.5亿"}
     assert _numbers_in("2022.5万") == {"2022.5万": "2022.5万"}
+
+
+# ------------------------------------------------ 基线实测：kg 撞上 k 单位（2026-10-08）
+
+def test_latin_unit_does_not_swallow_following_letter():
+    """**实测 bug**：`70kg` 被当成 `70k` = 70000（`k` 是「千」的单位，但 `kg` 是公斤）。
+
+    基线里 m05 的「体重70kg / 73.5kg / 78kg」三个全被算成七万级，与素材对不上。
+    """
+    assert _numbers_in("体重70kg") == {"70": "70"}
+    assert _numbers_in("体重78kg") == {"78": "78"}
+    assert num_warnings("体重70kg。", "体重70公斤") == []
+
+
+def test_latin_unit_still_works_at_word_end():
+    """反例守卫：`3k` / `3w` 这类真正的简写不能被一起废掉。"""
+    assert _numbers_in("月入3k") == {"3k": "3k"}
+    assert _numbers_in("月入3w") == {"3万": "3w"}
+    assert num_value("3k") == 3000.0
+
+
+def test_kg_and_km_do_not_become_thousands():
+    for text, expect in (("配速 5km", "5"), ("文件 200kb", "200"), ("体重70KG", "70")):
+        assert list(_numbers_in(text).values())[0] == expect, text
+
+
+# ------------------------------------------------ 基线实测：无标点数字列表（2026-10-08）
+
+def test_bare_number_list_markers_are_stripped():
+    """LLM 很爱写「1 先攒够… 2 先接一单… 3 别一上来…」这种无标点列表。
+
+    实测：m01/xhs 的裸 `2` 就是这么来的（`1`/`3` 没报，只因素材里正好有 1 和 3）。
+    """
+    assert _numbers_in("1 先攒够几个月房租。 2 先接一单验证。 3 别一上来就做产品。") == {}
+    assert num_warnings("1 先攒够房租。 2 先接一单验证。", "素材里没有数字") == []
+
+
+def test_bare_number_rule_needs_sentence_boundary():
+    """反例守卫：**句中**的数字不能被当成列表标记（判据是「前面是句末标点」）。"""
+    assert _numbers_in("我跑了 3 公里") == {"3": "3"}
+    assert _numbers_in("12 个月") == {"12": "12"}
+    assert _numbers_in("2023 年我辞职了") == {"2023": "2023"}
+
+
+def test_bare_number_rule_respects_measure_words():
+    """反例守卫：后面跟量词的数字不是列表标记。"""
+    assert _numbers_in("3 个月后我辞职了") == {"3": "3"}
+    assert _numbers_in("买了 2 台电脑") == {"2": "2"}

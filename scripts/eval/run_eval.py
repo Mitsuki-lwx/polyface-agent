@@ -334,6 +334,63 @@ def estimate(items: list[dict], platforms: list[str]) -> dict:
             "approx_llm_calls": calls}
 
 
+def _reassert(items: list[dict], platforms: list[str],
+              rules_by_platform: dict[str, dict], out_dir: Path,
+              manifest: dict, args) -> int:
+    """用 cells 里存下的产物重跑断言（**不调用 LLM**）。
+
+    **为什么需要**：改一条断言或一处数字口径，若必须重跑几小时才能看到效果，
+    就没人会去改断言了。cells 里存了 `_drafts` 与 `_structured`，够复算。
+    缺这两样的旧 cell 会被明确跳过（不静默当成通过）。
+    """
+    cells_dir = out_dir / "cells"
+    files = sorted(cells_dir.glob("m*.json"))
+    if not files:
+        print(f"[失败] {cells_dir} 下没有 cells")
+        return 1
+    by_id = {it["id"]: it for it in items}
+    redone = skipped = 0
+    cells: dict[str, dict] = {}
+    for f in files:
+        old = json.loads(f.read_text(encoding="utf-8"))
+        mid = f.stem
+        drafts = old.get("_drafts")
+        item = by_id.get(mid)
+        if not drafts or not item:
+            print(f"  [跳过] {mid}：没有存下产物（旧版本跑的），无法离线复算")
+            cells[mid] = old
+            skipped += 1
+            continue
+        # 只重算**有产物**的平台；调用失败的原样保留（那是上游的事，不是断言的事）
+        raw = {"_structured": old.get("_structured")}
+        for p in platforms:
+            cell = drafts.get(p) or {}
+            if cell.get("call_failed"):
+                continue
+            raw[p] = cell
+        res = assert_material(item, raw, platforms, rules_by_platform)
+        res["_meta"] = old.get("_meta") or {}
+        res["_drafts"] = drafts
+        res["_structured"] = old.get("_structured")
+        # 调用失败/缺失的格子按原样保留，别把"上游失败"改写成"断言失败"
+        for p in platforms:
+            if (old.get(p) or {}).get("kind") == "call_failed":
+                res[p] = old[p]
+        cells[mid] = res
+        f.write_text(json.dumps(res, ensure_ascii=False, indent=2) + "\n",
+                     encoding="utf-8", newline="\n")
+        redone += 1
+
+    report = write_report(out_dir, manifest, cells, platforms, items, 0.0,
+                          args.baseline, rules_by_platform)
+    t = report["totals"]
+    print(f"离线复算：重算 {redone} 条、跳过 {skipped} 条（未调 LLM）")
+    print(f"通过率 {t['pass_rate']:.1%}（{t['passed']}/{t['cells']}）"
+          f"　断言失败 {t['assert_failed']}　调用失败 {t['call_failed']}")
+    print(f"报告：{out_dir / 'report.md'}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="评测集跑分器（真实生成）")
     ap.add_argument("--corpus", type=Path, default=CORPUS_DIR)
@@ -347,6 +404,9 @@ def main() -> int:
     ap.add_argument("--rules", default="", help="断言阈值 JSON 文件（覆盖默认值）")
     ap.add_argument("--baseline", type=Path, default=None, help="基线 report.json")
     ap.add_argument("--dry-run", action="store_true", help="只算成本，不发请求")
+    ap.add_argument("--reassert", action="store_true",
+                    help="用已有 cells 里存下的产物重跑断言，**不调用 LLM** —— "
+                         "改了断言或数字口径后不必重跑几小时")
     args = ap.parse_args()
 
     manifest, items = load_corpus(args.corpus)
@@ -391,6 +451,9 @@ def main() -> int:
             print(f"  [跳过] {it['id']} 已有结果（--no-reuse 可强制重跑）")
         else:
             todo.append(it)
+
+    if args.reassert:
+        return _reassert(items, platforms, rules_by_platform, out_dir, manifest, args)
 
     timeout = args.timeout if args.timeout != 0 else auto_timeout(len(platforms))
     if timeout < 0:
