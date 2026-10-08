@@ -198,3 +198,29 @@ def test_plain_two_digit_number_is_not_eaten():
     """补零序号规则**不能**误吃真数字。"""
     assert _numbers_in("12 个月") == {"12": "12"}
     assert _numbers_in("2023年全国") == {"2023": "2023"}
+
+
+# ------------------------------------------------ 全量跑分实测：又两处误报（2026-10-08）
+
+def test_arabic_digit_with_cheng():
+    """稿件写「闲鱼3成」，素材写「闲鱼占三成」—— 同一个意思。
+
+    中文的「成」由 `zhnum` 处理，阿拉伯的 `3成` 由 `numberish` 处理，两边都是 ×10。
+    """
+    assert _numbers_in("小红书接单5成｜闲鱼3成") == {"5成": "5成", "3成": "3成"}
+    assert num_warnings("小红书接单5成｜闲鱼3成。", "闲鱼占三成，小红书接单占五成") == []
+
+
+def test_space_between_number_and_unit():
+    """**实测误报**：稿件写「1200 万」（数字与单位之间有空格），素材写「1200万」。
+
+    不认这个空格就只提取到 `1200`，与素材的 1200万 对不上。
+    """
+    assert _numbers_in("拿了 1200 万美元") == {"1200万": "1200 万"}
+    assert num_warnings("它拿了 1200 万美元融资。", "它拿了1200万美元融资") == []
+
+
+def test_space_fix_does_not_resurrect_bare_unit():
+    """反例守卫：允许空格之后，单独的「万」仍不能被当成数字。"""
+    assert _numbers_in("去年赚了 777 万") == {"777万": "777 万"}
+    assert "10000" not in "".join(num_warnings("去年赚了 777 万。", "无数字素材"))
