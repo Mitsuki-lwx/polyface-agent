@@ -20,15 +20,30 @@ import re
 
 DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
           "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+# 「个」是量词，会夹在数字与单位之间（「一个亿」= 1亿）。当无意义字符跳过。
+FILLERS = {"个": 0}
 UNITS = {"十": 10, "百": 100, "千": 1000, "万": 10000, "亿": 100000000}
 
 # 连续的中文数字串（含单位）。刻意不含"多/几/数"这类模糊量词。
-_CN_RE = re.compile(r"[零〇一二两三四五六七八九十百千万亿]+")
+# 「个」只在**数字与单位之间**才算数（「一个亿」= 1亿）。
+# 不能直接把它并进字符类 —— 那样「三个月」会整体变成一个"数字"（len≥2），
+# 绕过严格模式的单字过滤，又变成一类误报（实测踩到）。
+_CN_RE = re.compile(r"[零〇一二两三四五六七八九十百千万亿成]+(?:个[十百千万亿]+)?")
 
 
 def parse(text: str) -> int | None:
-    """解析一个纯中文数字串。解析不了返回 None（**不猜**）。"""
-    if not text or any(c not in DIGITS and c not in UNITS for c in text):
+    """解析一个纯中文数字串。解析不了返回 None（**不猜**）。
+
+    「成」是分数单位（一成 = 10%）。本项目的百分比口径把 `50%` 记作数值 `50`，
+    所以「五成」也换算成 `50` —— 这样「素材写五成、稿件写 50%」才能对上
+    （实测 m02 的误报就是这么来的）。
+    """
+    if text.endswith("成"):
+        head = parse(text[:-1])
+        return None if head is None else head * 10
+
+    if not text or any(c not in DIGITS and c not in UNITS and c not in FILLERS
+                       and c != "成" for c in text):
         return None
 
     total = 0          # 已结算部分（万/亿 之上）
@@ -39,6 +54,8 @@ def parse(text: str) -> int | None:
     seen_digit = False        # 见过数字字符（「十万」没有，但它是合法的）
 
     for ch in text:
+        if ch in FILLERS:
+            continue
         if ch in DIGITS:
             number = DIGITS[ch]
             seen_digit = True
@@ -67,7 +84,9 @@ def parse(text: str) -> int | None:
 
     # 单个单位字符不是数字：「万」/「十」单独出现时（如「去年赚了 777 万」里的那个「万」）
     # 不该被解析成 10000。至少要有数字字符，或长度 ≥2（「十万」合法）。
-    if not seen_digit and len(text) < 2:
+    # 单个单位字符一般不是数字（「去年赚了 777 万」里的那个「万」），
+    # 但「十」是例外 —— 它单独出现就是 10（「十成」= 100%）。
+    if not seen_digit and len(text) < 2 and text != "十":
         return None
     return total + section
 

@@ -74,3 +74,39 @@ def test_numbers_in_on_real_material_sentence():
     text = "靠着一个叫小鹅通的工具，我搭了自己的付费专栏，定价九十九。三个月下来，卖了四百多份。"
     got = Z.numbers_in(text, strict=True)
     assert 99 in got and 400 in got
+
+
+# ------------------------------------------------ 全量跑分实测的两处（2026-10-07）
+
+@pytest.mark.parametrize("text,expect", [
+    ("三成", 30),      # 「成」= 10%。素材写「闲鱼占三成」、稿件写「闲鱼30%」
+    ("五成", 50),
+    ("两成", 20),
+    ("一成", 10),
+    ("十成", 100),     # 单独「十」也是合法数字
+    ("一个亿", 100000000),   # 量词「个」夹在数字与单位之间
+    ("三个", 3),
+])
+def test_measured_forms(text, expect):
+    assert Z.parse(text) == expect
+
+
+def test_cheng_is_a_fraction_unit():
+    """**实测误报的回归**：素材「闲鱼占三成，小红书接单占五成」，
+    稿件「闲鱼30%、小红书50%」—— 同一个意思，必须对得上。"""
+    from app.pipeline.numberish import num_values
+    mat = set(num_values("闲鱼占三成，小红书接单占五成，知识付费占两成"))
+    body = set(num_values("闲鱼30%、小红书50%、知识付费20%"))
+    assert body <= mat, f"稿件里素材找不到的：{sorted(body - mat)}"
+
+
+def test_lone_wan_is_still_not_a_number():
+    """反例守卫：放宽「十」的时候不能把「万」也放进来
+    （「去年赚了 777 万」里的那个「万」不是数字）。"""
+    assert Z.parse("万") is None
+    assert Z.parse("亿") is None
+    assert Z.parse("百") is None
+
+
+def test_lone_shi_is_a_number():
+    assert Z.parse("十") == 10

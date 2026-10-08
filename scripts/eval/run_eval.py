@@ -349,8 +349,10 @@ def main() -> int:
         else:
             res = assert_material(it, raw, platforms, rules)
         res["_meta"] = raw["_meta"]
-        # 存下产物：否则报告说"数字 99 没依据"却看不到稿子，无法诊断（实测踩到过）
+        # 存下产物与理解结果：否则报告说"数字 99 没依据"却看不到稿子、也无法离线复算
+        # （实测踩到过 —— 改一条断言就得重跑几小时，有了这个就能离线重算）
         res["_drafts"] = {p: (raw.get(p) or {}) for p in platforms}
+        res["_structured"] = raw.get("_structured")
         return it["id"], res
 
     if args.jobs > 1 and len(todo) > 1:
