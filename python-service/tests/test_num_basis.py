@@ -12,6 +12,7 @@ mock 模式测不出来：mock 成稿是固定文本，不含分点结构。
 from __future__ import annotations
 
 import pytest
+from pathlib import Path
 
 from app.pipeline.generate import _numbers_in, _norm_num, _rule_qa
 from app.schemas import Fact, StructuredMaterial
@@ -224,3 +225,37 @@ def test_space_fix_does_not_resurrect_bare_unit():
     """反例守卫：允许空格之后，单独的「万」仍不能被当成数字。"""
     assert _numbers_in("去年赚了 777 万") == {"777万": "777 万"}
     assert "10000" not in "".join(num_warnings("去年赚了 777 万。", "无数字素材"))
+
+
+# ============================================================ 真实输入不崩（性质守卫）
+
+def test_number_pipeline_never_crashes_on_real_material():
+    """拿**真实的冻结素材**跑一遍数字管线，只要求「不抛异常」。
+
+    为什么值得单列：这几轮 bug 全是"某个字符出现在某个位置"炸的 ——
+    `成` 在中间（KeyError）、空格在数字与单位之间、单位类分两处写导致分叉。
+    逐个举例永远漏，不如拿真语料整段过一遍。
+    """
+    from app.pipeline.numberish import num_values
+    corpus = Path(__file__).resolve().parents[2] / "eval" / "corpus"
+    files = sorted(corpus.glob("m[0-9][0-9].json"))
+    if not files:
+        pytest.skip("素材集不在（eval/corpus/）")
+    import json
+    for f in files:
+        text = json.loads(f.read_text(encoding="utf-8"))["raw_text"]
+        # 素材侧（宽松）与稿件侧（严格）两种口径都要过
+        num_values(text, strict=False)
+        num_values(text, strict=True)
+
+
+@pytest.mark.parametrize("text", [
+    "五成三", "成", "三成五", "去年赚了 777 万", "12 个月", "1200 万",
+    "5成3", "3成", "一个亿", "两万三", "2023. 年", "3.5亿", "5.2%",
+    "1. 甲\n2. 乙", "2️⃣ 小标题", "从0到1", "迈出这一步", "第1、2、3点",
+])
+def test_number_pipeline_never_crashes_on_tricky_snippets(text):
+    """边角串也不能抛 —— 它们都是从实测误报里攒下来的。"""
+    from app.pipeline.numberish import num_values
+    num_values(text, strict=False)
+    num_values(text, strict=True)
