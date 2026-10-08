@@ -244,7 +244,7 @@ polyface/
 | `LLM_API_KEY` | `.env` | empty | Your model key. Empty = offline demo mode |
 | `LLM_MOCK` | `.env` | `true` | Only `false` uses a real model (needs a key) |
 | `LLM_BASE_URL` / `LLM_MODEL` | `.env` | SenseNova | Change these two to switch providers |
-| `LLM_TIMEOUT_SEC` | `.env` | `60` | Timeout for a **single** model call |
+| `LLM_TIMEOUT_SEC` | `.env` | `60` | Timeout for a **single** model call. **Raise it for reasoning models** — one measured reasoning model had successful calls tailing out to 105s while all 29 failures sat at 60.6s, i.e. the 60s limit was itself manufacturing timeouts and retries |
 | `LLM_JSON_RETRIES` | `.env` | `2` | Retries when the model's JSON fails to parse. Models returning malformed JSON is normal — without retries a single bad response fails the whole platform |
 | `LLM_PARALLEL` | `.env` | `false` | Parallel platforms. Serial by default (upstream rate limiting) |
 | `CORS_ORIGINS` | `.env` | empty | Empty = CORS disabled (recommended) |

@@ -204,7 +204,7 @@ polyface/
 | `LLM_API_KEY` | `.env` | 空 | 你的模型 Key。空 = 离线演示模式 |
 | `LLM_MOCK` | `.env` | `true` | `false` 才走真实模型（需 Key） |
 | `LLM_BASE_URL` / `LLM_MODEL` | `.env` | SenseNova | 换服务商改这两项 |
-| `LLM_TIMEOUT_SEC` | `.env` | `60` | **单次**模型调用超时 |
+| `LLM_TIMEOUT_SEC` | `.env` | `60` | **单次**模型调用超时。**推理模型要放大** —— 实测某推理模型成功调用尾巴到 105s，而失败的 29 次全卡在 60.6s，即 60 秒本身在制造超时与重试 |
 | `LLM_JSON_RETRIES` | `.env` | `2` | 模型返回的 JSON 解析失败时的重试次数。模型偶发返回坏 JSON 是常态，不重试的话一次就整个平台失败 |
 | `LLM_PARALLEL` | `.env` | `false` | 多平台并行。默认串行（上游限流） |
 | `CORS_ORIGINS` | `.env` | 空 | 留空 = 不启用跨域（推荐） |
