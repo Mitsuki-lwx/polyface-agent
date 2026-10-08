@@ -268,3 +268,61 @@ def test_check_all_survives_broken_assertion(monkeypatch):
     assert len(res) == 2
     assert res[0].ok is False and "故意炸" in res[0].detail
     assert res[1].ok is True
+
+
+# ---------------------------------------------------------------- A5 上限（来自 platform-dna）
+
+def test_a5_tags_max_from_platform_dna():
+    """平台罚的是**堆砌**，不是太少 —— 上限必须来自 DNA，不是默认值。"""
+    d = copy.deepcopy(GOOD_DRAFT)
+    d["tags"] = ["a", "b", "c", "d"]
+    assert code(A.check_all(ctx(draft=d, rules={"tags_max": 3})), "A5") is False
+    assert code(A.check_all(ctx(draft=d, rules={"tags_max": 4})), "A5") is True
+
+
+def test_a5_tags_max_zero_means_no_check():
+    """0 = 该平台没给上限，不检查。"""
+    d = copy.deepcopy(GOOD_DRAFT)
+    d["tags"] = [f"t{i}" for i in range(20)]
+    assert code(A.check_all(ctx(draft=d, rules={"tags_max": 0})), "A5") is True
+
+
+# ---------------------------------------------------------------- A8 站外导流
+
+@pytest.mark.parametrize("fragment,label", [
+    (" 有问题加我微信 abcde12345", "微信号"),
+    (" 联系电话 13812345678", "手机号"),
+    (" 邮箱 hi@example.com", "邮箱"),
+    (" 详见 https://example.com/x", "站外链接"),
+    (" 见 www.example.com", "站外链接"),
+])
+def test_a8_catches_offsite_diversion(fragment, label):
+    """platform-dna 的 `limits.banned_direction` 在 5 个平台都明文禁止站外导流。"""
+    d = copy.deepcopy(GOOD_DRAFT)
+    # 把内容也放进素材，避免 A1 先报（这里只验 A8）
+    text = d["body"] + fragment
+    d["body"] = text
+    m = copy.deepcopy(MATERIAL)
+    m["raw_text"] = text
+    res = A.check_all(ctx(material=m, draft=d))
+    a8 = next(r for r in res if r.code.startswith("A8"))
+    assert not a8.ok, label
+    assert label in a8.detail
+
+
+def test_a8_clean_draft_passes():
+    assert code(A.check_all(ctx()), "A8")
+
+
+def test_a8_does_not_false_positive_on_normal_phrases():
+    """「评论区聊聊」这类正常互动引导**不能**误报。"""
+    d = copy.deepcopy(GOOD_DRAFT)
+    d["body"] = (d["body"] + "你们会怎么选？评论区聊聊。想看更多就关注我，"
+                 "下期讲讲我是怎么找到第一个客户的，也欢迎私信交流。")
+    m = copy.deepcopy(MATERIAL)
+    m["raw_text"] = d["body"]
+    assert code(A.check_all(ctx(material=m, draft=d)), "A8")
+
+
+def test_all_has_eight_assertions():
+    assert len(A.ALL) == 8

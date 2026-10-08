@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bootstrap import CORPUS_DIR, REPORTS_DIR, ROOT  # noqa: E402,F401
 
 import assertions as A  # noqa: E402
+import dna_rules as dna_rules_mod  # noqa: E402
 import fingerprint as fp_mod  # noqa: E402
 
 from app import llm  # noqa: E402
@@ -128,9 +129,13 @@ def run_one(item: dict, platforms: list[str], timeout: int) -> dict:
 
 
 def assert_material(item: dict, raw: dict, platforms: list[str],
-                    rules: dict | None = None) -> dict:
-    """对一条素材的每个平台跑断言。返回 {platform: {ok, results[], reason}}。"""
+                    rules_by_platform: dict[str, dict] | None = None) -> dict:
+    """对一条素材的每个平台跑断言。返回 {platform: {ok, results[], reason}}。
+
+    `rules_by_platform` 来自 `platform-dna`（每平台一套阈值）+ 用户 `--rules` 覆盖。
+    """
     structured = raw.get("_structured")
+    rbp = rules_by_platform or {}
     out: dict = {}
     for code in platforms:
         cell = raw.get(code)
@@ -142,7 +147,7 @@ def assert_material(item: dict, raw: dict, platforms: list[str],
             out[code] = {"ok": False, "kind": "call_failed",
                          "reason": cell["call_failed"], "assertions": []}
             continue
-        ctx = A.make_ctx(item, structured, code, cell["draft"], rules)
+        ctx = A.make_ctx(item, structured, code, cell["draft"], rbp.get(code) or {})
         res = A.check_all(ctx)
         failed = [r for r in res if not r.ok]
         out[code] = {"ok": not failed, "kind": "assert" if failed else "pass",
@@ -155,8 +160,10 @@ def assert_material(item: dict, raw: dict, platforms: list[str],
 # ---------------------------------------------------------------- 报告
 
 def write_report(out_dir: Path, manifest: dict, cells: dict, platforms: list[str],
-                 items: list[dict], elapsed: float, baseline_path: Path | None) -> dict:
+                 items: list[dict], elapsed: float, baseline_path: Path | None,
+                 rules_by_platform: dict[str, dict] | None = None) -> dict:
     fp = fp_mod.fingerprint()
+    dna_fp = dna_rules_mod.fingerprint()
     total = len(items) * len(platforms)
     n_ok = sum(1 for mid in cells for c in platforms if cells[mid].get(c, {}).get("ok"))
     n_assert_fail = sum(1 for mid in cells for c in platforms
@@ -173,12 +180,17 @@ def write_report(out_dir: Path, manifest: dict, cells: dict, platforms: list[str
                    "prompt_fingerprint": manifest.get("gen", {}).get("prompt_fingerprint")},
         "prompt_fingerprint": fp,
         "prompt_fingerprint_combined": fp_mod.combined(fp),
+        # DNA 指纹：没有它，「通过率变了」分不清是 prompt 改了、DNA 改了、还是模型换了
+        "dna_fingerprint": dna_fp,
+        "dna_fingerprint_combined": dna_rules_mod.combined(dna_fp),
+        "rules_by_platform": {p: (rules_by_platform or {}).get(p, {}) for p in platforms},
         "model_configured": get_settings().llm_model,
         "mock": llm.is_mock(),
         "platforms": platforms,
         "totals": {"cells": total, "passed": n_ok, "assert_failed": n_assert_fail,
                    "call_failed": n_call_fail, "missing": n_missing,
                    "pass_rate": round(n_ok / total, 4) if total else 0.0},
+        "by_platform": _by_platform(cells, platforms),
         "elapsed_sec": round(elapsed, 1),
         "cells": {mid: cells[mid] for mid in cells},
     }
@@ -193,13 +205,38 @@ def write_report(out_dir: Path, manifest: dict, cells: dict, platforms: list[str
     return report
 
 
+def _by_platform(cells: dict, platforms: list[str]) -> dict:
+    """按平台切片 —— 改了某平台的 DNA，就要能只看那个平台的通过率。"""
+    out: dict[str, dict] = {}
+    for code in platforms:
+        ok = af = cf = tot = 0
+        for mid, res in cells.items():
+            cell = res.get(code) or {}
+            if not cell:
+                continue
+            tot += 1
+            if cell.get("ok"):
+                ok += 1
+            elif cell.get("kind") == "call_failed":
+                cf += 1
+            else:
+                af += 1
+        out[code] = {"cells": tot, "passed": ok, "assert_failed": af,
+                     "call_failed": cf,
+                     "pass_rate": round(ok / tot, 4) if tot else 0.0}
+    return out
+
+
 def diff_baseline(report: dict, baseline_path: Path) -> dict:
     """与基线对比。**prompt 指纹不同 → 标为不可比**，不静默比较。"""
     base = json.loads(Path(baseline_path).read_text(encoding="utf-8"))
     same_fp = (base.get("prompt_fingerprint_combined")
                == report.get("prompt_fingerprint_combined"))
     same_model = base.get("model_configured") == report.get("model_configured")
-    comparable = same_fp and same_model
+    # DNA 变了也不能直接比 —— 改了平台规则，通过率变化本来就不是"退化"
+    same_dna = (base.get("dna_fingerprint_combined")
+                == report.get("dna_fingerprint_combined"))
+    comparable = same_fp and same_model and same_dna
 
     regressed, improved, fixed = [], [], []
     for mid, cells in report["cells"].items():
@@ -215,10 +252,17 @@ def diff_baseline(report: dict, baseline_path: Path) -> dict:
                 improved.append(f"{mid}/{code}")
             elif not was and not now and cell.get("kind") == "pass":
                 fixed.append(f"{mid}/{code}")
+    why = ""
+    if not comparable:
+        if not same_fp:
+            why = "prompt 指纹不同"
+        elif not same_model:
+            why = "模型不同"
+        else:
+            why = "platform-dna 指纹不同（改了平台规则）"
     return {"baseline": str(baseline_path), "comparable": comparable,
             "same_prompt_fingerprint": same_fp, "same_model": same_model,
-            "reason": "" if comparable else
-                      ("prompt 指纹不同" if not same_fp else "模型不同"),
+            "same_dna_fingerprint": same_dna, "reason": why,
             "regressed": sorted(regressed), "improved": sorted(improved)}
 
 
@@ -241,6 +285,12 @@ def render_md(r: dict, items: list[dict]) -> str:
         f"| 缺失 | {t['missing']} |",
         f"| **通过率** | **{t['pass_rate']:.1%}** |", "",
     ]
+    if r.get("by_platform"):
+        L += ["## 分平台", "", "| 平台 | 通过 / 总数 | 通过率 | 断言失败 | 调用失败 |", "|---|---|---|---|---|"]
+        for code, v in r["by_platform"].items():
+            L.append(f"| {code} | {v['passed']} / {v['cells']} | {v['pass_rate']:.0%} "
+                     f"| {v['assert_failed']} | {v['call_failed']} |")
+        L.append("")
     if "diff" in r:
         d = r["diff"]
         L += ["## 与基线对比", "",
@@ -307,12 +357,19 @@ def main() -> int:
     if bad:
         raise SystemExit(f"[失败] 未知平台 {bad}；可用：{ALL_PLATFORMS}")
 
-    rules = json.loads(Path(args.rules).read_text(encoding="utf-8")) if args.rules else {}
+    override = json.loads(Path(args.rules).read_text(encoding="utf-8")) if args.rules else {}
+    # 每平台一套阈值：platform-dna 为准，--rules 是**全局覆盖**（调试用）
+    rules_by_platform: dict[str, dict] = {}
+    for code in platforms:
+        merged = dict(dna_rules_mod.rules_for(code))
+        merged.update(override)
+        rules_by_platform[code] = merged
 
     if args.dry_run:
         est = estimate(items, platforms)
         eff = args.timeout if args.timeout != 0 else auto_timeout(len(platforms))
-        print(json.dumps({**est, "per_material_timeout_sec": eff if eff > 0 else "不限",
+        print(json.dumps({**est, "rules_by_platform": rules_by_platform,
+                          "per_material_timeout_sec": eff if eff > 0 else "不限",
                           "dry_run": True, "no_llm_request_sent": True},
                          ensure_ascii=False, indent=2))
         return 0
@@ -347,7 +404,7 @@ def main() -> int:
                        "reason": raw["_meta"].get("error", "调用失败"), "assertions": []}
                    for p in platforms}
         else:
-            res = assert_material(it, raw, platforms, rules)
+            res = assert_material(it, raw, platforms, rules_by_platform)
         res["_meta"] = raw["_meta"]
         # 存下产物与理解结果：否则报告说"数字 99 没依据"却看不到稿子、也无法离线复算
         # （实测踩到过 —— 改一条断言就得重跑几小时，有了这个就能离线重算）
@@ -365,7 +422,7 @@ def main() -> int:
                 print(f"  [完成] {mid} {res['_meta']['status']} {res['_meta']['elapsed_sec']}s")
                 try:
                     write_report(out_dir, manifest, cells, platforms, items,
-                                 time.time() - t0, args.baseline)
+                                 time.time() - t0, args.baseline, rules_by_platform)
                 except Exception as e:  # noqa: BLE001
                     print(f"  [警告] 中途刷新报告失败（不影响跑分）：{e}")
     else:
@@ -382,12 +439,12 @@ def main() -> int:
             # 时不能一个报告都没有 —— 那等于白跑。
             try:
                 write_report(out_dir, manifest, cells, platforms, items,
-                             time.time() - t0, args.baseline)
+                             time.time() - t0, args.baseline, rules_by_platform)
             except Exception as e:  # noqa: BLE001 — 刷新失败不该中断跑分
                 print(f"  [警告] 中途刷新报告失败（不影响跑分）：{e}")
 
     report = write_report(out_dir, manifest, cells, platforms, items,
-                          time.time() - t0, args.baseline)
+                          time.time() - t0, args.baseline, rules_by_platform)
     t = report["totals"]
     print(f"\n通过率 {t['pass_rate']:.1%}（{t['passed']}/{t['cells']}）"
           f"　断言失败 {t['assert_failed']}　调用失败 {t['call_failed']}")

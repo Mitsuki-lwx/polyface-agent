@@ -43,6 +43,7 @@ DEFAULT_RULES: dict[str, Any] = {
     "body_min": 50,
     "body_max": 20000,
     "tags_min": 1,
+    "tags_max": 0,          # 0 = 不检查（真实上限来自 platform-dna 的 tags.count_max）
     "tags_allow_hash": False,
 }
 
@@ -142,6 +143,9 @@ def a5_tags_ok(ctx: dict) -> Result:
         hashed = [t for t in tags if t.strip().startswith("#")]
         if hashed:
             bad.append(f"标签带了 #：{hashed[:3]}")
+    # 上限来自 platform-dna（各平台都明确罚"堆砌无关标签"）；0 = 该平台没给上限
+    if rules["tags_max"] and len(tags) > rules["tags_max"]:
+        bad.append(f"标签 {len(tags)} 个 > 平台上限 {rules['tags_max']}")
     return Result("A5 标签达标", not bad, "；".join(bad))
 
 
@@ -177,9 +181,40 @@ def a7_qa_passed(ctx: dict) -> Result:
                   "" if passed else f"QA 未通过：{issues[:3]}")
 
 
+# platform-dna 的 `limits.banned_direction` 在 5 个平台上都明确列了"站外导流"：
+# 个人联系方式（手机号/微信号/邮箱）、站外链接/二维码。这里只做**能机械判定**的那部分 ——
+# 二维码/水印/其他平台信息需要图像或语义判断，不在断言范围内（别假装查了）。
+_PHONE_RE = re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_LINK_RE = re.compile(r"(?:https?://|www\.)\S+")
+_WECHAT_RE = re.compile(r"(?:微信|vx|VX|V信|weixin)\s*(?:号|ID|id)?\s*[:：]?\s*([A-Za-z0-9_-]{5,})")
+
+
+def a8_no_offsite_diversion(ctx: dict) -> Result:
+    """不出现站外导流痕迹（手机号 / 邮箱 / 站外链接 / 微信号）。
+
+    依据：`platform-dna/*.yaml` 的 `limits.banned_direction`，5 个平台都明文禁止。
+    只查**文本里能机械判定**的形态；二维码/水印/其他平台名称需要图像或语义判断，不在此列。
+    """
+    d = ctx.get("draft") or {}
+    text = " ".join([str(d.get("body") or "")]
+                    + [str(t) for t in (d.get("titles") or [])]
+                    + [str(t) for t in (d.get("tags") or [])]
+                    + [str(d.get("interaction_line") or "")])
+    hits: list[str] = []
+    for label, rx in (("手机号", _PHONE_RE), ("邮箱", _EMAIL_RE),
+                      ("站外链接", _LINK_RE), ("微信号", _WECHAT_RE)):
+        m = rx.search(text)
+        if m:
+            hits.append(f"{label}（{m.group(0)[:24]}）")
+    return Result("A8 无站外导流", not hits,
+                  "" if not hits else "命中平台明文红线：" + "、".join(hits))
+
+
 ALL: tuple[Callable[[dict], Result], ...] = (
     a1_numbers_supported, a2_no_foreign_years, a3_titles_ok,
     a4_body_length_ok, a5_tags_ok, a6_clip_sheet_ok, a7_qa_passed,
+    a8_no_offsite_diversion,
 )
 
 

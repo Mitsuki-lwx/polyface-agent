@@ -361,3 +361,46 @@ def test_blocking_failure_yields_nonzero_exit(tmp_path, capsys):
     """缺 jar 属阻塞项 → 退出码必须非 0（脚本据此中止）。"""
     rc = doctor.main(["--root", str(tmp_path), "--quiet"])
     assert rc == 1
+
+
+# ---------------------------------------------------------------- 平台 DNA 新鲜度
+
+def test_platform_dna_reports_freshness(tmp_path):
+    d = tmp_path / "platform-dna"
+    d.mkdir()
+    (d / "x.yaml").write_text("platform: x\nupdated_at: 2099-01-01\n", encoding="utf-8")
+    c = doctor.check_platform_dna(tmp_path)
+    assert c.ok and "1 个平台" in c.detail
+
+
+def test_platform_dna_warns_when_stale(tmp_path):
+    """平台规则会变，DNA 是静态文件 —— 过期要**提示**（非阻塞）。"""
+    d = tmp_path / "platform-dna"
+    d.mkdir()
+    (d / "x.yaml").write_text("platform: x\nupdated_at: 2000-01-01\n", encoding="utf-8")
+    c = doctor.check_platform_dna(tmp_path, max_age_days=90)
+    assert not c.ok and not c.blocking
+    assert "x" in c.hint and "超过" in c.hint
+
+
+def test_platform_dna_handles_missing_updated_at(tmp_path):
+    d = tmp_path / "platform-dna"
+    d.mkdir()
+    (d / "x.yaml").write_text("platform: x\n", encoding="utf-8")
+    c = doctor.check_platform_dna(tmp_path)
+    assert not c.ok and not c.blocking
+    assert "updated_at" in c.hint
+
+
+def test_platform_dna_missing_dir_is_not_blocking(tmp_path):
+    c = doctor.check_platform_dna(tmp_path)
+    assert not c.ok and not c.blocking
+
+
+def test_dna_max_age_is_configurable(monkeypatch):
+    monkeypatch.setenv("POLYFACE_DNA_MAX_AGE_DAYS", "30")
+    assert doctor.dna_max_age_days() == 30
+    monkeypatch.setenv("POLYFACE_DNA_MAX_AGE_DAYS", "abc")   # 乱填退回默认
+    assert doctor.dna_max_age_days() == doctor.DEFAULT_DNA_MAX_AGE_DAYS
+    monkeypatch.setenv("POLYFACE_DNA_MAX_AGE_DAYS", "0")     # 非正数退回 1
+    assert doctor.dna_max_age_days() == 1

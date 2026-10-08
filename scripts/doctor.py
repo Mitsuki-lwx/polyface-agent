@@ -28,6 +28,7 @@ import socket
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 # 最低版本要求（与 README / pom.xml 保持一致）
@@ -267,6 +268,51 @@ def check_data_dir(root: Path) -> Check:
     return Check("数据目录", True, f"{d}（首次启动时创建）")
 
 
+# platform-dna 多久算过期。平台规则会变，而 DNA 是**静态文件** —— 没有这个提醒，
+# 改规则了也没人知道（实测：5 个平台全部停在 2026-09-12）。
+DEFAULT_DNA_MAX_AGE_DAYS = 90
+
+
+def check_platform_dna(root: Path, max_age_days: int = DEFAULT_DNA_MAX_AGE_DAYS) -> Check:
+    """平台 DNA 的新鲜度。**非阻塞** —— 过期不会让服务起不来，但值得看一眼。
+
+    刻意用正则而不是 yaml：doctor 是独立脚本（无第三方依赖），且这里只读一个字段。
+    """
+    d = root / "platform-dna"
+    files = sorted(d.glob("*.yaml"))
+    if not files:
+        return Check("平台 DNA", False, f"未找到 {d}/*.yaml", blocking=False)
+
+    today = date.today()
+    ages: list[tuple[str, int | None]] = []
+    for f in files:
+        m = re.search(r"^updated_at:\s*(\S+)", f.read_text(encoding="utf-8", errors="replace"), re.M)
+        raw = (m.group(1).strip() if m else "")
+        try:
+            ages.append((f.stem, (today - date.fromisoformat(raw)).days))
+        except (ValueError, TypeError):
+            ages.append((f.stem, None))
+
+    known = [(n, a) for n, a in ages if a is not None]
+    unknown = [n for n, a in ages if a is None]
+    if not known:
+        return Check("平台 DNA", False, f"{len(files)} 个平台，但都没有可解析的 updated_at",
+                     "在 platform-dna/*.yaml 里补 updated_at: YYYY-MM-DD", blocking=False)
+
+    newest = min(a for _, a in known)
+    oldest_name, oldest = max(known, key=lambda x: x[1])
+    detail = f"{len(files)} 个平台，最新 {newest} 天前"
+    if unknown:
+        detail += f"（{len(unknown)} 个没标 updated_at：{', '.join(unknown[:3])}）"
+    if oldest > max_age_days:
+        return Check("平台 DNA", False, detail,
+                     f"最旧的是 {oldest_name}（{oldest} 天前），已超过 {max_age_days} 天 —— "
+                     f"平台规则会变，建议对照官方文档核对一遍；"
+                     f"可用 POLYFACE_DNA_MAX_AGE_DAYS 调整阈值",
+                     blocking=False)
+    return Check("平台 DNA", True, detail)
+
+
 def check_llm_mode(root: Path) -> Check:
     """报告真实/mock 模式 —— 与 ADR-017 的数据边界提示一致，不静默。"""
     env = root / "python-service" / ".env"
@@ -356,12 +402,22 @@ def check_editor(root: Path) -> Check:
     return Check("封面编辑器", True, detail, blocking=False)
 
 
+def dna_max_age_days() -> int:
+    """阈值可配（项目规矩：任何可调值都要能从环境变量到达）。"""
+    try:
+        return max(1, int(os.getenv("POLYFACE_DNA_MAX_AGE_DAYS", "").strip()
+                          or DEFAULT_DNA_MAX_AGE_DAYS))
+    except ValueError:
+        return DEFAULT_DNA_MAX_AGE_DAYS
+
+
 def run_all(root: Path | None = None, java_port: int = DEFAULT_JAVA_PORT,
             py_port: int = DEFAULT_PY_PORT) -> list[Check]:
     root = root or project_root()
     checks = [check_java(), check_python(), check_venv(root), check_jar(root)]
     checks += check_ports(java_port, py_port)
-    checks += [check_data_dir(root), check_llm_mode(root), check_editor(root)]
+    checks += [check_data_dir(root), check_llm_mode(root), check_editor(root),
+               check_platform_dna(root, dna_max_age_days())]
     return checks
 
 

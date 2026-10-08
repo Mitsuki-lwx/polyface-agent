@@ -209,3 +209,29 @@
 - 报告里 prompt 指纹、模型名、耗时、token 用量齐全
 - 至少跑一次**变异**：故意改坏一个 prompt → 重跑 → 通过率或断言结论**确实变了**
   （这一条是整件事的意义所在：证明这个评测集**抓得住**退化）
+
+---
+
+## T13 · （后加）接入 platform-dna：把它变成「平台 DNA 的实验台」
+
+**影响文件**：`scripts/eval/dna_rules.py`（新）· `scripts/eval/assertions.py` ·
+`scripts/eval/run_eval.py` · `scripts/doctor.py` · `python-service/tests/test_dna_rules.py`（新）
+
+**依赖**：T3、T6、T7
+
+**为什么后加**：T1~T12 做完后才发现，跑分器**根本没读 platform-dna 的约束** ——
+`body_chars_max` / `tags.count_max` / `title_chars_max` 一条都没用上。
+于是「改了某平台的 DNA，产出有没有变好」这个问题答不了，而这正是
+`docs/71` §5 说的 harness 该回答的事。
+
+**做什么**：
+
+1. `dna_rules.rules_for(platform)` —— 把 DNA 翻译成断言阈值
+   （取值优先级见该模块 docstring：各平台字段名不统一，且 `0` 表示「无上限」）
+2. 断言补两条：**A5 的标签上限**（平台罚的是堆砌，不是太少）、
+   **A8 站外导流**（手机号/邮箱/外链/微信号 —— DNA 的 `limits.banned_direction` 明文禁止）
+3. 报告加 **DNA 指纹**（每平台 + 合并）与**分平台切片**表
+4. 基线可比性把 DNA 指纹也算进去
+5. `doctor.py` 报平台 DNA 的新鲜度（阈值 `POLYFACE_DNA_MAX_AGE_DAYS`，非阻塞）
+
+**验收**：见 `docs/checklist_eval.md` §4b。
