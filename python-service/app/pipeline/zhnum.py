@@ -54,6 +54,14 @@ def parse(text: str) -> int | None:
     seen_digit = False        # 见过数字字符（「十万」没有，但它是合法的）
 
     for ch in text:
+        if ch == "成":
+            # 「成」只能出现在**末尾**（`X成` = X×10%），上面已经处理掉了。
+            # 走到这里说明它在中间（如「五成三」）—— 那不是数字，**不猜**。
+            #
+            # ⚠️ 这里必须显式挡掉：早先漏了，`UNITS["成"]` 直接抛 KeyError，
+            # 而调用链是 `_rule_qa → _num_values → zhnum.tokens_in → parse` ——
+            # 也就是**生产里任何一句含「成」的稿件都会让整个平台生成失败**（实测炸过）。
+            return None
         if ch in FILLERS:
             continue
         if ch in DIGITS:

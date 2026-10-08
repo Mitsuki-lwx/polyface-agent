@@ -110,3 +110,32 @@ def test_lone_wan_is_still_not_a_number():
 
 def test_lone_shi_is_a_number():
     assert Z.parse("十") == 10
+
+
+def test_cheng_in_the_middle_does_not_crash():
+    """**实测炸过**：把「成」加进 `_CN_RE` 后，`parse` 的循环遇到它就 `UNITS[ch]` → KeyError。
+
+    调用链是 `_rule_qa → _num_values → zhnum.tokens_in → parse`，
+    所以**生产里任何一句含「成」的稿件都会让整个平台生成失败**。
+    """
+    assert Z.parse("五成三") is None
+    assert Z.parse("成") is None
+    assert Z.parse("三成五") is None
+    # 整句也不能炸
+    assert Z.numbers_in("闲鱼占三成，小红书占五成") == {30, 50}
+
+
+def test_every_cn_char_is_handled_by_parse():
+    """**穷举守卫**：`_CN_RE` 能匹配到的每个字符，`parse` 都必须能处理。
+
+    这条比逐个举例强 —— 以后谁再往正则里加字符而忘了改 `parse`，这里立刻红。
+    """
+    import re
+    for ch in Z._CN_RE.pattern:
+        if not ("\u4e00" <= ch <= "\u9fff"):
+            continue
+        # 不该抛异常（返回 None 或数字都算通过）
+        try:
+            Z.parse(ch)
+        except Exception as e:  # noqa: BLE001
+            raise AssertionError(f"parse({ch!r}) 抛了 {type(e).__name__}: {e}") from e
