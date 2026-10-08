@@ -259,3 +259,35 @@ def test_number_pipeline_never_crashes_on_tricky_snippets(text):
     from app.pipeline.numberish import num_values
     num_values(text, strict=False)
     num_values(text, strict=True)
+
+
+# ------------------------------------------------ 基线实测：时间码 / 年月简写（2026-10-08）
+
+def test_video_timecodes_are_not_numbers():
+    """口播稿里的「【3-15s 展开】【15-40s 干货】」是**结构标记**，不是事实主张。
+
+    实测：douyin 稿件的 15/40/55 全被当成"素材里没有的数字"。
+    """
+    assert _numbers_in("【3-15s 展开】【15-40s 干货】【40-55s 结果+核心】") == {}
+    assert num_warnings("【3-15s 展开】这次之后我才发现会漏事。", "无数字素材") == []
+
+
+def test_timecode_fix_keeps_real_durations():
+    """反例守卫：真正的时长主张不能被一起吃掉。"""
+    got = _numbers_in("时长 40s，剪掉 7.19s")
+    assert "40" in got and "7.19" in got
+
+
+def test_year_month_shorthand():
+    """「2022.5」是「2022年5月」的简写，不是小数。
+
+    实测：素材写「2022年5月」、稿件写「2022.5」，于是 2022.5 与 2022/5 都对不上。
+    """
+    assert _numbers_in("2022.5：做小红书") == {"2022": "2022", "5": "5"}
+    assert num_warnings("2022.5：做小红书垂直内容。", "2022年5月注册账号") == []
+
+
+def test_year_month_fix_does_not_break_decimals():
+    """反例守卫：真小数不能被拆（`3.5亿` 不是「3 和 5亿」）。"""
+    assert _numbers_in("营收 3.5亿") == {"3.5亿": "3.5亿"}
+    assert _numbers_in("2022.5万") == {"2022.5万": "2022.5万"}

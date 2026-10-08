@@ -56,6 +56,17 @@ _LIST_MARKER_RE = re.compile(
 # 形态是 `数字 + (变体选择符) + U+20E3`，`_LIST_MARKER_RE` 抓不到（坑 #6）。
 _KEYCAP_RE = re.compile(r"[0-9#*]\ufe0f?\u20e3")
 
+# 视频时间码（`3-15s` `15-40s`）：口播稿里的**结构标记**，不是事实主张。
+# 实测（2026-10-08 基线）：douyin 稿件写「【3-15s 展开】【15-40s 干货】【40-55s 结果】」，
+# 数字依据校验把 15/40/55 全当成了"素材里没有的数字"。
+# 只认「数字-数字 + s」这种**区间**形式，避免误伤「时长 40s」这类真主张。
+_TIMECODE_RE = re.compile(r"\d+\s*[-–~—]\s*\d+\s*s\b")
+
+# 「2022.5」是「2022年5月」的简写，**不是小数**（实测：素材写「2022年5月」、
+# 稿件写「2022.5」，于是 2022.5 与素材的 2022/5 都对不上 → 误报）。
+# 拆成两个数再提取。限定 4 位年份 + 1~2 位月，且后面**不跟单位**（否则「2022.5万」会被拆错）。
+_YEARMONTH_RE = re.compile(r"(?<!\d)(\d{4})\.(\d{1,2})(?!\d)(?![万wWkK千亿成])")
+
 _UNIT_ALIAS_RE = re.compile(r"[wW]$")
 _UNITS = {"万": 10000.0, "w": 10000.0, "W": 10000.0,
           "k": 1000.0, "K": 1000.0, "千": 1000.0, "亿": 100000000.0,
@@ -80,6 +91,8 @@ def numbers_in(text: str) -> dict[str, str]:
     """
     out: dict[str, str] = {}
     cleaned = _KEYCAP_RE.sub(" ", _LIST_MARKER_RE.sub(" ", text or ""))
+    cleaned = _TIMECODE_RE.sub(" ", cleaned)
+    cleaned = _YEARMONTH_RE.sub(r"\1 \2", cleaned)   # 「2022.5」→「2022 5」
     for tok in _NUM_RE.findall(cleaned):
         out.setdefault(norm_num(tok), tok)
     return out
