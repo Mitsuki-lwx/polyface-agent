@@ -49,7 +49,8 @@ def is_env_leak(name: str) -> bool:
 
 # 要复制的顶层内容
 COPY_DIRS = ("python-service", "platform-dna", "scripts", "docs")
-COPY_FILES = ("README.md", "LICENSE", "VERSION")
+# README.md 是**英文版（默认）**，README.zh-CN.md 是中文版 —— 两个都随包发
+COPY_FILES = ("README.md", "README.zh-CN.md", "LICENSE", "VERSION")
 JAR_REL = Path("java-backend/target/polyface.jar")
 
 
@@ -296,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
         print("    ├── platform-dna/")
         print("    ├── scripts/          ← setup.bat / start.bat / stop.bat")
         print("    ├── docs/             ← 设计文档（README 引用的编号文档在此）")
-        print("    ├── README.md / LICENSE / VERSION")
+        print("    ├── README.md（英文）/ README.zh-CN.md（中文）/ LICENSE / VERSION")
         print()
         print("用户侧：解压 → scripts\\setup.bat → scripts\\start.bat")
         return 0

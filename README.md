@@ -1,58 +1,71 @@
 # Polyface · 同源万面
 
-> **一份素材进，千面出。** 把一份原创素材，自动改写为符合各平台调性、有机会获得流量的完整可发布稿件。
+[中文](./README.zh-CN.md) | **English**
 
-面向自媒体博主的**本地 Web 工具**：素材与稿件存在你自己的电脑，模型用你自己填的 Key。灵感源于 Creative Minds Jam（Content repurposing across platforms），但**完全独立自研**，不依赖任何外部智能体平台。
+> **One source in, a thousand faces out.** Take one piece of original material and rewrite it
+> automatically into publish-ready drafts tuned to each platform's voice — drafts that have a
+> real shot at earning reach.
 
-> ⚠️ **关于"数据不出本机"**：早期版本这样宣传，**这个说法不准确**，已修正（见 `docs/08` ADR-017）。请先读下面的「数据边界」。
+A **local web tool** for content creators: your material and drafts stay on your own machine, and
+the model runs on your own API key. Inspired by Creative Minds Jam (*Content repurposing across
+platforms*), but **built entirely from scratch** — it does not depend on any external agent platform.
 
-## 数据边界（请先读）
+> ⚠️ **About "your data never leaves your machine"**: earlier versions advertised this. **That claim
+> was inaccurate** and has been corrected (see `docs/08` ADR-017). Please read **Data boundary** below first.
 
-| 留在你的电脑 | 发送到外部 LLM |
+## Data boundary (read this first)
+
+| Stays on your machine | Sent to an external LLM |
 |---|---|
-| 素材原文与成稿（SQLite） | **素材正文**（解析时全文送出） |
-| 音视频文件（`data/media`） | 已确认事实清单（生成时复用） |
-| **音视频转写**（本地 ASR / 字幕提取） | 模板内容 |
-| 模板库、效果回填、复盘 | 创作者画像 / 历史经验提示 |
-| LLM Key（`python-service/.env`） | |
+| Source material and drafts (SQLite) | **The material body text** (sent in full during analysis) |
+| Audio/video files (`data/media`) | The confirmed fact list (reused during generation) |
+| **Audio/video transcription** (local ASR / subtitle extraction) | Template contents |
+| Template library, performance feedback, retrospectives | Creator profile / past-experience hints |
+| LLM key (`python-service/.env`) | |
 
-**一句话**：数据**存在**本机，但**生成过程不离开本机是不可能的** —— 素材正文会发送给你自己配置的 LLM 服务商（默认商汤 SenseNova）。
+**In one sentence**: your data is **stored** locally, but **it is impossible for generation to stay
+local** — the material body text is sent to the LLM provider *you* configure (SenseNova by default).
 
-- ✅ **仍然成立**：不经任何平台方、无云端账号、**音视频转写全程本地不上传**（明确排除云 ASR）
-- ✅ **仍成立的卖点**：数据只存在你本机 + 模型用你自己的 Key，不用把素材交给第三方 SaaS
-- ⚠️ **`LLM_MOCK=true`（无 Key 时的默认）全流程离线**，此时确实不出网 —— 但产出是**演示结果**，不是真实生成，UI 的运行模式徽章会标明
+- ✅ **Still true**: no platform intermediary, no cloud account, and **transcription runs fully
+  locally and is never uploaded** (cloud ASR is explicitly out of scope).
+- ✅ **Still a real selling point**: data lives only on your machine, and the model runs on your own
+  key — you don't hand your material to a third-party SaaS.
+- ⚠️ **`LLM_MOCK=true` (the default when no key is set) is fully offline** — nothing goes out. But
+  the output is a **demo result**, not real generation. The UI's mode badge tells you which you're in.
 
-## 快速开始
+## Quick start
 
-> 需要：**Java 17+** / **Python 3.11+** / 浏览器。无需数据库。
-> **封面成图（可选）**额外需要 **Node.js ≥ 20.19** + `npm install -g gimpish`；
-> 不装也能跑，只是「生成封面」会降级为提示安装（不影响其他功能）。见 ADR-019。
+> Requires: **Java 17+** / **Python 3.11+** / a browser. No database needed.
+> **Cover rendering (optional)** additionally needs **Node.js ≥ 20.19** + `npm install -g gimpish`.
+> Without it everything still runs — "Generate cover" just degrades to an install hint (nothing else
+> is affected). See ADR-019.
 >
-> **Windows** 用 `.bat`，**macOS / Linux / Git Bash** 用 `.sh` —— 两组脚本行为逐项对齐。
+> **Windows** uses `.bat`; **macOS / Linux / Git Bash** uses `.sh` — the two sets behave identically,
+> item by item.
 
-### 方式 A：下载发布包（推荐，不需要 Maven）
+### Option A: download the release package (recommended — no Maven needed)
 
 **Windows**
 
 ```bat
-:: 解压 polyface-<版本>.zip 后，在该目录下：
-scripts\setup.bat     :: 首次运行：建 venv、装依赖、生成 .env
-scripts\start.bat     :: 启动（自动打开浏览器）
-scripts\stop.bat      :: 停止（脚本/CI 里加 -y 跳过确认）
+:: After unzipping polyface-<version>.zip, inside that directory:
+scripts\setup.bat     :: first run: create venv, install deps, generate .env
+scripts\start.bat     :: start (opens the browser)
+scripts\stop.bat      :: stop (add -y in scripts/CI to skip the confirmation)
 ```
 
 **macOS / Linux**
 
 ```bash
-# 解压 polyface-<版本>.zip 后，在该目录下：
-bash scripts/setup.sh     # 首次运行：建 venv、装依赖、生成 .env
-bash scripts/start.sh     # 启动（自动打开浏览器）
-bash scripts/stop.sh      # 停止（脚本/CI 里加 -y 跳过确认）
+# After unzipping polyface-<version>.zip, inside that directory:
+bash scripts/setup.sh     # first run: create venv, install deps, generate .env
+bash scripts/start.sh     # start (opens the browser)
+bash scripts/stop.sh      # stop (add -y in scripts/CI to skip the confirmation)
 ```
 
-发布包自带预构建的 `polyface.jar`，**不需要装 Maven**。
+The release package ships a pre-built `polyface.jar`, so **you don't need Maven**.
 
-> **端口被占用？** 8000（Python）或 8080（Java）被别的程序占用时，不用改脚本：
+> **Port already in use?** If 8000 (Python) or 8080 (Java) is taken, you don't have to edit the scripts:
 > ```bash
 > # macOS / Linux / Git Bash
 > POLYFACE_JAVA_PORT=18080 POLYFACE_PY_PORT=18000 bash scripts/start.sh
@@ -63,13 +76,13 @@ bash scripts/stop.sh      # 停止（脚本/CI 里加 -y 跳过确认）
 > set POLYFACE_PY_PORT=18000
 > scripts\start.bat
 > ```
-> 启动前的体检会明确告诉你哪个端口被占、以及这条命令。
+> The pre-flight check tells you exactly which port is taken and prints this command.
 
-### 方式 B：从源码运行（开发者）
+### Option B: run from source (developers)
 
 ```bat
 :: Windows
-scripts\setup.bat          :: 这一步需要 Maven 来构建 jar
+scripts\setup.bat          :: this step needs Maven to build the jar
 scripts\start.bat
 ```
 
@@ -79,154 +92,185 @@ bash scripts/setup.sh
 bash scripts/start.sh
 ```
 
-或手动分别启动：
+Or start the two services manually:
 
 ```bash
-# Python LLM 服务（注意：必须在 python-service 目录下启动，.env 是按当前目录找的）
+# Python LLM service (note: must be started from inside python-service — .env is resolved
+# relative to the current directory)
 cd python-service && .venv/Scripts/python -m uvicorn app.main:app --port 8000
-# macOS/Linux 是 .venv/bin/python
+# on macOS/Linux use .venv/bin/python
 
-# Java 后端（Git Bash 下必须走 scripts/mvn.sh，直接 mvn 会报 ClassNotFoundException）
+# Java backend (under Git Bash you must go through scripts/mvn.sh — calling mvn directly
+# fails with ClassNotFoundException)
 mvn -f java-backend/pom.xml spring-boot:run
 ```
 
-浏览器打开 <http://127.0.0.1:8080>。
+Then open <http://127.0.0.1:8080>.
 
-### 关于 LLM Key（重要）
+### About the LLM key (important)
 
-**不填 Key 也能跑** —— 默认 `LLM_MOCK=true`，走离线演示模式，秒级返回、完全不出网，但产出是**演示结果**（内容为模板填充，不是真实生成）。
+**It runs without a key.** By default `LLM_MOCK=true`, which is an offline demo mode: instant
+responses, no network at all — but the output is a **demo result** (template-filled content, not real
+generation).
 
-要真实生成，编辑 `python-service/.env`：
+For real generation, edit `python-service/.env`:
 
 ```ini
-LLM_API_KEY=你的Key
+LLM_API_KEY=your-key
 LLM_MOCK=false
 ```
 
-支持任意 OpenAI 兼容接口（商汤 SenseNova / DeepSeek / 通义 / OpenAI / Cline…），改 `LLM_BASE_URL` + `LLM_MODEL` 即可。
-响应信封不是标准形状的网关也做了兼容（实测 Cline 会把成功响应多包一层 `data`，
-不处理的话 SDK 只会报 `TypeError: 'NoneType' object is not subscriptable`，看不出是协议问题）。
+Any OpenAI-compatible endpoint works (SenseNova / DeepSeek / Qwen / OpenAI / Cline…); just change
+`LLM_BASE_URL` + `LLM_MODEL`. Gateways whose response envelope isn't the standard shape are handled
+too — in practice Cline wraps successful responses in an extra `data` layer, and without handling
+that the SDK only reports `TypeError: 'NoneType' object is not subscriptable`, which looks nothing
+like a protocol problem.
 
-### 启动前自检（可选，出问题时很好用）
+### Pre-flight self-check (optional, handy when something's wrong)
 
 ```bat
 python scripts\doctor.py
 ```
 
-逐项检查 Java 版本 / Python 版本 / venv 与依赖 / jar / 端口占用 / 数据目录 / LLM 模式，并对每个阻塞项给出**具体怎么修**。`start.bat` 会自动跑一遍，有问题就中止启动而不是让你对着空白页发呆。
+Checks Java version / Python version / venv and dependencies / jar / port conflicts / data directory /
+LLM mode, and for every blocker gives you **concrete instructions to fix it**. `start.bat` runs it
+automatically and aborts the launch rather than leaving you staring at a blank page.
 
-## 耗时预期（重要，先看这个再抱怨慢）
+## Time expectations (important — read before complaining it's slow)
 
-| 场景 | 预期 |
+| Scenario | Expected |
 |---|---|
-| 离线演示（`LLM_MOCK=true`） | 秒级 |
-| **真实 LLM · 单平台** | **约 1~4 分钟**（实测 101s ~ 250s；上游限流时更久） |
-| 真实 LLM · 多平台 | 串行累加（平台数 × 单平台耗时）；**默认只勾选 1 个平台** |
+| Offline demo (`LLM_MOCK=true`) | Instant |
+| **Real LLM · single platform** | **roughly 1–4 minutes** (measured 101s–250s; longer under upstream rate limiting) |
+| Real LLM · multiple platforms | Adds up serially (platforms × single-platform time); **only one platform is selected by default** |
 
-**为什么这么慢**：每个平台要走 `understand → brief → draft → qa` **最多 4 次 LLM 调用**，QA 不过还要再来一轮改写。上游对 tpm/rpm 卡得很紧，多平台并发会被大面积 429，所以默认**串行 + 调用间隔**。这是设计取舍，不是 bug。
+**Why it's this slow**: each platform goes through `understand → brief → draft → qa` — **up to 4 LLM
+calls** — and a failed QA triggers another rewrite round. Upstream enforces tight tpm/rpm limits, so
+concurrent platforms get broadly 429'd; the default is therefore **serial + inter-call delay**. That's
+a deliberate tradeoff, not a bug.
 
-生成是**长任务**，超时预算是**显式可配**的（默认生成 240s / 短任务 60s），不是写死的魔法数字：
+Generation is a **long task**, and its timeout budget is **explicitly configurable** (240s for
+generation, 60s for short tasks by default) — not a magic number baked into the code:
 
 ```ini
-POLYFACE_LLM_TIMEOUT_SEC=300        # Java 侧：整个生成任务的预算
-POLYFACE_LLM_FAST_TIMEOUT_SEC=60    # Java 侧：解析/学习/用量查询
+POLYFACE_LLM_TIMEOUT_SEC=300        # Java side: budget for the whole generation task
+POLYFACE_LLM_FAST_TIMEOUT_SEC=60    # Java side: parsing / learning / usage queries
 ```
 
-> ⚠️ 别和 Python 侧 `.env` 里的 `LLM_TIMEOUT_SEC`（默认 60）混淆 —— 那是**单次模型调用**的上限，是任务预算的组成部分。
+> ⚠️ Don't confuse this with `LLM_TIMEOUT_SEC` in the Python-side `.env` (default 60) — that's the
+> limit for a **single model call**, and it's a component of the task budget.
 
-**部分成功会保留**：某个平台失败**不会丢弃**其他平台已生成的稿子 —— 前端显示「成功 X / 失败 Y」+ 失败原因，并提供「🔁 重试失败平台」（只重跑失败的那个）。
+**Partial success is preserved**: if one platform fails, drafts already generated for the others are
+**not discarded** — the UI shows "succeeded X / failed Y" plus the reason, and offers
+"🔁 Retry failed platforms" (which re-runs only the failed one).
 
-## 核心能力
+## Core capabilities
 
-- 📥 输入一份素材（长文 / 口播稿 / 大纲 / 笔记 / 音视频）
-- 🧬 按**平台 DNA**（语言风格 / 结构模板 / 标题机制 / 标签策略 / 红线词）逐平台改写 —— 不只是换格式，而是换"灵魂"
-- 🛡️ **事实约束**：成稿中的数值/故事必须能在素材"事实清单"中找到依据，QA 拦截 AI 自加戏
-- 🧠 **记忆与复盘**：创作者画像 + 效果回填 + 复盘报告，越用越懂你
-- 🎬 **剪辑单**（抖音/B站）：成稿附带分镜/时长/画面/字幕/BGM 建议
-- 🎥 **音视频入料**：视频/音频 → 文字，**本地转写**（字幕轨优先，ASR 可选），不上传
-- 🖼 **封面成图**（M6-1）：稿件标题 → 平台尺寸封面 PNG，由后台图像编辑器 **gimpish** 渲染
-  （小红书 3:4 / 抖音 9:16 / B站 16:9）。产物目录内保留 `scene.json`，可用 `gimpish serve` 继续手改
-- ✏️ **在编辑器里改封面**（M6-2）：工作台里点一下就**内嵌** gimpish 的编辑器，改完直接落回同一个
-  `scene.json`。编辑器进程由 polyface 当受管子进程拉起（懒启动、退出清理）
-- 📚 **素材库**（M7-1）：图片 / 音频 / 视频等**资产**统一入库，可被稿件与成片引用。
-  内容寻址（同一份文件只存一份）、类型筛选、搜索、上传、删除。
-  **生成封面与上传入料会自动入库** —— 不需要你"记得去存"
-  （与「素材历史」不同：那里是**文本素材**，这里是**资产**，见 FAQ）
-- ✂️ **粗剪**（M8-1）：素材视频 → **去停顿**（按静音切掉废镜头）→ 烧入字幕 →
-  输出成片。全过程**本机 ffmpeg**，不上传。前置条件不满足时**大声失败**并给出可执行指引，
-  不会悄悄交一个"看起来正常"的成片（见 FAQ「粗剪需要装什么」）
-- ⏱ **异步长任务**（M8-2）：生成稿件、粗剪这类耗时活儿走**任务队列**，界面实时显示
-  阶段进度（探测/找停顿/剪裁/抽音轨/转写/烧字幕），可离开页面、可取消，不必盯着转圈
-- 🔒 **数据边界清晰**：素材与稿件只存在你的电脑；生成时正文发送给你自配的 LLM 服务商（见上）
+- 📥 Feed in one piece of material (long-form / spoken script / outline / notes / audio-video)
+- 🧬 Rewrites per platform against **platform DNA** (language style / structural templates / title
+  mechanics / tag strategy / red-line words) — not just reformatting, but changing the *soul*
+- 🛡️ **Fact constraints**: numbers and stories in a draft must be traceable to the material's "fact
+  list"; QA blocks the AI from inventing things
+- 🧠 **Memory and retrospectives**: creator profile + performance feedback + retrospective reports —
+  it understands you better the more you use it
+- 🎬 **Clip sheet** (Douyin/Bilibili): drafts come with shot / duration / visual / subtitle / BGM
+  suggestions
+- 🎥 **Audio-video ingestion**: video/audio → text, **transcribed locally** (subtitle track first,
+  ASR optional), never uploaded
+- 🖼 **Cover rendering** (M6-1): draft title → platform-sized cover PNG, rendered by the headless
+  image editor **gimpish** (Xiaohongshu 3:4 / Douyin 9:16 / Bilibili 16:9). A `scene.json` is kept
+  alongside the output so you can keep editing with `gimpish serve`
+- ✏️ **Edit the cover in an editor** (M6-2): one click in the workbench **embeds** gimpish's editor,
+  and your changes land back in the same `scene.json`. The editor process is launched by polyface as
+  a supervised child (lazy start, cleaned up on exit)
+- 📚 **Asset library** (M7-1): images / audio / video and other **assets** go into one library that
+  drafts and finished cuts can reference. Content-addressed (identical files stored once), with type
+  filtering, search, upload and delete. **Cover generation and ingestion register automatically** —
+  you don't have to remember to file anything (unlike "material history", which holds **text
+  material**; this holds **assets** — see the FAQ)
+- ✂️ **Rough cut** (M8-1): source video → **remove pauses** (cut dead air by silence) → burn in
+  subtitles → finished cut. All **local ffmpeg**, nothing uploaded. When a prerequisite is missing it
+  **fails loudly** with actionable instructions rather than quietly handing you a cut that "looks
+  fine" (see the FAQ "What do I need installed for rough cut?")
+- ⏱ **Async long tasks** (M8-2): time-consuming work like draft generation and rough cutting goes
+  through a **task queue** with live stage progress in the UI (probe / find pauses / cut / extract
+  audio / transcribe / burn subtitles). You can leave the page, cancel, and stop watching a spinner
+- 🔒 **Clear data boundary**: material and drafts live only on your machine; during generation the
+  body text goes to the LLM provider you configured (see above)
 
-## 平台支持
+## Platform support
 
-| 阶段 | 平台 |
+| Stage | Platforms |
 |---|---|
-| v1 | 小红书 · 抖音 · 微信公众号 · 知乎 · B站 |
-| 规划中 | X(Twitter) · Instagram · Facebook · YouTube |
+| v1 | Xiaohongshu · Douyin · WeChat Official Account · Zhihu · Bilibili |
+| Planned | X (Twitter) · Instagram · Facebook · YouTube |
 
-平台差异写在 `platform-dna/*.yaml` 里，**可直接编辑**（风格、结构模板、标题规则、标签、红线、字数限制），改完重启即生效，不需要改代码。
+Platform differences live in `platform-dna/*.yaml` and are **directly editable** (style, structural
+templates, title rules, tags, red lines, length limits). Restart and the changes take effect — no code
+changes needed.
 
-## 架构
+## Architecture
 
 ```
-浏览器(127.0.0.1:8080)
-   └─ Java 后端 :8080 (Spring Boot)   ← 业务编排/任务状态/本地存储(SQLite)
-        └─ Python LLM 服务 :8000 (FastAPI)  ← 素材解析/平台策略/成稿/QA/封面适配器
-             ├─ LLM (OpenAI 兼容，默认 SenseNova 商汤)
-             └─ gimpish (Node 子进程，后台，无 GUI)  ← 封面成图（可选依赖，见 ADR-019）
+Browser (127.0.0.1:8080)
+   └─ Java backend :8080 (Spring Boot)   ← orchestration / task state / local storage (SQLite)
+        └─ Python LLM service :8000 (FastAPI)  ← material analysis / platform strategy / drafts / QA / cover adapter
+             ├─ LLM (OpenAI-compatible, SenseNova by default)
+             └─ gimpish (Node child process, headless)  ← cover rendering (optional dependency, see ADR-019)
 ```
 
-两个服务都**只监听 127.0.0.1**，不对局域网/公网开放。Python 服务的跨域默认**关闭**（见下）。
+Both services **listen on 127.0.0.1 only** — never exposed to the LAN or the internet. CORS on the
+Python service is **off** by default (see below).
 
-## 目录结构
+## Directory layout
 
 ```
 polyface/
-├── polyface.jar       # Java 后端（发布包内预构建；源码模式在 java-backend/target/）
-├── java-backend/      # Spring Boot :8080 —— 业务编排 + 存储 + Web 托管
-├── python-service/    # FastAPI :8000 —— LLM 管线（解析/策略/成稿/QA）
-├── platform-dna/      # 各平台 DNA（YAML，可编辑可升级）
-├── scripts/           # setup / start / stop / doctor（自检）/ build_release（打包）
-├── docs/              # 方案与蓝图文档（编号索引见下）
-├── data/              # 你的数据（素材/稿件/音视频）—— 不在仓库里，也不会被打包
-├── VERSION            # 版本号唯一来源
-└── dist/              # 打包产物（本地生成）
+├── polyface.jar       # Java backend (pre-built in the release package; from source it's under java-backend/target/)
+├── java-backend/      # Spring Boot :8080 — orchestration + storage + web hosting
+├── python-service/    # FastAPI :8000 — LLM pipeline (analysis / strategy / drafts / QA)
+├── platform-dna/      # Per-platform DNA (YAML, editable and upgradeable)
+├── scripts/           # setup / start / stop / doctor (self-check) / build_release (packaging)
+├── docs/              # Design and blueprint documents (numbered index below)
+├── data/              # Your data (material / drafts / audio-video) — not in the repo, not packaged
+├── VERSION            # Single source of truth for the version
+└── dist/              # Packaging output (generated locally)
 ```
 
-## 配置速查
+## Configuration reference
 
-| 变量 | 位置 | 默认 | 说明 |
+| Variable | Where | Default | Notes |
 |---|---|---|---|
-| `LLM_API_KEY` | `.env` | 空 | 你的模型 Key。空 = 离线演示模式 |
-| `LLM_MOCK` | `.env` | `true` | `false` 才走真实模型（需 Key） |
-| `LLM_BASE_URL` / `LLM_MODEL` | `.env` | SenseNova | 换服务商改这两项 |
-| `LLM_TIMEOUT_SEC` | `.env` | `60` | **单次**模型调用超时 |
-| `LLM_JSON_RETRIES` | `.env` | `2` | 模型返回的 JSON 解析失败时的重试次数。模型偶发返回坏 JSON 是常态，不重试的话一次就整个平台失败 |
-| `LLM_PARALLEL` | `.env` | `false` | 多平台并行。默认串行（上游限流） |
-| `CORS_ORIGINS` | `.env` | 空 | 留空 = 不启用跨域（推荐） |
-| `FFMPEG_PATH` | `.env` | 空 | 音视频入料用；空则找 PATH |
-| `POLYFACE_LLM_TIMEOUT_SEC` | 系统环境变量 | `240` | Java 侧：生成任务总预算 |
-| `POLYFACE_LLM_FAST_TIMEOUT_SEC` | 系统环境变量 | `60` | Java 侧：短任务预算 |
-| `POLYFACE_DATA_DIR` | 系统环境变量 | `../data` | 数据目录。**默认值相对「启动时的当前目录」**，所以手动 `java -jar` 可能把数据写到包外；`start.bat` / `start.sh` 已显式设为 `<包根>/data` |
-| `POLYFACE_JAVA_PORT` | 系统环境变量 | `8080` | Java 后端端口。被占用时改它，不用改脚本 |
-| `POLYFACE_PY_PORT` | 系统环境变量 | `8000` | Python LLM 服务端口。同上 |
-| `GIMPISH_PATH` | `.env` | 空 | 封面成图用的 gimpish 入口（可执行文件或 `.js`）。空则找 PATH |
-| `POLYFACE_GIMPISH` | 系统环境变量 | 空 | 同上，**优先级更高**（不装 gimpish 则封面功能降级提示安装） |
-| `POLYFACE_COVER_DIR` | 系统环境变量 | `{data-dir}/media/covers` | 封面产物根目录 |
-| `POLYFACE_EDITOR_PORT` | 系统环境变量 | `8765` | 内嵌编辑器（gimpish serve）端口。被占时会降级提示，不会静默失败 |
-| `POLYFACE_EDITOR_ENABLED` | 系统环境变量 | `true` | 设为 `false` 则「在编辑器中打开」只给提示，不尝试起进程 |
+| `LLM_API_KEY` | `.env` | empty | Your model key. Empty = offline demo mode |
+| `LLM_MOCK` | `.env` | `true` | Only `false` uses a real model (needs a key) |
+| `LLM_BASE_URL` / `LLM_MODEL` | `.env` | SenseNova | Change these two to switch providers |
+| `LLM_TIMEOUT_SEC` | `.env` | `60` | Timeout for a **single** model call |
+| `LLM_JSON_RETRIES` | `.env` | `2` | Retries when the model's JSON fails to parse. Models returning malformed JSON is normal — without retries a single bad response fails the whole platform |
+| `LLM_PARALLEL` | `.env` | `false` | Parallel platforms. Serial by default (upstream rate limiting) |
+| `CORS_ORIGINS` | `.env` | empty | Empty = CORS disabled (recommended) |
+| `FFMPEG_PATH` | `.env` | empty | Used by audio-video ingestion; empty = look on PATH |
+| `POLYFACE_LLM_TIMEOUT_SEC` | system env | `240` | Java side: total budget for a generation task |
+| `POLYFACE_LLM_FAST_TIMEOUT_SEC` | system env | `60` | Java side: budget for short tasks |
+| `POLYFACE_DATA_DIR` | system env | `../data` | Data directory. **The default is relative to the current working directory**, so a manual `java -jar` can write data outside the package; `start.bat` / `start.sh` set it explicitly to `<package root>/data` |
+| `POLYFACE_JAVA_PORT` | system env | `8080` | Java backend port. Change this when it's taken instead of editing scripts |
+| `POLYFACE_PY_PORT` | system env | `8000` | Python LLM service port. Same as above |
+| `GIMPISH_PATH` | `.env` | empty | gimpish entry point for cover rendering (executable or `.js`). Empty = look on PATH |
+| `POLYFACE_GIMPISH` | system env | empty | Same, but **takes precedence** (without gimpish, cover features degrade to an install hint) |
+| `POLYFACE_COVER_DIR` | system env | `{data-dir}/media/covers` | Root directory for cover output |
+| `POLYFACE_EDITOR_PORT` | system env | `8765` | Port for the embedded editor (gimpish serve). When taken it degrades with a hint rather than failing silently |
+| `POLYFACE_EDITOR_ENABLED` | system env | `true` | Set to `false` and "Open in editor" only shows a hint instead of trying to spawn a process |
 
-> 注意前缀差异：`.env` 里的变量**没有** `POLYFACE_` 前缀，系统环境变量**有**。完整注释版模板见 `python-service/.env.example`。
+> Note the prefix difference: variables in `.env` have **no** `POLYFACE_` prefix; system environment
+> variables **do**. A fully commented template lives in `python-service/.env.example`.
 
-## 常见问题（FAQ）
+## FAQ
 
-**Q：启动后浏览器打不开 / 页面空白？**
-先跑 `python scripts\doctor.py`（macOS/Linux 用 `python3 scripts/doctor.py`）。最常见是端口 8080 或 8000 被别的程序占用，自检会直接报出来并提示两条出路：
+**Q: The browser won't open / the page is blank after starting?**
+Run `python scripts\doctor.py` first (on macOS/Linux use `python3 scripts/doctor.py`). The most common
+cause is port 8080 or 8000 being taken by another program; the self-check reports it and offers two ways out:
 
-1. 用 `scripts\stop.bat`（或 `scripts/stop.sh`）清理旧进程后重试（非交互：加 `-y`）；
-2. **直接换端口，不用改脚本**：
+1. Clean up stale processes with `scripts\stop.bat` (or `scripts/stop.sh`) and retry (non-interactive: add `-y`);
+2. **Just switch ports — no script edits needed**:
    ```bash
    POLYFACE_JAVA_PORT=18080 POLYFACE_PY_PORT=18000 bash scripts/start.sh
    ```
@@ -234,144 +278,179 @@ polyface/
    set POLYFACE_JAVA_PORT=18080 & set POLYFACE_PY_PORT=18000 & scripts\start.bat
    ```
 
-> 注意：体检若报「端口无法绑定（未查到监听进程）」，通常是该端口落在系统的保留段里
-> （Windows 上可 `netsh int ipv4 show excludedportrange protocol=tcp` 查看），
-> 或者是某个程序已 bind 但还没开始监听 —— 这两种情况换端口最快。
+> Note: if the check reports "port cannot be bound (no listening process found)", the port is usually
+> inside the system's reserved range (on Windows, check with
+> `netsh int ipv4 show excludedportrange protocol=tcp`), or some program has bound it without
+> listening yet — in both cases switching ports is the fastest fix.
 
-**Q：没填 Key 能体验吗？**
-能。默认离线演示模式，秒级返回、完全不出网，但产出是**演示结果**（模板填充），不是真实生成。UI 上的运行模式徽章会标明当前是哪种。
+**Q: Can I try it without a key?**
+Yes. The default offline demo mode returns instantly and uses no network at all, but the output is a
+**demo result** (template-filled), not real generation. The mode badge in the UI tells you which one
+you're in.
 
-**Q：为什么生成这么慢？**
-见上面「耗时预期」。每个平台最多 4 次 LLM 调用 + 串行 + 上游限流，这是当前架构的固有成本。
+**Q: Why is generation so slow?**
+See "Time expectations" above. Up to 4 LLM calls per platform, serial execution, and upstream rate
+limiting — that's the inherent cost of the current architecture.
 
-**Q：数据会上传到你们服务器吗？**
-不会 —— 这个项目**没有**我们的服务器。数据只存在你本机。但生成时素材正文会发送给**你自己配置的 LLM 服务商**，这是必然的（模型在云端）。详见「数据边界」。
+**Q: Is my data uploaded to your servers?**
+No — this project **has** no servers of ours. Your data stays on your machine. But during generation
+the material body text is sent to the **LLM provider you configured yourself** — that's unavoidable
+(the model runs in the cloud). See "Data boundary".
 
-**Q：会帮我生成视频吗？**
-**不会。** 目前只产出**文字稿 + 剪辑单**（分镜/时长/画面/字幕建议）。本地自动成片（首发 **B1 图文成片**，其后 **B2 智能剪已有视频**）是 `docs/05` FR-52/53 规划的**核心方向**，但**当前后置**且**尚未实现**——排序理由与决策记录见 `docs/08` ADR-018、`docs/49`。
+**Q: Will it generate videos for me?**
+**No.** Right now it produces **text drafts + clip sheets** (shot / duration / visual / subtitle
+suggestions) only. Local automatic video assembly (starting with **B1 image+text to video**, then
+**B2 smart-cutting existing footage**) is the **core direction** planned in `docs/05` FR-52/53, but
+it is **deferred** and **not yet implemented** — for the ordering rationale and the decision record,
+see `docs/08` ADR-018 and `docs/49`.
 
-**Q：视频入料需要装什么？**
-需要 `ffmpeg`（加入 PATH，或用 `FFMPEG_PATH` 指定）。自动语音转写是**可选**的，需另装 `faster-whisper`；不装时，若视频没有字幕轨，会降级提示你手工粘贴文案 —— **入料**不会报错中断。（注意：**粗剪**不同，它需要字幕来烧进画面，缺组件时会明确失败，见下一条 FAQ。）
+**Q: What do I need installed for video ingestion?**
+`ffmpeg` (on PATH, or point `FFMPEG_PATH` at it). Automatic speech transcription is **optional** and
+needs `faster-whisper` installed separately; without it, a video with no subtitle track degrades to a
+hint asking you to paste the transcript manually — **ingestion** does not error out. (Note: **rough
+cut** is different — it needs subtitles to burn in, and fails explicitly when the component is
+missing; see the next FAQ.)
 
-**Q：生成封面需要装什么？**
-需要 **Node.js ≥ 20.19**，然后 `npm install -g gimpish`（[gimpish](https://github.com/jvanderberg/gimpish)，MIT，本地渲染、不上传）。
-不装也能用其他功能：点「生成封面」会返回**安装指引**而不是报错（`needs_manual`，见 `docs/64` §3）。
-生成的文件在 `data/media/covers/<名字>/`，同目录有 `scene.json`。
+**Q: What do I need installed for cover generation?**
+**Node.js ≥ 20.19**, then `npm install -g gimpish`
+([gimpish](https://github.com/jvanderberg/gimpish), MIT, renders locally, uploads nothing).
+Without it the other features still work: clicking "Generate cover" returns **install instructions**
+instead of an error (`needs_manual`, see `docs/64` §3).
+Generated files land in `data/media/covers/<name>/`, with `scene.json` alongside them.
 
-**Q：粗剪需要装什么？**
-**ffmpeg**（加入 PATH，或用 `FFMPEG_PATH` 指定）—— 必需，没有它整个功能不可用。
-**烧字幕**还额外需要 `faster-whisper`（`pip install faster-whisper`，首次用会下载约 244MB 模型）。
-没装 `faster-whisper` 时，**去停顿照常能算**，但任务会在「转写」这一步**明确失败**：
+**Q: What do I need installed for rough cut?**
+**ffmpeg** (on PATH, or point `FFMPEG_PATH` at it) — required; without it the feature is unusable.
+**Burning subtitles** additionally needs `faster-whisper` (`pip install faster-whisper`; the first use
+downloads a ~244MB model).
+Without `faster-whisper`, **pause removal still works**, but the task **fails explicitly** at the
+"transcribe" stage:
 
 ```
-✓ 剪裁 1.0s 剪掉 7.19s
- 转写
-✗ 转写 失败(0.0s)：未检测到本地转写组件。可执行 `pip install faster-whisper` 后重启服务
+✓ cut 1.0s removed 7.19s
+ transcribe
+✗ transcribe failed(0.0s): no local transcription component found. Run `pip install faster-whisper` and restart the service
 ```
 
-这是**故意的**（`docs/spec_roughcut.md` 第 10 条明确选了"大声失败"而不是静默降级）：粗剪的产出是要直接发的成片，
-少一行字幕却不告诉你，比报错更坑。装完重启服务即可。
+This is **deliberate** (`docs/spec_roughcut.md` item 10 explicitly chose "fail loudly" over silent
+degradation): a rough cut is a finished video you publish directly, and quietly shipping one missing a
+subtitle line is worse than an error. Install it and restart the service.
 
-**Q：能直接改封面吗？**
-能。封面生成后点「✏️ 在编辑器中打开」——polyface 会把 gimpish 的编辑器**内嵌**到工作台里，
-你拖一拖文字位置、改改颜色，保存后**落回同一个 `scene.json`**。
-编辑器是 polyface 起的受管子进程（懒启动、关掉 polyface 时会一起清理）。
-也可以用 `gimpish -C <该目录> serve` 单独打开它。
-> ⚠️ 内嵌的编辑器与工作台**不同源**（端口不同），所以只能看和操作，工作台读不到它内部的 DOM —— 这不影响使用。
+**Q: Can I edit the cover directly?**
+Yes. After a cover is generated, click "✏️ Open in editor" — polyface **embeds** gimpish's editor into
+the workbench. Drag the text around, change colours, save, and it lands back in the **same
+`scene.json`**.
+The editor is a supervised child process started by polyface (lazy start, cleaned up when you close
+polyface). You can also open it standalone with `gimpish -C <that directory> serve`.
+> ⚠️ The embedded editor and the workbench are **not same-origin** (different ports), so you can view
+> and interact with it, but the workbench cannot read its internal DOM — this doesn't affect usage.
 
-**Q：素材库和素材历史有什么区别？**
-两回事，别混：
+**Q: What's the difference between the asset library and material history?**
+Two different things — don't conflate them:
 
-| | 素材历史 | 素材库 |
+| | Material history | Asset library |
 |---|---|---|
-| 存什么 | **文本素材**（长文/口播稿/大纲/笔记） | **资产**：图片/音频/视频/时间线 |
-| 用来干嘛 | 再次生成稿件 | 被稿件与成片**引用** |
+| What it stores | **Text material** (long-form / spoken script / outline / notes) | **Assets**: images / audio / video / timelines |
+| What it's for | Generating drafts again | Being **referenced** by drafts and finished cuts |
 
-生成封面、上传音视频都会**自动**进素材库（不用手动存）。素材库删除是"删记录 + 解链"，
-**只有当没有别的东西再引用这个文件时，磁盘上的文件才会被删掉** —— 不会静默删你的文件。
+Generating a cover or uploading audio/video registers into the asset library **automatically** (no
+manual filing). Deleting from the asset library means "delete the record + unlink"; **the file on disk
+is only removed once nothing else references it** — it never silently deletes your files.
 
-**Q：我的数据在哪？怎么备份/迁移？**
-全在包根目录的 `data/` 下（`polyface.db` 是 SQLite，`media/` 放音视频与素材库资产）。备份直接复制整个 `data/` 目录；迁移到新版本时把 `data/` 拷过去即可。
+**Q: Where is my data? How do I back it up / migrate?**
+All under `data/` at the package root (`polyface.db` is SQLite; `media/` holds audio/video and asset
+library files). To back up, copy the whole `data/` directory; to migrate to a new version, copy `data/`
+across.
 
-**Q：能改成局域网访问 / 部署到服务器吗？**
-当前版本**有意**只监听 127.0.0.1 且无鉴权。要对外提供服务必须先加认证与授权 —— 直接改绑定地址会把你的 LLM Key 额度暴露给任何能访问该端口的人。
+**Q: Can I expose it on the LAN / deploy it to a server?**
+The current version **deliberately** listens on 127.0.0.1 only and has no authentication. Exposing it
+requires adding auth first — simply changing the bind address would expose your LLM key's quota to
+anyone who can reach the port.
 
-**Q：怎么改某个平台的风格？**
-编辑 `platform-dna/<平台>.yaml`（风格、结构模板、标题规则、标签、红线词都在里面），重启 Python 服务生效。
+**Q: How do I change a platform's style?**
+Edit `platform-dna/<platform>.yaml` (style, structural templates, title rules, tags and red-line words
+all live there) and restart the Python service.
 
-## 路线图
+## Roadmap
 
-- [x] M0 方案与蓝图
-- [x] M1 骨架 + 素材解析跑通
-- [x] M2 单平台（小红书）成稿 + QA 全链路 + SQLite 落库
-- [x] M3 5 平台 DNA + Web 工作台 + 剪辑单 + 内容模板基础版
-- [x] M3.5 视频/音频 → 文字入料（本地转写，复用解析管线）
-- [x] M4 效果回填 + 复盘 + 画像记忆闭环 + 模板完整管理 + 示例学习
-- [x] M5 开源 Release 打包（一键启动 + 自检 + 发布包校验）
-- [ ] **M6 编排开源编辑器**（`docs/08` ADR-019）—— 形态改为「桌面壳 + 后台编辑器 + agent 编排」：
-  - [x] M6-1 封面成图（后台 gimpish 渲染，见 `docs/63`~`docs/66`）
-  - [x] M6-2 编辑器进程编排与工作台内嵌（`docs/67`~`docs/70`；集成形态见 ADR-020）
-  - [ ] M6-2b 桌面壳与随包分发（真正的窗口 / Tauri / 把 Node+gimpish 随包或可选安装）
-  - [ ] M6-3 视频剪辑适配器（先用 ffmpeg；**OpenCut 当前不可后台驱动**，等其 headless/Editor API 落地）
-- [ ] **M7 统一资产库**（`docs/72`~`docs/75`；模型见 ADR-021）—— 多模态与剪辑的地基：
-  - [x] M7-1 资产表 + 内容寻址 + 上传/列表/筛选/搜索/删除三态 + 封面与入料自动登记
-  - [ ] M7-2 时间线作为一等资产（随 M10 落地）
-- [ ] **M8 编排任务化**（job/task + 异步 + 进度 + 断点续跑）—— **成片的硬前置**
-- [ ] **M9 Harness**（评测集 / prompt 版本化 / token 成本预算）—— 见 `docs/71` §5
-- [ ] **M10 粗剪**（去停顿 / 自动字幕 / 分镜 → **时间线 JSON** + 初剪 MP4）
-- [ ] **本地自动成片**（首发 B1 图文成片 → 其后 B2 智能剪已有视频）—— **尚未实现**。
-      定位为**核心方向 · 当前后置**（`docs/08` ADR-018）：是核心路径而非附加功能，
-      但排序上先做完真实作者验证再投入。见 `docs/05` FR-52/53、`docs/49`。
-      （ADR-019 已暂停"第三关先行"的排序，改为与 M6 并行。）
+- [x] M0 Solution and blueprint
+- [x] M1 Skeleton + material analysis working end to end
+- [x] M2 Single platform (Xiaohongshu) drafts + full QA pipeline + SQLite persistence
+- [x] M3 5-platform DNA + web workbench + clip sheets + basic content templates
+- [x] M3.5 Video/audio → text ingestion (local transcription, reusing the analysis pipeline)
+- [x] M4 Performance feedback + retrospectives + profile memory loop + full template management + example learning
+- [x] M5 Open-source release packaging (one-command start + self-check + release package validation)
+- [ ] **M6 Orchestrating an open-source editor** (`docs/08` ADR-019) — reshaped into "desktop shell + headless editor + agent orchestration":
+  - [x] M6-1 Cover rendering (headless gimpish, see `docs/63`–`docs/66`)
+  - [x] M6-2 Editor process orchestration and workbench embedding (`docs/67`–`docs/70`; integration shape in ADR-020)
+  - [ ] M6-2b Desktop shell and bundled distribution (a real window / Tauri / shipping Node+gimpish or installing it optionally)
+  - [ ] M6-3 Video editing adapter (ffmpeg first; **OpenCut cannot currently be driven headlessly** — waiting on its headless/Editor API)
+- [ ] **M7 Unified asset library** (`docs/72`–`docs/75`; model in ADR-021) — the foundation for multimodality and editing:
+  - [x] M7-1 Asset table + content addressing + upload/list/filter/search/delete + automatic registration from covers and ingestion
+  - [ ] M7-2 Timeline as a first-class asset (lands with M10)
+- [ ] **M8 Task-based orchestration** (job/task + async + progress + resume) — **a hard prerequisite for finished cuts**
+- [ ] **M9 Harness** (evaluation set / prompt versioning / token cost budget) — see `docs/71` §5
+- [ ] **M10 Rough cut** (pause removal / automatic subtitles / shot breakdown → **timeline JSON** + first-cut MP4)
+- [ ] **Local automatic video assembly** (starting with B1 image+text to video, then B2 smart-cutting existing footage) — **not yet implemented**.
+      Positioned as **core direction · currently deferred** (`docs/08` ADR-018): it's on the core path
+      rather than an add-on, but the ordering calls for finishing real-author validation first. See
+      `docs/05` FR-52/53 and `docs/49`.
+      (ADR-019 has paused the "validation first" ordering in favour of running it in parallel with M6.)
 
-> 关于 M5 的一个如实说明：`scripts/*.bat` 的编排逻辑已按 `docs/23` 实现，但**本次交付的验证环境无法执行 `.bat`**，因此批处理脚本本身**未经实机运行验证**；其调用的 `doctor.py`、`build_release.py` 逻辑已单测覆盖。详见 `docs/48`。
+> An honest note on M5: the orchestration logic in `scripts/*.bat` is implemented per `docs/23`, but
+> **the verification environment for this delivery cannot execute `.bat` files**, so the batch scripts
+> themselves are **not verified by actual execution**; the `doctor.py` and `build_release.py` logic
+> they call is covered by unit tests. See `docs/48`.
 
-## 文档体系（docs/）
+## Documentation (docs/)
 
-| 阶段 | 文档 |
+| Stage | Documents |
 |---|---|
-| 方案 | 01 总体方案设计 |
-| 建模 | 02 领域建模与产品蓝图（含竞品快研） |
-| 需求 | 05 需求规格说明书 SRS |
-| 可行性 | 06 可行性分析报告（技术/经济/市场/运营/合规） |
-| 用例 | 07 用例模型与验收标准 |
-| 决策 | 08 技术决策记录 ADR（**数据边界见 ADR-017**） |
-| 里程碑 | 03 / 04 / 09 / 10 交付说明 |
-| 专项 | 11-74：模板管理 / 示例学习 / 音视频入料 / Release 打包 / LLM 加固 / 平台 DNA 调研 / 质检加固 / 事实闭环 / 长任务预算 / 启动脚本加固 / 发布包内验证 / **编辑器适配器与封面成图** / **编辑器进程编排与内嵌** / **统一资产库** —— 每项都是 task + spec + checklist + 交付说明 四件套 |
-| 评估 | 71 产品路线再评估（对照「AI 轻量剪映」的差距清单：素材库 / 多模态 / 编排 / harness / 粗剪细剪） |
+| Solution | 01 Overall solution design |
+| Modelling | 02 Domain modelling and product blueprint (including a quick competitive scan) |
+| Requirements | 05 Software Requirements Specification (SRS) |
+| Feasibility | 06 Feasibility analysis (technical / economic / market / operational / compliance) |
+| Use cases | 07 Use-case model and acceptance criteria |
+| Decisions | 08 Architecture Decision Records (ADR) (**data boundary in ADR-017**) |
+| Milestones | 03 / 04 / 09 / 10 delivery notes |
+| Special topics | 11–74: template management / example learning / audio-video ingestion / release packaging / LLM hardening / platform DNA research / QA hardening / fact loop / long-task budget / startup script hardening / in-package verification / **editor adapter and cover rendering** / **editor process orchestration and embedding** / **unified asset library** — each a four-piece set of task + spec + checklist + delivery note |
+| Assessment | 71 Product roadmap reassessment (gap list against "AI-powered lightweight CapCut": asset library / multimodality / orchestration / harness / rough vs. fine cutting) |
 
-### 评测集（防退化）—— 给改 prompt 的人用
+### Evaluation set (regression guard) — for anyone changing a prompt
 
-**问题**：改一句 system prompt，以前唯一能发现退化的方式是人工看几篇稿子。
-328 项 Python + 90 项 Java 测试全绿**不能**说明 prompt 没退化 —— 它们跑在 `LLM_MOCK=true` 下。
+**The problem**: change one system prompt and the only way to spot a regression used to be reading a
+few drafts by hand. 328 Python + 90 Java tests passing **does not** mean the prompt hasn't regressed —
+they run under `LLM_MOCK=true`.
 
-**做法**：一批**冻结素材** + 一组**机械性质断言** + 真实跑分。见 `docs/spec_eval.md`。
+**The approach**: a set of **frozen material** + a set of **mechanical property assertions** + real
+scoring runs. See `docs/spec_eval.md`.
 
 ```bash
-# 只算成本，不发请求
+# Cost estimate only, no requests sent
 python scripts/eval/run_eval.py --dry-run
 
-# 全矩阵（5 平台 × 10 条）；中断可续跑
+# Full matrix (5 platforms × 10 items); resumable after interruption
 python scripts/eval/run_eval.py
 
-# 小规模试跑 / 单平台
+# Small trial run / single platform
 python scripts/eval/run_eval.py --limit 2 --platforms xhs
 
-# 与上次对比（prompt 指纹不同会标为「不可比」，不静默比较）
-python scripts/eval/run_eval.py --baseline eval/reports/<时间戳>/report.json
+# Compare against the last run (a different prompt fingerprint is marked "not comparable",
+# never compared silently)
+python scripts/eval/run_eval.py --baseline eval/reports/<timestamp>/report.json
 
-# 看当前 prompt 指纹
+# Show the current prompt fingerprint
 python scripts/eval/fingerprint.py
 ```
 
-> ⚠️ **它不测什么**：报告只说明「**同一批输入下产出有没有变差**」。
-> 它**不能**说明产品有没有用 —— 那是第三关（`docs/50`）的事，需要一位真实作者。
-> 这句话也印在每份报告抬头。
+> ⚠️ **What it does not measure**: the report only says whether **the output got worse on the same
+> input**. It **cannot** say whether the product is useful — that's the third gate (`docs/50`) and
+> needs a real author. That sentence is printed at the top of every report.
 
-## 合规声明
+## Compliance
 
-本工具**只处理你自有或已获授权的素材**；产出"改写建议稿"而非搬运；**不提供自动发布**，
-发布行为由你本人在各平台完成并遵守其原创与 AI 内容规范。
+This tool **only processes material you own or are authorised to use**; it produces "rewrite
+suggestions" rather than copies; and it **does not publish automatically** — publishing is done by you
+on each platform, in compliance with that platform's originality and AI-content rules.
 
 ## License
 

@@ -151,7 +151,8 @@ def _fake_root(tmp_path: Path) -> Path:
     (root / "scripts" / "start.bat").write_text("echo hi", encoding="utf-8")
     (root / "docs").mkdir()
     (root / "docs" / "08-技术决策记录-ADR.md").write_text("# ADR", encoding="utf-8")
-    for f in ("README.md", "LICENSE", "VERSION"):
+    # 两个 README 都要随包发（英文是默认版，中文版单独一份）
+    for f in ("README.md", "README.zh-CN.md", "LICENSE", "VERSION"):
         (root / f).write_text(f"content-{f}", encoding="utf-8")
     (root / "VERSION").write_text("1.0.0", encoding="utf-8")
     # 用户数据：绝不能进包
