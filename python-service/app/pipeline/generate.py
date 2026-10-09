@@ -288,9 +288,13 @@ def _rule_qa(dna: dict, draft: DraftPayload, mat: StructuredMaterial,
         issues.append(f"正文超长: {body_len}字 > 上限{body_max}字")
     if not draft.titles:
         issues.append("缺少标题")
+    # ⚠️ 这里原先写死 `>24 字` —— 而小红书的真实上限是 20。
+    # 于是 21~24 字的标题**连产品自己都不报**，一路发出去被截断。
+    # 改成读平台 DNA（读不到才退回 24）。
+    tmax = dna_lib.title_chars_max(dna) or 24
     for t in draft.titles:
-        if len(t) > 24:
-            warnings.append(f"标题偏长(>{24}字): {t}")
+        if len(t) > tmax:
+            warnings.append(f"标题偏长(>{tmax}字): {t}")
     if not draft.tags:
         issues.append("缺少话题标签")
     if len(draft.tags) > tag_max:

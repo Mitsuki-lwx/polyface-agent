@@ -77,6 +77,12 @@ def list_platforms() -> list[dict]:
     return out
 
 
+def title_chars_max(dna: dict) -> int | None:
+    """平台标题字数上限。DNA 里叫 `specs.title_chars_max`；没写就返回 None（不猜）。"""
+    v = (dna.get("specs") or {}).get("title_chars_max")
+    return v if isinstance(v, int) and v > 0 else None
+
+
 def normalize_limits(dna: dict) -> dict:
     """把 YAML 中可选的 limits/tags 规整为带默认值的 dict。"""
     limits = dict(dna.get("limits") or {})

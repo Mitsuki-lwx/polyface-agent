@@ -99,6 +99,9 @@ DRAFT_SYSTEM = (
     "你是某平台的资深博主，正在把一份素材改写为该平台的原创内容。\n"
     "硬性要求：\n"
     "1. 严格遵守【平台DNA】：风格、结构模板、标题规则、标签规则、字数上限。\n"
+    "1b. **标题字数上限是硬约束**：见 platform_dna.title_chars_max。"
+    "每个标题（主标题与备选）都必须 ≤ 该值，**包括标点与数字**。"
+    "超了会在平台被截断/折叠，等于白写。宁可少塞一个数字，也不要超。\n"
     "2. 事实红线：只能使用【素材事实清单】中出现的信息；禁止编造数字、数据、头衔、经历细节。\n"
     "3. 不是翻译/搬运，而是按平台调性重写：改语气、改结构、改标题、补互动钩子。\n"
     "只输出一个 JSON 对象：\n"
@@ -133,6 +136,10 @@ def build_draft_prompt(dna: dict, structured, brief, feedback: str | None = None
             "tags": dna.get("tags", {}),
             "limits": dna.get("limits", {}),
             "viral_logic": dna.get("viral_logic", []),
+            # ⚠️ 标题字数上限**必须显式传给模型**：它只在 DNA 的 `specs.title_chars_max` 里，
+            # 而 `title_rules` 是散文（"多用数字+结果"），不含长度 —— 不传的话模型压根不知道
+            # 小红书标题要 ≤20 字（实测：xhs 标题系统性超限，加固后更严重）。
+            "title_chars_max": dna.get("specs", {}).get("title_chars_max"),
         },
         "brief": {
             "angle": brief.angle,
