@@ -53,6 +53,24 @@ class Settings(BaseSettings):
     #（连续两次调用即可能 429），4 并发会被大面积拒绝；串行 + 间隔才跑得完
     llm_parallel: bool = False
 
+    # ===== 事实约束加固（factguard，docs/spec_factguard.md）=====
+    # 总开关：关掉即退回加固前的行为（只留最基本的规则校验）
+    factguard_enabled: bool = True
+    # 各类检查的单独开关
+    factguard_check_numbers: bool = True
+    factguard_check_years: bool = True
+    factguard_check_names: bool = True       # 专名（依赖 platform-dna 之外的抽取，抽不到就跳过）
+    factguard_check_claims: bool = True      # 新增断言（靠 LLM QA）
+    # 定向重写轮数上限。默认 1（沿用加固前），调大要有可观测的多一轮
+    factguard_rewrite_rounds: int = 1
+    # 严格程度：
+    #   loose    = 只报不拦（问题进 warnings，passed 仍为 true）
+    #   standard = 不过则重写（默认）
+    #   strict   = 不过即判失败，不进入重写
+    factguard_strictness: str = "standard"
+    # 用户补充的专名白名单（逗号分隔）—— 行业词表
+    factguard_extra_names: str = ""
+
     # ===== 可观测（FR-71/72）=====
     langfuse_enabled: bool = False
     langfuse_host: str = "http://localhost:3000"

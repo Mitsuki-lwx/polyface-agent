@@ -1,4 +1,6 @@
 """生成阶段数据模型：brief（平台策略）/ draft（成稿）/ clip_sheet（剪辑单）/ qa（质检）。"""
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from .schemas import StructuredMaterial
@@ -67,10 +69,29 @@ class DraftPayload(BaseModel):
     clip_sheet: ClipSheet | None = Field(default=None, description="视频平台剪辑单(仅 video_native 平台)")
 
 
+# 失败分类（**封闭四类**，docs/spec_factguard.md 关键决定二）：
+# 不做开放式建议，否则没法验收，也没法按类给定向指令。
+QaIssueCategory = Literal["数字", "年份", "专名", "新增断言", "其它"]
+
+
+class QaIssue(BaseModel):
+    """一条质检问题：**哪一类** + **哪一句** + **怎么改**。
+
+    结构化是为了让重写能**按类给不同指令**（T6）——
+    原先只有一句笼统的 feedback，模型只能自己猜该改什么。
+    """
+    category: QaIssueCategory = Field(..., description="失败分类")
+    quote: str = Field("", description="成稿里出问题的那一句(便于定位)")
+    detail: str = Field("", description="问题说明")
+
+
 class QaReport(BaseModel):
     passed: bool = Field(..., description="是否通过质量门")
     issues: list[str] = Field(default_factory=list, description="未通过项")
     warnings: list[str] = Field(default_factory=list, description="提醒(不阻断)")
+    # 结构化版本（可选，便于按类定向重写；老调用方不传也能跑）
+    issue_items: list[QaIssue] = Field(default_factory=list,
+                                       description="结构化的问题清单(分类+定位)")
 
 
 class PlatformDraft(BaseModel):

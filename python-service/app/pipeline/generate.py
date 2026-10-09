@@ -29,6 +29,7 @@ from ..schemas_gen import (
     DraftPayload,
     GenerateRequest,
     PlatformDraft,
+    QaIssue,
     QaReport,
     UserTemplate,
 )
@@ -150,6 +151,10 @@ def _mock_draft(code: str, dna: dict, mat: StructuredMaterial, brief: Brief,
         + ("（已应用我的模板）" if template else "")
         + extra_rationale,
     )
+
+
+# 年份（整词匹配：`月收入在8000—12000元` 里的 `12000` 不能抠出 `2000`）
+_YEAR_RE = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
 
 
 def _coerce_facts_used(raw) -> list[int] | None:
@@ -315,27 +320,45 @@ def _rule_qa(dna: dict, draft: DraftPayload, mat: StructuredMaterial,
     # ⚠️ 证据集合 = **素材原文 ∪ 事实清单**。
     # 早先只比 `mat.facts`（3~10 条）—— 证据比被检对象还少，凡素材里有、
     # 但没被抽进事实清单的数字都会被误报（`docs/spec_factguard.md` §1）。
-    evidence = " ".join([source_text or ""] + [f.text for f in mat.facts])
-    allowed = set(_num_values(evidence, strict=False))
-    body_vals = _num_values(draft.body, strict=True)
-    unsupported = [tok for v, tok in sorted(body_vals.items()) if v not in allowed]
-    if unsupported:
-        warnings.append("正文含素材中无依据的数字: "
-                        + "、".join(unsupported) + "（请确认或删除）")
+    cfg = get_settings()
+    if not cfg.factguard_enabled:
+        return issues, warnings          # 总开关关掉：只留上面的结构性检查
 
-    # 专名检查（T3）：正文里的专名必须能在素材里找到。
-    # 白名单抽不到就**静默跳过** —— 宁可不查，不可误报（见 app/pipeline/proper.py）。
-    from . import proper as _proper
-    known_names = _proper.extract(evidence)                       # 素材侧：宽松
-    if known_names:
-        # 大小写不敏感：素材写 `database`、稿件写 `Database` 是同一个词
-        # （实测 2026-10-09：m03/xhs 因首字母大写被误报）
-        known_lower = {n.lower() for n in known_names}
-        unknown_names = sorted(n for n in _proper.extract(draft.body, strict=True)
-                               if n.lower() not in known_lower)   # 稿件侧：严格
-        if unknown_names:
-            warnings.append("正文含素材中未出现的专名: "
-                            + "、".join(unknown_names) + "（请确认或删除）")
+    # ⚠️ 证据集合 = **素材原文 ∪ 事实清单**。
+    # 早先只比 `mat.facts`（3~10 条）—— 证据比被检对象还少，凡素材里有、
+    # 但没被抽进事实清单的数字都会被误报（`docs/spec_factguard.md` §1）。
+    evidence = " ".join([source_text or ""] + [f.text for f in mat.facts])
+
+    if cfg.factguard_check_numbers:
+        allowed = set(_num_values(evidence, strict=False))
+        body_vals = _num_values(draft.body, strict=True)
+        unsupported = [tok for v, tok in sorted(body_vals.items()) if v not in allowed]
+        if unsupported:
+            warnings.append("正文含素材中无依据的数字: "
+                            + "、".join(unsupported) + "（请确认或删除）")
+
+    if cfg.factguard_check_years:
+        # 与评测集的 A2 对齐（原先只有评测集查、产品侧不查）
+        known_years = {y for y in _YEAR_RE.findall(evidence)}
+        foreign = sorted({y for y in _YEAR_RE.findall(draft.body) if y not in known_years})
+        if foreign:
+            warnings.append("正文含素材中无依据的年份: "
+                            + "、".join(foreign) + "（请确认或删除）")
+
+    if cfg.factguard_check_names:
+        # 专名（T3）：正文里的专名必须能在素材里找到。
+        # 白名单抽不到就**静默跳过** —— 宁可不查，不可误报（见 app/pipeline/proper.py）。
+        from . import proper as _proper
+        extra = {n.strip() for n in (cfg.factguard_extra_names or "").split(",") if n.strip()}
+        known_names = _proper.extract(evidence, extra)                # 素材侧：宽松
+        if known_names:
+            # 大小写不敏感：素材写 `database`、稿件写 `Database` 是同一个词
+            known_lower = {n.lower() for n in known_names}
+            unknown_names = sorted(n for n in _proper.extract(draft.body, strict=True)
+                                   if n.lower() not in known_lower)   # 稿件侧：严格
+            if unknown_names:
+                warnings.append("正文含素材中未出现的专名: "
+                                + "、".join(unknown_names) + "（请确认或删除）")
 
     # 事实依据声明（T1）：没声明 = 违规；声明了空 = 合法（本次没用到事实）
     if draft.facts_used is None:
@@ -388,16 +411,75 @@ def _llm_qa(
         passed=(not blocking) and llm_passed,
         issues=blocking,
         warnings=list(rule_warnings) + llm_warns,
+        issue_items=_parse_issue_items(data.get("issue_items")),
     )
+
+
+# 每类的**定向修复指令**（T6）。分类是封闭的，所以指令也是封闭的 ——
+# 不给开放式建议，否则没法验收。
+_FIX_HINT = {
+    "数字": "把该处数字改成素材原文里的写法；素材里没有这个数字，就删掉这一句。",
+    "年份": "把该处年份改成素材原文里的；素材里没有这个年份，就删掉。",
+    "专名": "把该处的品牌/工具/机构名改成素材里的；素材里没有就删掉。",
+    "新增断言": "删掉该句，或改成素材原话的复述。**不要**给它补素材没有的动机、程度、"
+                "时间跨度或因果 —— 那是本次要修的问题本身。",
+    "其它": "按说明修改。",
+}
+
+
+def _parse_issue_items(raw) -> list[QaIssue]:
+    """把模型回的 issue_items 规整成 `QaIssue`。形状不对就丢弃（不猜）。"""
+    out: list[QaIssue] = []
+    for x in (raw or []):
+        if not isinstance(x, dict):
+            continue
+        cat = str(x.get("category") or "").strip()
+        if cat not in ("数字", "年份", "专名", "新增断言", "其它"):
+            cat = "其它"
+        detail = str(x.get("detail") or "").strip()
+        quote = str(x.get("quote") or "").strip()
+        if not detail and not quote:
+            continue
+        out.append(QaIssue(category=cat, quote=quote[:120], detail=detail[:300]))
+    return out[:8]
+
+
+def _build_targeted_feedback(qa: QaReport) -> str:
+    """按类给定向指令；拿不到结构化问题时退回旧的笼统 feedback（不假装有分类）。"""
+    items = list(qa.issue_items or [])
+    if not items:
+        return "；".join(qa.issues)
+    lines = []
+    for it in items:
+        hint = _FIX_HINT.get(it.category, _FIX_HINT["其它"])
+        where = f"「{it.quote}」" if it.quote else ""
+        lines.append(f"- [{it.category}] {where}{it.detail} → {hint}")
+    return "只改下面这些，别的地方不要动：\n" + "\n".join(lines)
 
 
 def run_qa(dna: dict, draft: DraftPayload, mat: StructuredMaterial,
            source_text: str = "") -> QaReport:
-    """质检门：规则与结构校验恒生效；真实模式再叠加 LLM 自评。"""
+    """质检门：规则与结构校验恒生效；真实模式再叠加 LLM 自评。
+
+    **严格程度**（`FACTGUARD_STRICTNESS`，见 `docs/spec_factguard.md`）：
+      · `loose`    —— 只报不拦：问题进 warnings，`passed` 仍为 true
+      · `standard` —— 不过则重写（默认，重写由 `_generate_one` 做）
+      · `strict`   —— 不过即判失败，**不进入重写**
+    """
     issues, warnings = _rule_qa(dna, draft, mat, source_text)
     if llm.is_mock():
-        return QaReport(passed=not issues, issues=issues, warnings=warnings)
-    return _llm_qa(dna, draft, mat, issues, warnings, source_text)
+        rep = QaReport(passed=not issues, issues=issues, warnings=warnings)
+    else:
+        rep = _llm_qa(dna, draft, mat, issues, warnings, source_text)
+
+    if (get_settings().factguard_strictness or "").strip().lower() == "loose":
+        # 只报不拦：把阻断项降级成提醒，`passed` 强制为真
+        return rep.model_copy(update={
+            "passed": True,
+            "warnings": list(rep.warnings) + [f"[仅提醒]{x}" for x in rep.issues],
+            "issues": [],
+        })
+    return rep
 
 
 # ---------------------------------------------------------------- orchestrator
@@ -458,14 +540,20 @@ def _generate_one(code: str, mat: StructuredMaterial, tone_override: str | None,
         qa = run_qa(dna, draft, mat, source_text)
         r.done("通过" if qa.passed else f"未通过（{len(qa.issues)} 项）")
 
-    # 真实模式下 QA 未通过 → 带反馈重写一轮
-    if not qa.passed and not llm.is_mock():
-        feedback = "；".join(qa.issues)
-        with _stage(log, f"平台:{code}:改写") as r:
-            draft = run_draft(code, dna, mat, brief, feedback=feedback, template=template,
-                              creator_profile=creator_profile, retrospect_hints=retrospect_hints)
-            qa = run_qa(dna, draft, mat, source_text)
-            r.done("改写后通过" if qa.passed else "改写后仍未通过")
+    # 真实模式下 QA 未通过 → **定向**重写（T6），轮数可配（T7）
+    cfg = get_settings()
+    rounds = max(0, int(cfg.factguard_rewrite_rounds)) if cfg.factguard_enabled else 1
+    strictness = (cfg.factguard_strictness or "standard").strip().lower()
+    if not qa.passed and not llm.is_mock() and strictness != "strict" and rounds > 0:
+        for attempt in range(1, rounds + 1):
+            feedback = _build_targeted_feedback(qa)
+            with _stage(log, f"平台:{code}:改写{attempt}" if rounds > 1 else f"平台:{code}:改写") as r:
+                draft = run_draft(code, dna, mat, brief, feedback=feedback, template=template,
+                                  creator_profile=creator_profile, retrospect_hints=retrospect_hints)
+                qa = run_qa(dna, draft, mat, source_text)
+                r.done("改写后通过" if qa.passed else f"改写{attempt}后仍未通过")
+            if qa.passed:
+                break
 
     # 视频平台：成稿后附剪辑单（A 阶段）
     with _stage(log, f"平台:{code}:剪辑单"):

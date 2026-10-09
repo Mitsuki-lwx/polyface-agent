@@ -14,7 +14,7 @@ from app import llm
 from app.pipeline import generate as gen
 from app.pipeline import prompts
 from app.schemas import Fact, StructuredMaterial
-from app.schemas_gen import Brief, DraftPayload
+from app.schemas_gen import Brief, DraftPayload, QaIssue, QaReport
 
 
 def _mat() -> StructuredMaterial:
@@ -133,3 +133,102 @@ def test_qa_prompt_carries_source_text():
     payload = prompts.build_qa_prompt(_dna(), draft, mat, source_text="这是素材原文的独特标记XYZ")
     assert "XYZ" in payload
     assert "facts_used" in payload
+
+
+# ============================================================ T6 定向重写
+
+def test_targeted_feedback_uses_category_and_hint():
+    """按类给**定向**指令（T6）：指出哪一类、哪一句、怎么改。"""
+    qa = QaReport(passed=False, issues=["x"], issue_items=[
+        QaIssue(category="数字", quote="卡里2万3", detail="素材写两万三"),
+        QaIssue(category="新增断言", quote="漏交了286块", detail="素材只说\"要交\""),
+    ])
+    fb = gen._build_targeted_feedback(qa)
+    assert "[数字]" in fb and "卡里2万3" in fb
+    assert "[新增断言]" in fb and "漏交了286块" in fb
+    assert "别的地方不要动" in fb
+
+
+def test_targeted_feedback_falls_back_when_no_items():
+    """拿不到结构化问题时**退回旧的笼统 feedback** —— 不假装有分类。"""
+    fb = gen._build_targeted_feedback(QaReport(passed=False, issues=["甲", "乙"]))
+    assert fb == "甲；乙"
+
+
+@pytest.mark.parametrize("raw,expect_cat", [
+    ([{"category": "数字", "detail": "d"}], "数字"),
+    ([{"category": "不存在的类", "detail": "d"}], "其它"),   # 未知分类归"其它"，不猜
+    ([{"detail": "没有分类"}], "其它"),
+])
+def test_parse_issue_items_normalises_category(raw, expect_cat):
+    items = gen._parse_issue_items(raw)
+    assert len(items) == 1 and items[0].category == expect_cat
+
+
+def test_parse_issue_items_drops_garbage():
+    """形状不对的条目直接丢 —— 不猜、不报错。"""
+    assert gen._parse_issue_items(["bad", 123, {}, {"category": "数字"}]) == []
+    assert gen._parse_issue_items(None) == []
+
+
+def test_fix_hints_cover_all_five_categories():
+    """五类**封闭分类**必须都有对应指令，否则会出现"没话可说"的类。"""
+    from app.schemas_gen import QaIssueCategory
+    import typing
+    cats = set(typing.get_args(QaIssueCategory))
+    assert cats <= set(gen._FIX_HINT), f"缺指令的类：{cats - set(gen._FIX_HINT)}"
+
+
+# ============================================================ T7 配置
+
+def test_rule_qa_obeys_number_switch(monkeypatch):
+    """关掉数字检查 → 数字问题不再报，其余照旧。"""
+    from app.config import Settings
+    monkeypatch.setattr(gen, "get_settings", lambda: Settings(factguard_check_numbers=False))
+    mat = _mat()
+    draft = DraftPayload(titles=["标题"], body="卡里就剩99999。", tags=["t"], facts_used=[1])
+    _, warns = gen._rule_qa(_dna(), draft, mat, source_text="卡里就剩两万三。")
+    assert not any("99999" in w for w in warns)
+
+
+def test_rule_qa_master_switch_off(monkeypatch):
+    """总开关关掉 → 退回加固前行为（只剩结构性检查）。"""
+    from app.config import Settings
+    monkeypatch.setattr(gen, "get_settings", lambda: Settings(factguard_enabled=False))
+    mat = _mat()
+    draft = DraftPayload(titles=["标题"], body="卡里就剩99999，还提到了飞书。", tags=["t"])
+    _, warns = gen._rule_qa(_dna(), draft, mat, source_text="卡里就剩两万三。")
+    assert not any("99999" in w for w in warns)
+    assert not any("飞书" in w for w in warns)
+    assert not any("未声明" in w for w in warns)
+
+
+def test_extra_names_wordlist_is_used(monkeypatch):
+    """用户补的行业词表（T7）要能生效。"""
+    from app.config import Settings
+    monkeypatch.setattr(gen, "get_settings",
+                        lambda: Settings(factguard_extra_names="某某工具"))
+    mat = _mat()
+    draft = DraftPayload(titles=["标题"], body="我用了某某工具。", tags=["t"], facts_used=[])
+    _, warns = gen._rule_qa(_dna(), draft, mat, source_text="卡里就剩两万三。")
+    assert not any("某某工具" in w for w in warns)
+
+
+def test_year_check_exists_and_is_gated(monkeypatch):
+    """年份检查（与评测集 A2 对齐）—— 原先只有评测集查、产品侧不查。
+
+    ⚠️ 注意：**年份本身就是数字**，所以关掉年份检查后数字检查仍会报它。
+    年份检查的价值是**给出更准的措辞**（"年份"而不是"数字"），便于 T6 按类定向重写。
+    所以这里断言的是**措辞**，不是"报不报"。
+    """
+    from app.config import Settings
+    mat = _mat()
+    draft = DraftPayload(titles=["标题"], body="2021 年我辞职了。", tags=["t"], facts_used=[])
+
+    monkeypatch.setattr(gen, "get_settings", lambda: Settings())
+    _, warns = gen._rule_qa(_dna(), draft, mat, source_text="卡里就剩两万三。")
+    assert any("2021" in w and "年份" in w for w in warns), warns
+
+    monkeypatch.setattr(gen, "get_settings", lambda: Settings(factguard_check_years=False))
+    _, warns = gen._rule_qa(_dna(), draft, mat, source_text="卡里就剩两万三。")
+    assert not any("年份" in w for w in warns), warns      # 年份措辞消失（数字检查仍会报）
