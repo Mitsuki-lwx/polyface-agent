@@ -322,9 +322,13 @@ def _rule_qa(dna: dict, draft: DraftPayload, mat: StructuredMaterial,
     # 专名检查（T3）：正文里的专名必须能在素材里找到。
     # 白名单抽不到就**静默跳过** —— 宁可不查，不可误报（见 app/pipeline/proper.py）。
     from . import proper as _proper
-    known_names = _proper.extract(evidence)
+    known_names = _proper.extract(evidence)                       # 素材侧：宽松
     if known_names:
-        unknown_names = sorted(n for n in _proper.extract(draft.body) if n not in known_names)
+        # 大小写不敏感：素材写 `database`、稿件写 `Database` 是同一个词
+        # （实测 2026-10-09：m03/xhs 因首字母大写被误报）
+        known_lower = {n.lower() for n in known_names}
+        unknown_names = sorted(n for n in _proper.extract(draft.body, strict=True)
+                               if n.lower() not in known_lower)   # 稿件侧：严格
         if unknown_names:
             warnings.append("正文含素材中未出现的专名: "
                             + "、".join(unknown_names) + "（请确认或删除）")

@@ -26,7 +26,11 @@ import re
 _TITLE_MARK_RE = re.compile(r"[《〈]([^》〉]{1,40})[》〉]")
 
 # 连续拉丁串：字母开头，允许数字/点/连字符/下划线/加号（Notion / GPT-4 / C++ 这类）
-_LATIN_RE = re.compile(r"[A-Za-z][A-Za-z0-9._+\-]{1,29}")
+# ⚠️ 边界用  而**不是 ** —— Python 的  包含汉字，
+# 那样「Boss直聘」里的  会被后面的汉字挡住，专名反而漏抽。
+# 而前后不能紧邻数字，是为了不让「8k-12k」被切成 （实测踩到）。
+# （实测 2026-10-09：m01/xhs 报「素材里没有的专名：k-12k」）
+_LATIN_RE = re.compile(r"(?<![A-Za-z0-9.])[A-Za-z][A-Za-z0-9._+\-]{1,29}(?![A-Za-z0-9])")
 
 # 中文里极常见的英文词 —— 它们不是专名，抽进来只会造成误报。
 # 宁可短一点：漏掉几个专名只是少查几个，混进普通词就会天天误报。
@@ -70,10 +74,16 @@ def _clean(tok: str) -> str:
     return tok.strip().strip("·:：,，。.、;；")
 
 
-def extract(text: str, extra: set[str] | None = None) -> set[str]:
-    """从素材原文抽出专名白名单。
+def extract(text: str, extra: set[str] | None = None, *, strict: bool = False) -> set[str]:
+    """抽出专名。
 
     `extra` 是用户补充的词表（配置项，见 T7）—— 直接并入。
+
+    **`strict` 必须不对称使用**（与数字口径同一套思路）：
+    - 素材侧 `strict=False`：全小写的拉丁串**也算**（素材写 `database`、
+      稿件写 `Database` 是同一个词；素材侧严格会让它漏进白名单 → 稿件被误报，实测踩到）
+    - 稿件侧 `strict=True`：只认**含大写字母或数字**的（中文正文里的 `brain`/`second`
+      是普通英文词，不该被当成专名去比对）
     """
     out: set[str] = set()
 
@@ -90,7 +100,7 @@ def extract(text: str, extra: set[str] | None = None) -> set[str]:
         # 实测：放宽成"≥4 个字母的全小写词"会把 `brain` / `collaborator` /
         # `freelance` / `second` / `database` 这些普通英文词也抽进来 —— 那就会天天误报。
         # 代价是漏掉全小写的品牌名（如 `gimpish`），符合"宁可不查，不可误报"。
-        if not any(c.isupper() or c.isdigit() for c in tok):
+        if strict and not any(c.isupper() or c.isdigit() for c in tok):
             continue
         out.add(tok)
 

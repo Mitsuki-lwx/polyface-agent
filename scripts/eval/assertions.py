@@ -221,10 +221,12 @@ def a9_names_supported(ctx: dict) -> Result:
     body = str((ctx.get("draft") or {}).get("body") or "")
     evidence = (str((ctx.get("material") or {}).get("raw_text") or "") + " "
                 + _facts_text(ctx.get("structured")))
-    known = proper.extract(evidence)
+    known = proper.extract(evidence)                 # 素材侧：宽松
     if not known:
         return Result("A9 专名有依据", True, "素材里抽不出专名，跳过")
-    unknown = sorted(n for n in proper.extract(body) if n not in known)
+    known_lower = {n.lower() for n in known}      # 大小写不敏感（`database`/`Database` 同一个词）
+    unknown = sorted(n for n in proper.extract(body, strict=True)   # 稿件侧：严格
+                     if n.lower() not in known_lower)
     return Result("A9 专名有依据", not unknown,
                   "" if not unknown else f"素材里没有的专名：{unknown}")
 

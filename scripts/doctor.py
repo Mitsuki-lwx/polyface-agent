@@ -313,6 +313,38 @@ def check_platform_dna(root: Path, max_age_days: int = DEFAULT_DNA_MAX_AGE_DAYS)
     return Check("平台 DNA", True, detail)
 
 
+def check_langfuse(root: Path) -> Check:
+    """观测：配置说"开着"、实际却关着 —— 这类**静默降级**必须报出来。
+
+    实测（2026-10-09）：`.env` 里 `LANGFUSE_ENABLED=true` 且 key 都填了，
+    `observability.enabled()` 因此返回 True，但 venv 里**根本没装 `langfuse`** ——
+    于是每次上报都 ImportError 被吞掉，只在日志留一句 warning。
+    用户看到的是"我配了观测，Langfuse 里却什么都没有"。
+
+    所以这里不看配置，**直接问 venv 能不能 import**。
+    """
+    env = root / "python-service" / ".env"
+    if not env.is_file():
+        return Check("观测(Langfuse)", True, "未配置 .env，跳过", info_only=True)
+    text = env.read_text(encoding="utf-8", errors="replace")
+    enabled = re.search(r"^LANGFUSE_ENABLED\s*=\s*(\S+)", text, re.M)
+    if not enabled or enabled.group(1).strip().strip('"').strip("'").lower() not in ("1", "true", "yes", "on"):
+        return Check("观测(Langfuse)", True, "未启用（LANGFUSE_ENABLED 非 true）", info_only=True)
+
+    vpy = find_venv_python(root)
+    if vpy is None:
+        return Check("观测(Langfuse)", True, "venv 未建，跳过（先跑 setup）", info_only=True,
+                     blocking=False)
+    rc, _ = _run([str(vpy), "-c", "import langfuse"], timeout=30)
+    if rc != 0:
+        return Check("观测(Langfuse)", False,
+                     "已启用，但 venv 里**没装** langfuse —— 上报会被静默吞掉，"
+                     "你在 Langfuse 里看不到任何 trace",
+                     f"装它：{vpy} -m pip install langfuse",
+                     blocking=False)
+    return Check("观测(Langfuse)", True, "已启用且 langfuse 可用")
+
+
 def check_llm_mode(root: Path) -> Check:
     """报告真实/mock 模式 —— 与 ADR-017 的数据边界提示一致，不静默。"""
     env = root / "python-service" / ".env"
@@ -417,6 +449,7 @@ def run_all(root: Path | None = None, java_port: int = DEFAULT_JAVA_PORT,
     checks = [check_java(), check_python(), check_venv(root), check_jar(root)]
     checks += check_ports(java_port, py_port)
     checks += [check_data_dir(root), check_llm_mode(root), check_editor(root),
+               check_langfuse(root),
                check_platform_dna(root, dna_max_age_days())]
     return checks
 

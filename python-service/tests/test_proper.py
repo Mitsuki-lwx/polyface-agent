@@ -50,10 +50,23 @@ def test_extra_wordlist_is_merged():
 @pytest.mark.parametrize("word", [
     "brain", "collaborator", "freelance", "second", "database", "email", "app",
 ])
-def test_common_english_words_are_not_extracted(word):
-    """**实测踩到过**：放宽成「≥4 个字母的全小写词」会把
-    `brain` / `collaborator` / `freelance` / `second` 这些普通英文词也抽进来。"""
-    assert word not in proper.extract(f"这个 {word} 的用法")
+def test_common_english_words_are_not_extracted_on_draft_side(word):
+    """**实测踩到过**：稿件侧若放宽成「≥4 个字母的全小写词」，
+    `brain` / `collaborator` / `freelance` / `second` 这些普通英文词会被抽进来 → 天天误报。
+
+    注意 `strict=True`：**素材侧是宽松的**（见下一条），两边刻意不对称。"""
+    assert word not in proper.extract(f"这个 {word} 的用法", strict=True)
+
+
+def test_material_side_is_loose():
+    """**素材侧必须宽松**：素材写小写 `database`、稿件写大写 `Database` 是同一个词。
+
+    素材侧若也严格，`database` 就进不了白名单，而稿件的 `Database` 会被抽出来 → 误报
+    （实测：m03/xhs 报「素材里没有的专名：Database」）。
+    """
+    assert "database" in proper.extract("它那个 database 视图很直观")              # 素材侧
+    assert "Database" in proper.extract("用 Database 视图", strict=True)          # 稿件侧
+    # 两边都抽到 → 比对时大小写不敏感 → 不报
 
 
 def test_quoted_ordinary_words_are_not_extracted():
