@@ -10,8 +10,8 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import math
 import re
+import math
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -152,6 +152,36 @@ def _mock_draft(code: str, dna: dict, mat: StructuredMaterial, brief: Brief,
     )
 
 
+def _coerce_facts_used(raw) -> list[int] | None:
+    """把模型回的「依据了哪几条事实」规整成 `list[int]`。
+
+    ⚠️ **None 与 [] 必须区分**（`docs/spec_factguard.md` 关键决定三）：
+      None = 没声明（违规）；[] = 声明了"没用到事实"（合法）。
+    模型有时会把 `[1,3]` 回成字符串 `"1,3"` 或 `"[1, 3]"`，所以这里宽容解析，
+    但**解析不出来时返回 None**（宁可按"没声明"报，也不假装声明过）。
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        # 显式的"空声明"（`[]` / `空` / `无`）→ `[]`；**其它非空但无数字的串是垃圾** → None。
+        # 不能把垃圾当成"声明了空" —— 那会把违规伪装成合法（三态语义的关键）。
+        bare = raw.strip().strip("[]").strip()
+        if not bare or bare.lower() in ("空", "无", "none", "null"):
+            return []
+        raw = re.findall(r"\d+", raw)
+        if not raw:
+            return None
+    if not isinstance(raw, (list, tuple)):
+        return None
+    out: list[int] = []
+    for x in raw:
+        try:
+            out.append(int(x))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def run_draft(
     code: str,
     dna: dict,
@@ -177,6 +207,10 @@ def run_draft(
         cover_suggestion=str(data.get("cover_suggestion", "")).strip(),
         interaction_line=str(data.get("interaction_line", "")).strip(),
         rationale=str(data.get("rationale", "")).strip(),
+        # ⚠️ 这一行不能漏：`run_draft` 是**逐字段构造**的，
+        # 漏掉字段不会报错，只会让 `facts_used` 永远是 None —— 整个声明机制静默失效
+        # （实测踩到：smoke 跑出来 facts_used=None，而单独测 prompt 时模型明明回了 [1,2,3]）
+        facts_used=_coerce_facts_used(data.get("facts_used")),
     )
 
 

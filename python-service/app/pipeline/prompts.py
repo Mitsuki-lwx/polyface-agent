@@ -108,8 +108,14 @@ DRAFT_SYSTEM = (
     '  "tags": ["标签1", "标签2"],\n'
     '  "cover_suggestion": "封面文案或首屏钩子",\n'
     '  "interaction_line": "文末互动引导语",\n'
+    '  "facts_used": [1, 3],\n'
     '  "rationale": "为什么这样写(对应哪些爆款机制)"\n'
     "}\n"
+    "\n"
+    "关于 facts_used（**必填**）：正文里的每一个数字、年份、专有名词、以及每一条"
+    "事实性断言，都必须来自【素材事实清单】里某一条。请把你**实际用到**的条目序号列出来。"
+    "用不到任何一条就写 []。\n"
+    "**写不出序号的内容，就是你不该写的内容** —— 删掉它，不要写进正文。\n"
 )
 
 
@@ -134,7 +140,9 @@ def build_draft_prompt(dna: dict, structured, brief, feedback: str | None = None
             "structure_plan": brief.structure_plan,
             "tag_direction": brief.tag_direction,
         },
-        "material_facts": [f.text for f in structured.facts],
+        # 带**序号**：模型要靠它填 facts_used（1-based，与 facts_used 的约定一致）
+        "material_facts": [{"n": i, "text": f.text}
+                           for i, f in enumerate(structured.facts, 1)],
     }
     if template:
         payload["user_template"] = template
