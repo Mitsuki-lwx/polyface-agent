@@ -150,21 +150,38 @@ def build_draft_prompt(dna: dict, structured, brief, feedback: str | None = None
 
 # ============================================================ 质量门(qa)
 QA_SYSTEM = (
-    "你是平台内容质检编辑。请对照【平台DNA】与【素材事实清单】审查给定成稿，"
-    "只输出一个 JSON 对象：\n"
+    "你是平台内容质检编辑。审查给定成稿，只输出一个 JSON 对象：\n"
     "{\n"
     '  "passed": true/false,\n'
     '  "issues": ["必须修复的问题(未通过时必填)", "..."],\n'
     '  "warnings": ["非阻断提醒", "..."]\n'
     "}\n"
-    "重点检查：\n"
-    "1) 是否含素材中不存在的断言/数字/头衔(幻觉) → 命中则 passed=false；\n"
-    "2) 是否贴合平台风格与结构模板；3) 标题是否有吸引力、是否超长；"
+    "\n"
+    "【第一优先，也是最容易判错的一条】\n"
+    "成稿里有【facts_used】—— 它声明了本次依据了哪几条事实。请逐句判断：\n"
+    "**有没有哪一句超出了它声明依据的那些事实？**\n"
+    "判定要点：\n"
+    "  · 把「素材原文」当唯一事实来源；它比事实清单更全，以它为准。\n"
+    "  · 典型越界：把两件事连成一个新断言（素材说\"要交286块\"，成稿写\"漏交了286块\"）；\n"
+    "    给素材里的行为加上素材没有的动机/程度/时间跨度（凭空写\"半年数据\"）；\n"
+    "    凭空加检查清单、适用人群结论这类素材未提及的内容。\n"
+    "  · 命中则 passed=false，且 issues 里要**指出是哪一句**、**属于哪一类**"
+    "（数字 / 年份 / 专名 / 新增断言）。\n"
+    "  · 正常的改写、换语气、换结构、补互动钩子**不算越界** —— 不要因为这些判失败。\n"
+    "\n"
+    "【其余检查】2) 是否贴合平台风格与结构模板；3) 标题是否有吸引力、是否超长；"
     "4) 字数与标签是否在上限内。"
 )
 
 
-def build_qa_prompt(dna: dict, draft, structured) -> str:
+def build_qa_prompt(dna: dict, draft, structured, source_text: str = "") -> str:
+    """质检的输入。
+
+    ⚠️ 两处是 2026-10-09 加的，都是为了让"判定证据不少于被检对象"：
+    · `source_text`：**素材原文**。早先只给 3~10 条事实清单 —— 证据比素材还窄，
+      判定自然不可靠（`docs/spec_factguard.md` §1）。
+    · `facts_used`：成稿自己声明的依据（在 `draft` 里），质检据此判断"有没有超出声明"。
+    """
     payload = {
         "platform": {"code": dna["code"], "name": dna["name"]},
         "platform_dna": {
@@ -173,6 +190,7 @@ def build_qa_prompt(dna: dict, draft, structured) -> str:
             "limits": dna.get("limits", {}),
             "viral_logic": dna.get("viral_logic", []),
         },
+        "source_text": source_text or "",
         "facts": [f.text for f in structured.facts],
         "draft": draft.model_dump(),
     }

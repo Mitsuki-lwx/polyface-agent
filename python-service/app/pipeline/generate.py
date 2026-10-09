@@ -235,7 +235,9 @@ def run_clip_sheet(dna: dict, mat: StructuredMaterial, draft: DraftPayload,
 
 
 # ---------------------------------------------------------------- qa
-def _rule_qa(dna: dict, draft: DraftPayload, mat: StructuredMaterial) -> tuple[list[str], list[str]]:
+def _rule_qa(dna: dict, draft: DraftPayload, mat: StructuredMaterial,
+             source_text: str = "") -> tuple[list[str], list[str]]:
+    """规则与结构校验。`source_text` 是素材原文 —— **证据集合不能比素材还窄**。"""
     issues: list[str] = []
     warnings: list[str] = []
     limits = dict(dna.get("limits") or {})
@@ -272,13 +274,34 @@ def _rule_qa(dna: dict, draft: DraftPayload, mat: StructuredMaterial) -> tuple[l
     #   - 稿件侧严格：只查像数字的中文数字（带单位或 ≥2 位）——
     #     否则「迈出这一步」里的「一」会被当成一个数字去比对，又是一类误报
     # 展示仍用**原文**（用户写的是 3w，不要给他改写成 3万）。
-    fact_text = " ".join(f.text for f in mat.facts)
-    allowed = set(_num_values(fact_text, strict=False))
+    # ⚠️ 证据集合 = **素材原文 ∪ 事实清单**。
+    # 早先只比 `mat.facts`（3~10 条）—— 证据比被检对象还少，凡素材里有、
+    # 但没被抽进事实清单的数字都会被误报（`docs/spec_factguard.md` §1）。
+    evidence = " ".join([source_text or ""] + [f.text for f in mat.facts])
+    allowed = set(_num_values(evidence, strict=False))
     body_vals = _num_values(draft.body, strict=True)
     unsupported = [tok for v, tok in sorted(body_vals.items()) if v not in allowed]
     if unsupported:
         warnings.append("正文含素材中无依据的数字: "
                         + "、".join(unsupported) + "（请确认或删除）")
+
+    # 专名检查（T3）：正文里的专名必须能在素材里找到。
+    # 白名单抽不到就**静默跳过** —— 宁可不查，不可误报（见 app/pipeline/proper.py）。
+    from . import proper as _proper
+    known_names = _proper.extract(evidence)
+    if known_names:
+        unknown_names = sorted(n for n in _proper.extract(draft.body) if n not in known_names)
+        if unknown_names:
+            warnings.append("正文含素材中未出现的专名: "
+                            + "、".join(unknown_names) + "（请确认或删除）")
+
+    # 事实依据声明（T1）：没声明 = 违规；声明了空 = 合法（本次没用到事实）
+    if draft.facts_used is None:
+        warnings.append("成稿未声明依据了哪些事实（facts_used 缺失）—— 无法核对其依据范围")
+    elif mat.facts:
+        bad_idx = sorted({i for i in draft.facts_used if not (1 <= i <= len(mat.facts))})
+        if bad_idx:
+            warnings.append(f"成稿声明的事实序号越界: {bad_idx}（共 {len(mat.facts)} 条）")
     return issues, warnings
 
 
@@ -298,6 +321,7 @@ def _strict_bool(value) -> tuple[bool, str | None]:
 def _llm_qa(
     dna: dict, draft: DraftPayload, mat: StructuredMaterial,
     rule_issues: list[str], rule_warnings: list[str],
+    source_text: str = "",
 ) -> QaReport:
     """真实模式：规则 + LLM 自评**合并**判定。
 
@@ -307,7 +331,7 @@ def _llm_qa(
     - 规则 warnings **必须保留**（此前被 LLM warnings 覆盖，导致「正文含无依据数字」告警丢失）
     """
     data = llm.chat_json(
-        build_qa_prompt(dna, draft, mat), system=QA_SYSTEM, temperature=0.2,
+        build_qa_prompt(dna, draft, mat, source_text), system=QA_SYSTEM, temperature=0.2,
         scene="qa", platform=dna.get("code"),
     )
     llm_issues = [str(x).strip() for x in (data.get("issues") or []) if str(x).strip()]
@@ -325,12 +349,13 @@ def _llm_qa(
     )
 
 
-def run_qa(dna: dict, draft: DraftPayload, mat: StructuredMaterial) -> QaReport:
+def run_qa(dna: dict, draft: DraftPayload, mat: StructuredMaterial,
+           source_text: str = "") -> QaReport:
     """质检门：规则与结构校验恒生效；真实模式再叠加 LLM 自评。"""
-    issues, warnings = _rule_qa(dna, draft, mat)
+    issues, warnings = _rule_qa(dna, draft, mat, source_text)
     if llm.is_mock():
         return QaReport(passed=not issues, issues=issues, warnings=warnings)
-    return _llm_qa(dna, draft, mat, issues, warnings)
+    return _llm_qa(dna, draft, mat, issues, warnings, source_text)
 
 
 # ---------------------------------------------------------------- orchestrator
@@ -378,7 +403,7 @@ def _generate_one(code: str, mat: StructuredMaterial, tone_override: str | None,
                   template: UserTemplate | None = None,
                   creator_profile: dict | None = None,
                   retrospect_hints: list[str] | None = None,
-                  log=None) -> PlatformDraft:
+                  log=None, source_text: str = "") -> PlatformDraft:
     dna = dna_lib.load_dna(code)
     with _stage(log, f"平台:{code}:策略") as r:
         brief = run_brief(code, dna, mat, tone_override, template, creator_profile, retrospect_hints)
@@ -388,7 +413,7 @@ def _generate_one(code: str, mat: StructuredMaterial, tone_override: str | None,
                           creator_profile=creator_profile, retrospect_hints=retrospect_hints)
         r.done("成稿完成")
     with _stage(log, f"平台:{code}:质检") as r:
-        qa = run_qa(dna, draft, mat)
+        qa = run_qa(dna, draft, mat, source_text)
         r.done("通过" if qa.passed else f"未通过（{len(qa.issues)} 项）")
 
     # 真实模式下 QA 未通过 → 带反馈重写一轮
@@ -397,7 +422,7 @@ def _generate_one(code: str, mat: StructuredMaterial, tone_override: str | None,
         with _stage(log, f"平台:{code}:改写") as r:
             draft = run_draft(code, dna, mat, brief, feedback=feedback, template=template,
                               creator_profile=creator_profile, retrospect_hints=retrospect_hints)
-            qa = run_qa(dna, draft, mat)
+            qa = run_qa(dna, draft, mat, source_text)
             r.done("改写后通过" if qa.passed else "改写后仍未通过")
 
     # 视频平台：成稿后附剪辑单（A 阶段）
@@ -449,7 +474,8 @@ def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
         # 不包装则子线程内 trace_id 丢失（各平台各自生成新 trace）
         return trace.run_in_context(_generate_one, code, structured,
                                     req.tone_override, req.template,
-                                    req.creator_profile, req.retrospect_hints, log)
+                                    req.creator_profile, req.retrospect_hints, log,
+                                    req.raw_text)
 
     def _record_failure(code: str, exc: Exception) -> None:
         """单平台失败不致命：记录原因后继续，已完成平台的产物必须交付。"""

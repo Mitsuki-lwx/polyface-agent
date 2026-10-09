@@ -53,6 +53,17 @@ class DraftPayload(BaseModel):
     cover_suggestion: str = Field(default="", description="封面文案/首屏钩子建议")
     interaction_line: str = Field(default="", description="互动引导语")
     rationale: str = Field(default="", description="改写说明:踩了哪些平台机制")
+    # 事实依据声明（`docs/spec_factguard.md` 关键决定三）：
+    # 把"你有没有幻觉"换成"你写的这句依据哪条事实" —— 给机械校验一个明确的对照集合。
+    # 用**序号**（对应 prompt 里事实清单的 1-based 编号）而不是原文，省 token 且精确。
+    #
+    # ⚠️ 三态语义必须分清（checklist §4）：
+    #   None = **没声明**（违规，校验要报）
+    #   []   = 声明了"本次没用到任何事实"（合法）
+    #   [1,3]= 依据第 1、3 条
+    # 所以这里**不能**用 default_factory=list —— 那样"没声明"会被伪装成"声明了空"。
+    facts_used: list[int] | None = Field(
+        default=None, description="本次正文依据的事实序号(1-based)；空列表=没用到事实")
     clip_sheet: ClipSheet | None = Field(default=None, description="视频平台剪辑单(仅 video_native 平台)")
 
 

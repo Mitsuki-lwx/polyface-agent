@@ -324,5 +324,37 @@ def test_a8_does_not_false_positive_on_normal_phrases():
     assert code(A.check_all(ctx(material=m, draft=d)), "A8")
 
 
-def test_all_has_eight_assertions():
-    assert len(A.ALL) == 8
+def test_assertion_count_is_pinned():
+    """断言条数钉死 —— 加/删断言时这条会红，提醒同步 checklist 与文档。"""
+    assert len(A.ALL) == 9
+
+
+# ---------------------------------------------------------------- A9 专名
+
+def test_a9_invented_proper_noun_is_flagged():
+    m = copy.deepcopy(MATERIAL)
+    m["raw_text"] = "我最后选了 Notion，领投的是 Coatue。"
+    d = copy.deepcopy(GOOD_DRAFT)
+    d["body"] = d["body"] + "后来我也试过飞书。"
+    res = A.check_all(ctx(material=m, draft=d))
+    a9 = next(r for r in res if r.code.startswith("A9"))
+    assert not a9.ok and "飞书" in a9.detail
+
+
+def test_a9_known_proper_noun_passes():
+    m = copy.deepcopy(MATERIAL)
+    m["raw_text"] = "我最后选了 Notion，领投的是 Coatue。"
+    d = copy.deepcopy(GOOD_DRAFT)
+    d["body"] = d["body"] + "Notion 我一直在用。"
+    assert code(A.check_all(ctx(material=m, draft=d)), "A9")
+
+
+def test_a9_skips_when_material_has_no_proper_nouns():
+    """抽不到就跳过 —— 不许报"检查失败"（宁可不查，不可误报）。"""
+    res = A.check_all(ctx())          # 夹具素材里没有专名
+    a9 = next(r for r in res if r.code.startswith("A9"))
+    assert a9.ok and "跳过" in a9.detail
+
+
+def test_all_has_nine_assertions():
+    assert len(A.ALL) == 9

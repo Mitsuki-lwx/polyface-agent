@@ -27,6 +27,7 @@ from _bootstrap import ROOT  # noqa: E402,F401  （副作用：sys.path + .env�
 # 数字口径**只有一份**（app/pipeline/numberish.py）—— 产品与评测共用，
 # 否则评测集测的不是线上那条路。
 from app.pipeline.numberish import numbers_in, num_values  # noqa: E402
+from app.pipeline import proper  # noqa: E402
 
 # 视频原生平台必须有剪辑单（docs/05 FR-52）
 VIDEO_NATIVE = {"douyin", "bilibili"}
@@ -211,10 +212,27 @@ def a8_no_offsite_diversion(ctx: dict) -> Result:
                   "" if not hits else "命中平台明文红线：" + "、".join(hits))
 
 
+def a9_names_supported(ctx: dict) -> Result:
+    """正文里的**专有名词**必须在素材里有依据。
+
+    与 A1（数字）、A2（年份）并列 —— 三类都是**机械可判**的。
+    白名单抽不到就**跳过**（宁可不查，不可误报，见 `app/pipeline/proper.py`）。
+    """
+    body = str((ctx.get("draft") or {}).get("body") or "")
+    evidence = (str((ctx.get("material") or {}).get("raw_text") or "") + " "
+                + _facts_text(ctx.get("structured")))
+    known = proper.extract(evidence)
+    if not known:
+        return Result("A9 专名有依据", True, "素材里抽不出专名，跳过")
+    unknown = sorted(n for n in proper.extract(body) if n not in known)
+    return Result("A9 专名有依据", not unknown,
+                  "" if not unknown else f"素材里没有的专名：{unknown}")
+
+
 ALL: tuple[Callable[[dict], Result], ...] = (
     a1_numbers_supported, a2_no_foreign_years, a3_titles_ok,
     a4_body_length_ok, a5_tags_ok, a6_clip_sheet_ok, a7_qa_passed,
-    a8_no_offsite_diversion,
+    a8_no_offsite_diversion, a9_names_supported,
 )
 
 
