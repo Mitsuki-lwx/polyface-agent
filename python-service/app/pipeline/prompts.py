@@ -77,6 +77,10 @@ def build_brief_prompt(dna: dict, structured, tone_override: str | None,
             "limits": dna.get("limits", {}),
             "viral_logic": dna.get("viral_logic", []),
             "hooks": dna.get("hooks", []),
+            # ⚠️ 这段原先**从没传给任何 prompt**（审计发现）：它讲的是"平台靠什么给流量"
+            # —— 比如小红书「搜索分发权重高，标题需埋真实搜索词（这也是标题 20 字内
+            # 关键词前置的原因）」。不给模型，"为什么这么写"的根据就丢了。
+            "distribution": dna.get("distribution", []),
         },
         "material": {
             "core_message": structured.core_message,
@@ -136,6 +140,10 @@ def build_draft_prompt(dna: dict, structured, brief, feedback: str | None = None
             "tags": dna.get("tags", {}),
             "limits": dna.get("limits", {}),
             "viral_logic": dna.get("viral_logic", []),
+            # 同 brief：分发机制原先也没传（审计发现）
+            "distribution": dna.get("distribution", []),
+            # 调研出来的数值规格（各平台字段名统一在 specs 下）
+            "specs": dna.get("specs", {}),
             # ⚠️ 标题字数上限**必须显式传给模型**：它只在 DNA 的 `specs.title_chars_max` 里，
             # 而 `title_rules` 是散文（"多用数字+结果"），不含长度 —— 不传的话模型压根不知道
             # 小红书标题要 ≤20 字（实测：xhs 标题系统性超限，加固后更严重）。
