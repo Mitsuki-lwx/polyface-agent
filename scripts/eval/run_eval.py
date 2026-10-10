@@ -167,13 +167,17 @@ def write_report(out_dir: Path, manifest: dict, cells: dict, platforms: list[str
                  rules_by_platform: dict[str, dict] | None = None) -> dict:
     fp = fp_mod.fingerprint()
     dna_fp = dna_rules_mod.fingerprint()
-    total = len(items) * len(platforms)
+    # ⚠️ 分母用**实际存在的格子**，不是 `素材数 × 平台数` 的理论值。
+    # 理论值会把部分跑分（如 `--limit 5` 的 4/5=80%）显示成 4/50=8%（实测踩到）。
+    # 「应有而缺失」单独记在 `missing` 里，两者都保留。
+    total = sum(1 for mid in cells for c in platforms if c in cells[mid])
     n_ok = sum(1 for mid in cells for c in platforms if cells[mid].get(c, {}).get("ok"))
     n_assert_fail = sum(1 for mid in cells for c in platforms
                         if cells[mid].get(c, {}).get("kind") == "assert")
     n_call_fail = sum(1 for mid in cells for c in platforms
                       if cells[mid].get(c, {}).get("kind") == "call_failed")
-    n_missing = total - n_ok - n_assert_fail - n_call_fail
+    expected = len(items) * len(platforms)
+    n_missing = max(0, expected - total)
 
     report = {
         "_scope_note": SCOPE_NOTE,
@@ -396,8 +400,12 @@ def _reassert(items: list[dict], platforms: list[str],
         res["_meta"] = old.get("_meta") or {}
         res["_drafts"] = drafts
         res["_structured"] = old.get("_structured")
-        # 调用失败/缺失的格子按原样保留，别把"上游失败"改写成"断言失败"
+        # 只保留**真有产物**的平台；其余一律剔除（含历史污染）
+        res = {k: v for k, v in res.items() if k in drafts or k.startswith("_")}
         for p in platforms:
+            if p in drafts:
+                continue
+            # 这一格确实没有产物 —— 按原样保留上游失败，别改写成"断言失败"
             if (old.get(p) or {}).get("kind") == "call_failed":
                 res[p] = old[p]
         cells[mid] = res
@@ -477,6 +485,21 @@ def main() -> int:
             todo.append(it)
 
     if args.reassert:
+        # ⚠️ 复算时**必须用原报告的平台集合**，不能用命令行默认值 ——
+        # 否则没传 `--platforms` 时会按全部 5 个平台算分母，
+        # 把 5 格的跑分（4/5=80%）显示成 4/50=8%（实测踩到）。
+        # 从 **cells 实际内容**推导（不是从报告，也不是命令行默认值）：
+        # 报告里的分母是"素材数 × 平台数"的理论值，复算部分数据时会把
+        # 5 格的 4/5=80% 显示成 4/50=8%（实测踩到）。
+        # 从 `_drafts` 推导 —— 那里才是**真有产物**的平台。
+        # 不能用 cell 的键：一次写坏的复算会往里塞满"调用失败"的假平台，
+        # 之后再读键就会把污染当成事实（实测踩到，分母从 5 变 50）。
+        present = set()
+        for f in sorted((out_dir / "cells").glob("m*.json")):
+            present |= set((json.loads(f.read_text(encoding="utf-8")).get("_drafts") or {}))
+        if present:
+            platforms = [p for p in ALL_PLATFORMS if p in present] or sorted(present)
+            print(f"复算：按 _drafts 实际内容取平台 {platforms}")
         return _reassert(items, platforms, rules_by_platform, out_dir, manifest, args)
 
     timeout = args.timeout if args.timeout != 0 else auto_timeout(len(platforms))
