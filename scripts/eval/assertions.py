@@ -191,8 +191,15 @@ def a7_qa_passed(ctx: dict) -> Result:
         return Result("A7 通过质量门", False, "产物里没有 qa 字段")
     passed = bool(qa.get("passed"))
     issues = qa.get("issues") or []
+    # 原子计数（FActScore 口径）：QA 报的"核对了几条、几条没依据"。
+    # 拿不到就是 0/0（**不猜**）—— 老产物没有这两个字段。
+    checked = int(qa.get("claims_checked") or 0)
+    unsupported = int(qa.get("claims_unsupported") or 0)
+    if unsupported > checked:
+        unsupported = checked          # 防御：模型偶尔会报出不合逻辑的数
     return Result("A7 通过质量门", passed,
-                  "" if passed else f"QA 未通过：{issues[:3]}")
+                  "" if passed else f"QA 未通过：{issues[:3]}",
+                  checked=checked, failed=unsupported)
 
 
 # platform-dna 的 `limits.banned_direction` 在 5 个平台上都明确列了"站外导流"：

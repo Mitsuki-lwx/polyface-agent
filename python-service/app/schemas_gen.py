@@ -92,6 +92,12 @@ class QaReport(BaseModel):
     # 结构化版本（可选，便于按类定向重写；老调用方不传也能跑）
     issue_items: list[QaIssue] = Field(default_factory=list,
                                        description="结构化的问题清单(分类+定位)")
+    # **原子计数**（FActScore 口径）：把成稿拆成原子断言逐条核对，报出总数与不通过数。
+    # 为什么需要：二值通过率噪声极大（实测同一代码多轮 38%~78%），
+    # 而机械检查（数字/年份/专名）几乎总是干净的 —— 真正在失败的是语义级断言。
+    # 只有把这一层也原子化，支持率才既稳又有区分度。
+    claims_checked: int = Field(0, description="核对了多少条原子断言")
+    claims_unsupported: int = Field(0, description="其中多少条在素材里找不到依据")
 
 
 class PlatformDraft(BaseModel):

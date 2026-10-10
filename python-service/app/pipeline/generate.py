@@ -412,7 +412,21 @@ def _llm_qa(
         issues=blocking,
         warnings=list(rule_warnings) + llm_warns,
         issue_items=_parse_issue_items(data.get("issue_items")),
+        claims_checked=_nonneg_int(data.get("claims_checked")),
+        claims_unsupported=_nonneg_int(data.get("claims_unsupported")),
     )
+
+
+def _nonneg_int(raw) -> int:
+    """宽容解析非负整数。
+
+    模型有时回字符串（"12"）、有时回浮点（3.9）—— 都截断成整数。
+    解析不出来返回 0（**不猜**）。
+    """
+    try:
+        return max(0, int(float(str(raw).strip())))
+    except (TypeError, ValueError):
+        return 0
 
 
 # 每类的**定向修复指令**（T6）。分类是封闭的，所以指令也是封闭的 ——

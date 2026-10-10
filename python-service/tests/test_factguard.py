@@ -8,6 +8,9 @@
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pytest
 
 from app import llm
@@ -15,6 +18,23 @@ from app.pipeline import generate as gen
 from app.pipeline import prompts
 from app.schemas import Fact, StructuredMaterial
 from app.schemas_gen import Brief, DraftPayload, QaIssue, QaReport
+
+# `scripts/eval/` 不是包，按文件路径加载（与 test_eval_assertions.py 同一套做法）
+import importlib.util  # noqa: E402
+
+_EVAL_DIR = Path(__file__).resolve().parents[2] / "scripts" / "eval"
+
+
+def _load(name: str, filename: str):
+    spec = importlib.util.spec_from_file_location(name, _EVAL_DIR / filename)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+A = _load("polyface_eval_assertions_fg", "assertions.py")
 
 
 def _mat() -> StructuredMaterial:
@@ -232,3 +252,50 @@ def test_year_check_exists_and_is_gated(monkeypatch):
     monkeypatch.setattr(gen, "get_settings", lambda: Settings(factguard_check_years=False))
     _, warns = gen._rule_qa(_dna(), draft, mat, source_text="卡里就剩两万三。")
     assert not any("年份" in w for w in warns), warns      # 年份措辞消失（数字检查仍会报）
+
+
+# ============================================================ A7 原子化
+
+@pytest.mark.parametrize("raw,expect", [
+    (12, 12), ("12", 12), (" 7 ", 7), (None, 0), ("说不清", 0), (-3, 0), (3.9, 3),
+])
+def test_nonneg_int_parsing(raw, expect):
+    """宽容解析非负整数；解析不出来按 0（**不猜**）。"""
+    assert gen._nonneg_int(raw) == expect
+
+
+def test_a7_records_atomic_counts():
+    """**核心**：A7 要带上"核对了多少条断言、多少条没依据"。
+
+    为什么：二值通过率噪声极大（实测同一代码多轮 38%~78%），而机械检查
+    （数字/年份/专名）几乎总是干净的 —— 真正在失败的是语义级断言。
+    不把 A7 原子化，支持率就既稳又测不到主要矛盾。
+    """
+    res = A.check_all({"material": {"raw_text": "x"}, "structured": None, "platform": "xhs",
+                       "draft": {"titles": ["标题"], "body": "正文", "tags": ["t"],
+                                 "qa": {"passed": False, "issues": ["有编造"],
+                                        "claims_checked": 6, "claims_unsupported": 2}},
+                       "rules": {}})
+    a7 = next(r for r in res if r.code.startswith("A7"))
+    assert a7.checked == 6 and a7.failed == 2
+
+
+def test_a7_clamps_impossible_counts():
+    """防御：模型偶尔报出 `unsupported > checked` 这种不合逻辑的数，要夹住。"""
+    res = A.check_all({"material": {"raw_text": "x"}, "structured": None, "platform": "xhs",
+                       "draft": {"titles": ["标题"], "body": "正文", "tags": ["t"],
+                                 "qa": {"passed": True, "issues": [],
+                                        "claims_checked": 3, "claims_unsupported": 99}},
+                       "rules": {}})
+    a7 = next(r for r in res if r.code.startswith("A7"))
+    assert a7.checked == 3 and a7.failed == 3
+
+
+def test_a7_without_counts_is_zero_not_guessed():
+    """老产物没有这两个字段 → 0/0（不猜），而不是编一个数。"""
+    res = A.check_all({"material": {"raw_text": "x"}, "structured": None, "platform": "xhs",
+                       "draft": {"titles": ["标题"], "body": "正文", "tags": ["t"],
+                                 "qa": {"passed": True, "issues": []}},
+                       "rules": {}})
+    a7 = next(r for r in res if r.code.startswith("A7"))
+    assert a7.checked == 0 and a7.failed == 0
