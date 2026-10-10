@@ -51,9 +51,19 @@ DEFAULT_RULES: dict[str, Any] = {
 
 @dataclass(frozen=True)
 class Result:
+    """一条断言的结论。
+
+    `checked` / `failed` 是**原子计数**（FActScore 思路，arXiv 2305.14251）：
+    二值通过率太脆 —— 一篇稿子有一个数字没依据就整格判失败，于是同样的模型行为
+    在指标上跳来跳去（实测：同一代码同批素材跑 3 次，5 格里 3 格翻面）。
+    带上"检查了 12 个原子、其中 1 个没通过"，就能算出**支持率 91.7%** ——
+    同样的行为，指标稳得多，而且能看出"差了多少"而不只是"过没过"。
+    """
     code: str
     ok: bool
     detail: str = ""
+    checked: int = 0        # 本条断言检查了多少个原子
+    failed: int = 0         # 其中多少个不通过
 
     def render(self) -> str:
         return f"[{'PASS' if self.ok else 'FAIL'}] {self.code}" + (
@@ -89,7 +99,8 @@ def a1_numbers_supported(ctx: dict) -> Result:
     body_vals = num_values(body, strict=True)
     unsupported = [tok for v, tok in sorted(body_vals.items()) if v not in allowed]
     return Result("A1 数字有依据", not unsupported,
-                  "" if not unsupported else f"素材里找不到依据的数字：{unsupported}")
+                  "" if not unsupported else f"素材里找不到依据的数字：{unsupported}",
+                  checked=len(body_vals), failed=len(unsupported))
 
 
 def a2_no_foreign_years(ctx: dict) -> Result:
@@ -102,9 +113,11 @@ def a2_no_foreign_years(ctx: dict) -> Result:
     src = (str((ctx.get("material") or {}).get("raw_text") or "") + " "
            + _facts_text(ctx.get("structured")))
     known = set(num_values(src, strict=False))
-    foreign = sorted({y for y in _YEAR_RE.findall(body) if float(y) not in known})
+    body_years = _YEAR_RE.findall(body)
+    foreign = sorted({y for y in body_years if float(y) not in known})
     return Result("A2 无素材外年份", not foreign,
-                  "" if not foreign else f"素材里没有的年份：{foreign}")
+                  "" if not foreign else f"素材里没有的年份：{foreign}",
+                  checked=len(body_years), failed=len(foreign))
 
 
 def a3_titles_ok(ctx: dict) -> Result:
@@ -225,10 +238,11 @@ def a9_names_supported(ctx: dict) -> Result:
     if not known:
         return Result("A9 专名有依据", True, "素材里抽不出专名，跳过")
     known_lower = {n.lower() for n in known}      # 大小写不敏感（`database`/`Database` 同一个词）
-    unknown = sorted(n for n in proper.extract(body, strict=True)   # 稿件侧：严格
-                     if n.lower() not in known_lower)
+    body_names = proper.extract(body, strict=True)                   # 稿件侧：严格
+    unknown = sorted(n for n in body_names if n.lower() not in known_lower)
     return Result("A9 专名有依据", not unknown,
-                  "" if not unknown else f"素材里没有的专名：{unknown}")
+                  "" if not unknown else f"素材里没有的专名：{unknown}",
+                  checked=len(body_names), failed=len(unknown))
 
 
 ALL: tuple[Callable[[dict], Result], ...] = (
@@ -236,6 +250,20 @@ ALL: tuple[Callable[[dict], Result], ...] = (
     a4_body_length_ok, a5_tags_ok, a6_clip_sheet_ok, a7_qa_passed,
     a8_no_offsite_diversion, a9_names_supported,
 )
+
+
+def support_rate(results: list[Result]) -> float | None:
+    """**原子事实支持率** = 通过原子数 / 检查原子数（FActScore 口径）。
+
+    比二值通过率稳得多：一篇稿子有一个数字没依据，二值指标是 0 分，
+    支持率是"检查了 14 个原子、1 个没通过 = 92.9%"。
+
+    返回 None 表示**没检查到任何原子**（不能拿 0 当"全错"）。
+    """
+    checked = sum(r.checked for r in results)
+    if checked <= 0:
+        return None
+    return round(1 - sum(r.failed for r in results) / checked, 4)
 
 
 def check_all(ctx: dict) -> list[Result]:

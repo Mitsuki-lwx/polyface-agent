@@ -152,7 +152,10 @@ def assert_material(item: dict, raw: dict, platforms: list[str],
         failed = [r for r in res if not r.ok]
         out[code] = {"ok": not failed, "kind": "assert" if failed else "pass",
                      "reason": "；".join(r.detail for r in failed) or "",
-                     "assertions": [{"code": r.code, "ok": r.ok, "detail": r.detail}
+                     # 原子事实支持率（FActScore 口径）：比二值稳，见 assertions.support_rate
+                     "support_rate": A.support_rate(res),
+                     "assertions": [{"code": r.code, "ok": r.ok, "detail": r.detail,
+                                     "checked": r.checked, "failed": r.failed}
                                     for r in res]}
     return out
 
@@ -189,7 +192,11 @@ def write_report(out_dir: Path, manifest: dict, cells: dict, platforms: list[str
         "platforms": platforms,
         "totals": {"cells": total, "passed": n_ok, "assert_failed": n_assert_fail,
                    "call_failed": n_call_fail, "missing": n_missing,
-                   "pass_rate": round(n_ok / total, 4) if total else 0.0},
+                   "pass_rate": round(n_ok / total, 4) if total else 0.0,
+                   # 原子事实支持率：把"过了/没过"换成"检查了多少原子、支持了多少"
+                   # （FActScore, arXiv 2305.14251）。二值通过率的采样噪声太大 ——
+                   # 实测同一代码同批素材跑 3 次，5 格里 3 格翻面。
+                   "support_rate": _support_rate(cells, platforms)},
         "by_platform": _by_platform(cells, platforms),
         "elapsed_sec": round(elapsed, 1),
         "cells": {mid: cells[mid] for mid in cells},
@@ -203,6 +210,20 @@ def write_report(out_dir: Path, manifest: dict, cells: dict, platforms: list[str
         encoding="utf-8", newline="\n")
     (out_dir / "report.md").write_text(render_md(report, items), encoding="utf-8", newline="\n")
     return report
+
+
+def _support_rate(cells: dict, platforms: list[str]) -> float | None:
+    """全矩阵的原子支持率（把所有格子的原子数汇总，不是对每格比例求平均）。"""
+    checked = failed = 0
+    for res in cells.values():
+        for p in platforms:
+            cell = res.get(p) or {}
+            for a in cell.get("assertions") or []:
+                checked += int(a.get("checked") or 0)
+                failed += int(a.get("failed") or 0)
+    if checked <= 0:
+        return None
+    return round(1 - failed / checked, 4)
 
 
 def _by_platform(cells: dict, platforms: list[str]) -> dict:
@@ -283,7 +304,10 @@ def render_md(r: dict, items: list[dict]) -> str:
         f"| 断言失败 | {t['assert_failed']} |",
         f"| 调用失败（超时/限流等，**非**质量信号） | {t['call_failed']} |",
         f"| 缺失 | {t['missing']} |",
-        f"| **通过率** | **{t['pass_rate']:.1%}** |", "",
+        f"| **通过率**（二值，噪声大） | **{t['pass_rate']:.1%}** |",
+        f"| **原子支持率**（FActScore 口径，稳） | "
+        f"**{t['support_rate']:.1%}** |" if t.get("support_rate") is not None
+        else "| 原子支持率 | （没检查到原子） |", "",
     ]
     if r.get("by_platform"):
         L += ["## 分平台", "", "| 平台 | 通过 / 总数 | 通过率 | 断言失败 | 调用失败 |", "|---|---|---|---|---|"]
