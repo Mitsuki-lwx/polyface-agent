@@ -358,3 +358,45 @@ def test_a9_skips_when_material_has_no_proper_nouns():
 
 def test_all_has_nine_assertions():
     assert len(A.ALL) == 9
+
+
+# ---------------------------------------------------------------- 原子支持率（FActScore 口径）
+
+def test_atomic_counts_are_recorded():
+    """A1/A2/A9 要带**原子计数** —— 二值太脆（实测同一代码跑 3 次，5 格里 3 格翻面）。"""
+    m = copy.deepcopy(MATERIAL)
+    m["raw_text"] = "卡里就剩两万三，投了五十份简历，用了 Notion。"
+    d = copy.deepcopy(GOOD_DRAFT)
+    # 888 是真无依据（素材只有 两万三 / 五十 / Notion）；50 是**有**依据的（五十）
+    d["body"] = "卡里就剩2万3，投了50份简历，月入888万，用了 Notion 和飞书。这段经历值得写下来给同样犹豫的人看。"
+    res = A.check_all(ctx(material=m, draft=d))
+    by = {r.code[:2]: r for r in res}
+    assert by["A1"].checked >= 3, by["A1"]
+    assert by["A1"].failed >= 1, by["A1"]                      # 888 无依据
+    assert by["A9"].checked >= 1 and by["A9"].failed >= 1      # 飞书 无依据
+
+
+def test_support_rate_is_finer_than_binary():
+    """**核心**：一格失败时二值是 0，支持率还能反映"错了多少"。"""
+    m = copy.deepcopy(MATERIAL)
+    m["raw_text"] = "卡里就剩两万三，投了五十份简历，用了 Notion。"
+    d = copy.deepcopy(GOOD_DRAFT)
+    d["body"] = "卡里就剩2万3，月入888万，用了 Notion 和飞书。这段经历值得写下来给同样犹豫的人看。"
+    res = A.check_all(ctx(material=m, draft=d))
+    rate = A.support_rate(res)
+    assert rate is not None and 0 < rate < 1, f"支持率应在 (0,1) 之间，实际 {rate}"
+
+
+def test_support_rate_none_when_nothing_checked():
+    """没检查到任何原子时返回 **None**，不能拿 0 冒充"全错"。"""
+    assert A.support_rate([A.Result("X", True)]) is None
+
+
+def test_support_rate_one_when_all_pass():
+    m = copy.deepcopy(MATERIAL)
+    m["raw_text"] = "卡里就剩两万三。"
+    d = copy.deepcopy(GOOD_DRAFT)
+    d["body"] = "卡里就剩两万三。这段经历值得写下来给同样在犹豫要不要迈出这一步的人看。"
+    res = A.check_all(ctx(material=m, draft=d))
+    rate = A.support_rate(res)
+    assert rate is None or rate == 1.0, f"全过时支持率应为 1.0，实际 {rate}"
