@@ -985,26 +985,26 @@ async function startRoughcut(){
   }catch(e){ $("rcFormStatus").textContent = "发起失败：" + e.message; }
 }
 
-function renderActiveJob(j){
-  const p = j.progress || {};
+function renderActiveJob(job){
+  const p = job.progress || {};
   const label = {queued:"排队中", running:"进行中", succeeded:"✅ 完成", failed:"❌ 失败",
-                 canceled:"已取消", interrupted:"⏸ 已中断 · 可继续"}[j.status] || j.status;
+                 canceled:"已取消", interrupted:"⏸ 已中断 · 可继续"}[job.status] || job.status;
   let bar = "";
-  if(j.status === "running" || j.status === "queued"){
+  if(job.status === "running" || job.status === "queued"){
     const pct = (typeof p.pct === "number") ? p.pct : null;
     bar = `<div style="height:6px;background:#eee;border-radius:3px;overflow:hidden;margin:6px 0">
              <div style="height:100%;width:${pct === null ? 8 : Math.max(2,pct)}%;
                          background:var(--brand);transition:width .3s"></div></div>`;
   }
   const done = (p.done_stages || []).join(" → ");
-  const err = j.error ? `<div style="color:#b03a2e;margin-top:6px;white-space:pre-wrap">${esc(j.error)}</div>` : "";
-  const outs = j.outputs || {};
+  const err = job.error ? `<div style="color:#b03a2e;margin-top:6px;white-space:pre-wrap">${esc(job.error)}</div>` : "";
+  const outs = job.outputs || {};
   const links = Object.entries(outs).map(([k,u])=>
     `<a href="${esc(u)}" target="_blank" rel="noopener" style="margin-right:8px">${esc(k.replace("_url",""))}</a>`).join("");
   $("rcActive").innerHTML = `<div style="border:1px solid var(--line);border-radius:8px;padding:10px">
-    <b>任务 #${j.id}</b> · ${esc(label)}${p.stalled ? ' · <span style="color:#b03a2e">疑似卡死</span>' : ""}
+    <b>任务 #${job.id}</b> · ${esc(label)}${p.stalled ? ' · <span style="color:#b03a2e">疑似卡死</span>' : ""}
     <div style="font-size:12px;color:var(--sub);margin-top:4px">
-      ${j.input_name ? "输入：" + esc(j.input_name) + " · " : ""}
+      ${job.input_name ? "输入：" + esc(job.input_name) + " · " : ""}
       ${p.stage ? "当前阶段：" + esc(p.stage) : ""}${typeof p.pct === "number" ? ` (${p.pct}%)` : ""}
       ${p.last_message ? " · " + esc(p.last_message) : ""}
     </div>
@@ -1012,16 +1012,16 @@ function renderActiveJob(j){
     ${done ? `<div style="font-size:11px;color:var(--sub)">已完成：${esc(done)}</div>` : ""}
     ${err}
     ${links ? `<div style="margin-top:6px;font-size:12px">产物：${links}</div>` : ""}
-    ${j.status === "running" || j.status === "queued"
+    ${job.status === "running" || job.status === "queued"
         ? `<div style="margin-top:8px"><button class="ghost sm" id="rcStop" style="font-size:11px">取消任务</button></div>` : ""}
-    ${j.status === "interrupted"
+    ${job.status === "interrupted"
         ? `<div style="margin-top:8px"><button class="sm" id="rcResume" style="font-size:11px">
              ▶ 继续（跳过已完成的阶段）</button></div>` : ""}
   </div>`;
   const stop = $("rcStop");
   if(stop) stop.onclick = async ()=>{
     stop.disabled = true;
-    try{ await j("POST", `/api/jobs/${j.id}/cancel`); }catch(e){ /* 幂等，失败也无所谓 */ }
+    try{ await j("POST", `/api/jobs/${job.id}/cancel`); }catch(e){ /* 幂等，失败也无所谓 */ }
     stopPolling();
     loadJobs();
   };
@@ -1029,9 +1029,15 @@ function renderActiveJob(j){
   if(resume) resume.onclick = async ()=>{
     resume.disabled = true; resume.textContent = "正在继续…";
     try{
-      await j("POST", `/api/jobs/${j.id}/resume`);
-      pollJob(j.id);
-    }catch(e){ resume.disabled=false; resume.textContent="▶ 继续"; alertFallback(e.message); }
+      await j("POST", `/api/jobs/${job.id}/resume`);
+      pollJob(job.id);
+    }catch(e){
+      resume.disabled = false; resume.textContent = "▶ 继续";
+      // 错误要显示在**这个面板**里。以前调 alertFallback 是写到 `#genStatus` 的 ——
+      // 那是生成面板，用户在这一页根本看不到（实测就踩过：按钮点了没反应，也没报错）。
+      $("rcActive").insertAdjacentHTML("beforeend",
+        `<div style="color:#b03a2e;font-size:12px;margin-top:6px">继续失败：${esc(e.message)}</div>`);
+    }
   };
 }
 
