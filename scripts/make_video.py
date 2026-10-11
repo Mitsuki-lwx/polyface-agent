@@ -1,0 +1,325 @@
+"""图文成片（`docs/spec_b1.md` T6）：剪辑单 + 图 + BGM → MP4。
+
+    python scripts/make_video.py plan.json -o 成片.mp4
+
+计划文件（`plan.json`）：
+```json
+{
+  "scenes": [
+    {"seq": 1, "script": "配音台词", "subtitle": "屏幕字幕",
+     "image": "/绝对路径/图.png", "duration_hint": "3s"}
+  ],
+  "bgm": "/绝对路径/bgm.mp3"
+}
+```
+
+**三条设计要点**（都在 `docs/spec_b1.md` 里写了理由）：
+
+1. 分镜时长由**配音实际说了多久**决定，`duration_hint` 只是提示
+2. 转场是重叠的，而**配音不能重叠** —— 所以画面段要多给一个转场时长，
+   否则成片越往后越比配音短，字幕全错位
+3. TTS 与 librosa 都是**可选依赖**：缺了降级（无声 / 不卡点），不整体失败
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "python-service"))
+
+from app.pipeline import beats as bt  # noqa: E402
+from app.pipeline import checkpoint as ck  # noqa: E402
+from app.pipeline import roughcut as rc  # noqa: E402
+from app.pipeline import timeline as tlib  # noqa: E402
+from app.pipeline import tts  # noqa: E402
+from app.pipeline import video as V  # noqa: E402
+from app.pipeline.runlog import RunLog  # noqa: E402
+from roughcut import setup_output_encoding  # noqa: E402
+
+EXIT_OK, EXIT_ERR = 0, 1
+
+_STAGE_DEPS: dict[str, tuple[str, ...]] = {
+    "配音": (),                       # 只取决于文本
+    "画面": (),                       # 只取决于图与时长
+    "拼接": (),
+    "混音": ("bgm_volume_db", "bgm_fade_out"),
+    "烧字幕": ("font", "font_size", "text_color", "outline", "margin_v", "burn_subs"),
+}
+
+
+class PlanError(ValueError):
+    """计划文件不合法。**必须指出是第几个分镜** —— 一句"缺图"没法让人改。"""
+
+
+def load_plan(path: Path) -> dict:
+    if not path.is_file():
+        raise PlanError(f"计划文件不存在：{path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:                                   # noqa: BLE001
+        raise PlanError(f"计划不是合法 JSON：{e}") from None
+    scenes = data.get("scenes")
+    if not isinstance(scenes, list) or not scenes:
+        raise PlanError("计划里至少要有一个分镜（scenes 不能为空）")
+
+    missing: list[int] = []
+    for i, sc in enumerate(scenes, 1):
+        if not isinstance(sc, dict):
+            raise PlanError(f"第 {i} 个分镜格式不对：{sc!r}")
+        if not str(sc.get("script", "")).strip() and not str(sc.get("subtitle", "")).strip():
+            raise PlanError(f"第 {i} 个分镜既没有 script 也没有 subtitle —— 那它是什么？")
+        img = str(sc.get("image", "")).strip()
+        if not img or not Path(img).is_file():
+            missing.append(i)
+    if missing:
+        # **一次把缺的都说了**，别让人改一个跑一次
+        raise PlanError(f"第 {missing} 个分镜没有可用的图片（image 缺失或文件不在）")
+    return data
+
+
+def build_parser(base: rc.RoughcutParams) -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="make_video.py",
+                                description="图文成片：剪辑单 + 图 + BGM → MP4")
+    p.add_argument("plan", help="计划 JSON")
+    p.add_argument("-o", "--output", required=True, help="成片路径")
+    p.add_argument("--workdir", default="", help="中间件目录（断点续跑靠它）")
+    p.add_argument("--events", default="")
+    p.add_argument("--level", default="normal", choices=("quiet", "normal", "verbose"))
+    p.add_argument("--strategy", default="voice_first", choices=("voice_first", "beat_first"),
+                   help="对齐策略：配音优先（默认，脚本不动）/ 卡点优先（改时长）")
+    p.add_argument("--transition", type=float, default=0.4)
+    p.add_argument("--zoom", type=float, default=1.08, help="缓动强度，1.0 = 静止")
+    p.add_argument("--width", type=int, default=V.DEFAULT_SIZE[0])
+    p.add_argument("--height", type=int, default=V.DEFAULT_SIZE[1])
+    p.add_argument("--fps", type=int, default=V.DEFAULT_FPS)
+    p.add_argument("--beat-tolerance", type=float, default=bt.DEFAULT_TOLERANCE)
+    p.add_argument("--bgm-volume", dest="bgm_volume_db", type=float, default=-18.0)
+    p.add_argument("--bgm-fade-out", dest="bgm_fade_out", type=float, default=1.5)
+    p.add_argument("--no-burn", action="store_true")
+    p.add_argument("--dry-run", action="store_true", help="只打印会做成什么样")
+    p.add_argument("--font", default=base.font)
+    p.add_argument("--font-size", dest="font_size", type=int, default=base.font_size)
+    p.add_argument("--text-color", dest="text_color", default=base.text_color)
+    p.add_argument("--outline", type=int, default=base.outline)
+    p.add_argument("--margin-v", dest="margin_v", type=int, default=base.margin_v)
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    setup_output_encoding()
+    args = build_parser(rc.RoughcutParams()).parse_args(argv)
+    log = RunLog(sink=Path(args.events) if args.events else None, level=args.level)
+
+    try:
+        plan = load_plan(Path(args.plan))
+    except PlanError as e:
+        print(f"[错误] {e}", file=sys.stderr)
+        return EXIT_ERR
+
+    scenes = plan["scenes"]
+    out = Path(args.output)
+    work = Path(args.workdir) if args.workdir else out.with_suffix(out.suffix + ".work")
+    # 两个目录都要先建：没有配音时没人会顺带建 work（实测漏过 —— 缺 TTS 那条路径直接失败）
+    work.mkdir(parents=True, exist_ok=True)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    size = (args.width, args.height)
+    params = rc.RoughcutParams().merged(
+        font=args.font, font_size=args.font_size, text_color=args.text_color,
+        outline=args.outline, margin_v=args.margin_v,
+        burn_subs=False if args.no_burn else None)
+
+    # ---- 1) 配音：拿到每个分镜的**实际时长**（这是后续一切的基础）----
+    durations: list[float] = []
+    voice_parts: list[Path] = []
+    tts_ok = tts.is_available()
+    print(f"配音：{'可用（' + str(tts.describe()['backend']) + '）' if tts_ok else '不可用 → 降级为无声 + 字幕'}")
+    if not tts_ok:
+        print(f"  {tts.INSTALL_HINT}")
+    for i, sc in enumerate(scenes, 1):
+        wav = work / f"voice-{i:03d}.wav"
+        if tts_ok:
+            try:
+                d = tts.synthesize(str(sc.get("script") or sc.get("subtitle") or ""), wav)
+            except tts.TtsUnavailable as e:
+                print(f"  [warn] 第 {i} 个分镜配音失败，改用字幕时长：{e}")
+                tts_ok = False
+                d = _hint_seconds(sc, 3.0)
+                wav = None
+        else:
+            d = _hint_seconds(sc, 3.0)
+            wav = None
+        durations.append(d)
+        if wav:
+            voice_parts.append(wav)
+        print(f"  分镜 {i}: {d:.2f}s" + ("" if wav else "（无配音）"))
+
+    # ---- 2) 对齐策略 ----
+    bgm = str(plan.get("bgm") or "").strip() or None
+    bgm_offset, ratio, ratio_before = 0.0, 0.0, 0.0
+    final = list(durations)
+    if bgm and bt.is_available():
+        try:
+            bp = work / "bgm-beats.json"
+            if bp.is_file():
+                beats_list = json.loads(bp.read_text(encoding="utf-8"))
+            else:
+                beats_list = bt.detect(bgm)
+                bp.write_text(json.dumps(beats_list), encoding="utf-8")
+            bounds = [round(sum(durations[:i]), 3) for i in range(1, len(durations) + 1)]
+            if args.strategy == "beat_first":
+                final = bt.snap_durations(durations, beats_list,
+                                          tolerance=args.beat_tolerance)
+                nb = [round(sum(final[:i]), 3) for i in range(1, len(final) + 1)]
+                ratio = bt.aligned_ratio(nb, beats_list, tolerance=args.beat_tolerance)
+                bgm_offset = 0.0
+            else:
+                # 平移**前**的对齐率也记下来 —— 否则"卡点到底有没有起作用"看不出来
+                ratio_before = bt.aligned_ratio(bounds, beats_list,
+                                                tolerance=args.beat_tolerance)
+                bgm_offset, ratio = bt.best_offset(bounds, beats_list,
+                                                   tolerance=args.beat_tolerance)
+                # 正偏移 = BGM 晚开始（开头静音），换算成"跳过 BGM 开头"
+                if bgm_offset > 0:
+                    bgm_offset = -bgm_offset
+            print(f"BGM：{len(beats_list)} 个节拍 · 策略 {args.strategy} · "
+                  f"偏移 {bgm_offset:+.2f}s · 对齐 {ratio_before:.0%} → {ratio:.0%}")
+        except bt.BeatsUnavailable as e:
+            print(f"[warn] {e}")
+    elif bgm:
+        print(f"[warn] {bt.INSTALL_HINT}")
+
+    if args.strategy == "beat_first":
+        durations = final
+    total = round(sum(durations), 3)
+    print(f"成片预计 {total:.2f}s（{len(durations)} 个分镜）")
+
+    if args.dry_run:
+        print("\n[dry-run] 未产出任何文件。")
+        return EXIT_OK
+
+    # ---- 3) 画面 ----
+    seg_durs = V.segment_durations(durations, args.transition)
+    segs: list[Path] = []
+    for i, (sc, sd) in enumerate(zip(scenes, seg_durs), 1):
+        seg = work / f"scene-{i:03d}.mp4"
+        with log.stage(f"画面:{i}") as r:
+            V.ken_burns(sc["image"], seg, sd, zoom=args.zoom, size=size, fps=args.fps,
+                        on_progress=r.progress)
+            r.done(f"{sd:.2f}s")
+        segs.append(seg)
+
+    # ---- 4) 字幕（成片时间轴，由**最终**分镜时长推出）----
+    cursor, sub_segments = 0.0, []
+    for sc, d in zip(scenes, durations):
+        text = str(sc.get("subtitle") or "").strip()
+        if text:
+            sub_segments.append({"start": round(cursor, 3),
+                                 "end": round(cursor + d - 0.05, 3), "text": text})
+        cursor += d
+    srt = out.with_suffix(".srt")
+    srt.write_text(rc.segments_to_srt(sub_segments), encoding="utf-8")
+
+    # ---- 5) 拼接 → 无声成片 ----
+    silent = work / "silent.mp4"
+    with log.stage("拼接") as r:
+        real = V.xfade_chain(segs, silent, args.transition, size=size, fps=args.fps,
+                             on_progress=r.progress)
+        r.done(f"{real:.2f}s")
+
+    # ---- 6) 音轨 ----
+    audio = work / "audio.m4a"
+    with log.stage("混音") as r:
+        if voice_parts:
+            voice = work / "voice.wav"
+            _concat_wavs(voice_parts, durations, voice, total)
+            V.mix_audio(voice, audio, total=real, bgm=bgm, bgm_offset=bgm_offset,
+                        bgm_volume_db=args.bgm_volume_db, bgm_fade_out=args.bgm_fade_out,
+                        on_raw=log.raw)
+        else:
+            _silent_track(audio, real)
+        r.done("有声" if voice_parts else "无声")
+
+    # ---- 7) 合成（烧字幕 + 挂音轨）----
+    with log.stage("烧字幕" if params.burn_subs else "合成") as r:
+        V.mux(silent, audio, out, srt if params.burn_subs else None, params,
+              on_progress=r.progress, on_raw=log.raw)
+        r.done(str(out.name))
+
+    # ---- 8) 初剪记录 ----
+    record = {
+        "version": 1,
+        "strategy": args.strategy,
+        "transition_sec": args.transition,
+        "zoom": args.zoom,
+        "size": {"width": size[0], "height": size[1], "fps": args.fps},
+        "tts": tts.describe(),
+        "beats": bt.describe(),
+        "bgm": bgm,
+        "bgm_offset_sec": bgm_offset,
+        "aligned_ratio": ratio,
+        "aligned_ratio_before_offset": ratio_before,
+        "beat_tolerance_sec": args.beat_tolerance,
+        "scenes": [
+            {"seq": i + 1, "seconds": round(d, 3),
+             "segment_seconds": round(seg_durs[i], 3),
+             "image": scenes[i]["image"],
+             "subtitle": str(scenes[i].get("subtitle") or ""),
+             "has_voice": i < len(voice_parts)}
+            for i, d in enumerate(durations)
+        ],
+        "total_sec": total,
+        "film_sec": real,
+    }
+    (out.with_suffix(".plan.json")).write_text(
+        json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    print(f"\n成片：{out}  {real:.2f}s")
+    print(f"记录：{out.with_suffix('.plan.json')}")
+    if abs(real - total) > 0.35:
+        print(f"  ⚠️ 与预计差 {abs(real - total):.2f}s —— 超过容差", file=sys.stderr)
+    return EXIT_OK
+
+
+def _hint_seconds(sc: dict, default: float) -> float:
+    """没有配音时用 `duration_hint` 兜底（如 "3s" / "3.5秒" / 3）。"""
+    raw = str(sc.get("duration_hint") or "").strip()
+    num = "".join(ch for ch in raw if ch.isdigit() or ch == ".")
+    try:
+        v = float(num)
+        return v if v > 0.2 else default
+    except ValueError:
+        return default
+
+
+def _concat_wavs(parts: list[Path], durations: list[float], out: Path, total: float) -> None:
+    """按**分镜时长**把配音接起来 —— 每段后面补足到该分镜的时长。
+
+    补足是必要的：`beat_first` 会把某段拉长，不补的话音轨会比画面短，后面全错位。
+    """
+    import wave
+    with wave.open(str(out), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+        for p, d in zip(parts, durations):
+            with wave.open(str(p), "rb") as r:
+                frames = r.readframes(r.getnframes())
+            w.writeframes(frames)
+            have = len(frames) // 2 / 16000.0
+            pad = max(0.0, d - have)
+            if pad > 0:
+                w.writeframes(b"\x00\x00" * int(16000 * pad))
+
+
+def _silent_track(out: Path, total: float) -> None:
+    code, err = rc._run_ffmpeg([rc._ffmpeg_bin("ffmpeg"), "-y", "-v", "error",
+                                "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+                                "-t", f"{total:.3f}", "-c:a", "aac", "-b:a", "128k", str(out)])
+    if code != 0:
+        raise V.VideoError(f"生成静音轨失败：{err.strip()[:200]}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,187 @@
+"""T6 图文成片：计划校验 + 整条管线（`docs/checklist_b1.md` §3 §4 §7）。
+
+端到端那两条会真跑 ffmpeg（小尺寸，几秒）。TTS 缺失时**应当照样通过** ——
+这正是 §3 要验的降级行为。
+"""
+from __future__ import annotations
+
+import importlib.util
+import json
+import sys
+import wave
+from pathlib import Path
+
+import pytest
+
+from app.pipeline import roughcut as rc, tts
+
+SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
+
+
+def _load(name: str, filename: str):
+    if str(SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS))
+    spec = importlib.util.spec_from_file_location(name, SCRIPTS / filename)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+MV = _load("polyface_make_video", "make_video.py")
+
+pytestmark = pytest.mark.skipif(not rc.has_ffmpeg(), reason="没有 ffmpeg")
+
+
+def _img(path: Path, src: str = "testsrc2=s=640x1136") -> Path:
+    rc._run_ffmpeg([rc._ffmpeg_bin("ffmpeg"), "-y", "-v", "error", "-f", "lavfi",
+                    "-i", src, "-frames:v", "1", str(path)])
+    return path
+
+
+def _plan(tmp_path: Path, n: int = 2, bgm: bool = False) -> Path:
+    scenes = []
+    for i in range(n):
+        scenes.append({"seq": i + 1, "script": f"第{i+1}句台词。",
+                       "subtitle": f"第{i+1}条字幕",
+                       "image": str(_img(tmp_path / f"i{i}.png",
+                                         "testsrc2=s=640x1136" if i % 2 == 0
+                                         else "smptebars=s=640x1136"))})
+    plan = {"scenes": scenes}
+    if bgm:
+        plan["bgm"] = str(_click_track(tmp_path / "bgm.wav"))
+    p = tmp_path / "plan.json"
+    p.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+    return p
+
+
+def _click_track(path: Path, interval: float = 1.0, n: int = 30) -> Path:
+    """60 BPM 的点击轨（每 1s 一下）—— 节拍稀疏一点，对齐率才有区分度。"""
+    import math
+    import struct
+    sr = 22050
+    data = bytearray()
+    for _ in range(n):
+        data += b"\x00\x00" * int(sr * (interval - 0.08))
+        for k in range(int(sr * 0.08)):
+            data += struct.pack("<h", int(12000 * math.sin(2 * math.pi * 1000 * k / sr)))
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
+        w.writeframes(bytes(data))
+    return path
+
+
+# ---------------- 计划校验：必须指出是第几个分镜 ----------------
+
+def test_rejects_missing_images_and_names_the_indices(tmp_path):
+    plan = _plan(tmp_path, 3)
+    data = json.loads(plan.read_text(encoding="utf-8"))
+    data["scenes"][1]["image"] = str(tmp_path / "没有.png")     # 第 2 个缺图
+    data["scenes"][2]["image"] = ""                             # 第 3 个也没图
+    plan.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(MV.PlanError) as e:
+        MV.load_plan(plan)
+    msg = str(e.value)
+    assert "[2, 3]" in msg, f"必须一次说清缺哪几个：{msg}"
+
+
+def test_rejects_empty_scenes(tmp_path):
+    p = tmp_path / "p.json"
+    p.write_text('{"scenes": []}', encoding="utf-8")
+    with pytest.raises(MV.PlanError, match="至少要有一个分镜"):
+        MV.load_plan(p)
+
+
+def test_rejects_scene_without_any_text(tmp_path):
+    plan = _plan(tmp_path, 1)
+    data = json.loads(plan.read_text(encoding="utf-8"))
+    data["scenes"][0]["script"] = ""
+    data["scenes"][0]["subtitle"] = ""
+    plan.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(MV.PlanError, match="第 1 个分镜"):
+        MV.load_plan(plan)
+
+
+def test_rejects_bad_json(tmp_path):
+    p = tmp_path / "p.json"
+    p.write_text("{不是 json", encoding="utf-8")
+    with pytest.raises(MV.PlanError, match="JSON"):
+        MV.load_plan(p)
+
+
+# ---------------- duration_hint 兜底 ----------------
+
+def test_hint_seconds_parses_common_forms():
+    assert MV._hint_seconds({"duration_hint": "3s"}, 9) == 3.0
+    assert MV._hint_seconds({"duration_hint": "3.5秒"}, 9) == 3.5
+    assert MV._hint_seconds({"duration_hint": "约 4 秒"}, 9) == 4.0
+    assert MV._hint_seconds({"duration_hint": "很久"}, 9) == 9.0      # 解析不了 → 兜底
+    assert MV._hint_seconds({}, 9) == 9.0
+
+
+# ---------------- 配音拼接：按分镜时长补足 ----------------
+
+def test_concat_wavs_pads_to_scene_durations(tmp_path):
+    """`beat_first` 会把某段拉长 —— 不补的话音轨比画面短，后面全错位。"""
+    def wav(p: Path, sec: float):
+        with wave.open(str(p), "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+            w.writeframes(b"\x00\x00" * int(16000 * sec))
+        return p
+
+    a = wav(tmp_path / "a.wav", 1.0)
+    b = wav(tmp_path / "b.wav", 1.0)
+    out = tmp_path / "o.wav"
+    MV._concat_wavs([a, b], [2.0, 3.0], out, 5.0)      # 分镜要 2s / 3s，配音只有 1s / 1s
+    assert tts.wav_seconds(out) == pytest.approx(5.0, abs=0.05)
+
+
+# ---------------- 整条管线 ----------------
+
+@pytest.mark.parametrize("strategy", ["voice_first", "beat_first"])
+def test_full_pipeline_produces_film_and_record(tmp_path, strategy):
+    plan = _plan(tmp_path, 3, bgm=True)
+    out = tmp_path / "film.mp4"
+    code = MV.main([str(plan), "-o", str(out), "--workdir", str(tmp_path / "w"),
+                    "--width", "180", "--height", "320", "--fps", "12",
+                    "--strategy", strategy, "--level", "quiet"])
+    assert code == 0
+    assert out.is_file() and rc.probe(out)["duration"] > 1.0
+
+    rec = json.loads(out.with_suffix(".plan.json").read_text(encoding="utf-8"))
+    assert rec["strategy"] == strategy
+    assert len(rec["scenes"]) == 3
+    # 记录里的时长必须与成片对得上（checklist §7）
+    assert rec["film_sec"] == pytest.approx(rc.probe(out)["duration"], abs=0.35)
+    assert rec["total_sec"] == pytest.approx(sum(s["seconds"] for s in rec["scenes"]), abs=0.05)
+
+
+def test_pipeline_survives_without_tts(tmp_path, monkeypatch):
+    """**没装 TTS 也要出片**（无声 + 字幕）—— checklist §3 的核心。"""
+    monkeypatch.setenv("POLYFACE_TTS", "none")
+    plan = _plan(tmp_path, 2)
+    out = tmp_path / "film.mp4"
+    code = MV.main([str(plan), "-o", str(out), "--workdir", str(tmp_path / "w"),
+                    "--width", "180", "--height", "320", "--fps", "12", "--level", "quiet"])
+    assert code == 0, "缺 TTS 不该让成片失败"
+    assert out.is_file()
+    rec = json.loads(out.with_suffix(".plan.json").read_text(encoding="utf-8"))
+    assert rec["tts"]["available"] is False
+    assert rec["tts"]["hint"], "降级时必须给出安装指引"
+    assert all(not s["has_voice"] for s in rec["scenes"])
+    assert all(s["seconds"] > 0 for s in rec["scenes"]), "没有配音时用 duration_hint 兜底"
+
+
+def test_pipeline_survives_without_librosa(tmp_path, monkeypatch):
+    """没有 librosa → 跳过卡点并**说明未做**，成片照出。"""
+    monkeypatch.setenv("POLYFACE_BEATS", "none")
+    plan = _plan(tmp_path, 2, bgm=True)
+    out = tmp_path / "film.mp4"
+    code = MV.main([str(plan), "-o", str(out), "--workdir", str(tmp_path / "w"),
+                    "--width", "180", "--height", "320", "--fps", "12", "--level", "quiet"])
+    assert code == 0
+    rec = json.loads(out.with_suffix(".plan.json").read_text(encoding="utf-8"))
+    assert rec["beats"]["available"] is False
+    assert rec["beats"]["hint"]
+    assert rec["aligned_ratio"] == 0.0

@@ -98,8 +98,7 @@ def xfade_chain(segments: list[Path], out: Path, transition: float, *,
             raise VideoError(f"单段输出失败：{err.strip()[:200]}")
         return round(rc.probe(out, require_audio=False)["duration"], 3)
 
-    # 转场不能长过最短段的一半，否则 xfade 会报"时长不足"
-    t = max(0.05, min(float(transition), min(durs) / 2 - 0.01))
+    t = _clamp_transition(transition, durs)
 
     norm = [f"[{i}:v]scale={w}:{h},fps={fps},format=yuv420p[n{i}]"
             for i in range(len(segments))]
@@ -126,11 +125,116 @@ def xfade_chain(segments: list[Path], out: Path, transition: float, *,
     return round(rc.probe(out, require_audio=False)["duration"], 3)
 
 
+def segment_durations(scene_seconds: list[float], transition: float) -> list[float]:
+    """分镜时长 → **画面段**时长（转场重叠的补偿）。
+
+    为什么需要它：`xfade` 让成片比各段之和短 `(n-1)×转场`。而**配音不能重叠**
+    （两句话叠在一起就听不清了）—— 直接拼会让成片越往后越比配音短，最后几条字幕全错位。
+
+    做法：每段多给一个转场时长（最后一段除外）。重叠之后总长正好 = 配音总长。
+    """
+    if not scene_seconds:
+        return []
+    if len(scene_seconds) == 1:
+        return [round(scene_seconds[0], 3)]
+    t = _clamp_transition(transition, scene_seconds)
+    return [round(d + t, 3) for d in scene_seconds[:-1]] + [round(scene_seconds[-1], 3)]
+
+
+def _clamp_transition(transition: float, durations: list[float]) -> float:
+    """转场不能长过最短段的一半，否则 xfade 直接报错 —— 先自己夹住。"""
+    if not durations:
+        return max(0.05, float(transition))
+    return max(0.05, min(float(transition), min(durations) / 2 - 0.01))
+
+
 def expected_total(durations: list[float], transition: float) -> float:
     """转场拼接后的理论时长。**与 `xfade_chain` 用同一个式子** —— 两边各算一遍必然分叉。"""
     if not durations:
         return 0.0
     if len(durations) == 1:
         return round(durations[0], 3)
-    t = max(0.05, min(float(transition), min(durations) / 2 - 0.01))
+    t = _clamp_transition(transition, durations)
     return round(sum(durations) - (len(durations) - 1) * t, 3)
+
+
+def mix_audio(voice_wav: str | Path, out: str | Path, *, total: float,
+              bgm: str | Path | None = None, bgm_offset: float = 0.0,
+              bgm_volume_db: float = -18.0, bgm_fade_out: float = 1.5,
+              on_raw=None) -> None:
+    """配音 + BGM → 一条音轨。
+
+    - `bgm_offset < 0`：**跳过 BGM 开头** |offset| 秒（音乐前奏通常不在重拍上）
+    - `bgm_offset > 0`：BGM 延迟 offset 秒开始（开头留静音 —— 所以上游尽量不选正偏移）
+    - BGM 比成片短时**循环**；结尾淡出
+    - `total` 之后一律截断：音轨不能长过画面
+    """
+    rc.require_ffmpeg()
+    voice = Path(voice_wav)
+    if not voice.is_file():
+        raise VideoError(f"配音文件不存在：{voice}")
+    if bgm is None:
+        code, err = rc._run_ffmpeg([rc._ffmpeg_bin("ffmpeg"), "-y", "-v", "error",
+                                    "-i", str(voice), "-t", f"{total:.3f}",
+                                    "-c:a", "aac", "-b:a", "192k", str(out)], on_raw=on_raw)
+        if code != 0:
+            raise VideoError(f"音轨输出失败：{err.strip()[:200]}")
+        return
+
+    bgm_p = Path(bgm)
+    if not bgm_p.is_file():
+        raise VideoError(f"BGM 不存在：{bgm_p}")
+
+    fade = max(0.0, min(float(bgm_fade_out), total / 2))
+    chain = [f"volume={float(bgm_volume_db)}dB"]
+    if bgm_offset < 0:
+        chain.append(f"atrim=start={abs(float(bgm_offset)):.3f}")
+    chain.append("asetpts=PTS-STARTPTS")
+    if bgm_offset > 0:
+        chain.append(f"adelay={int(float(bgm_offset) * 1000)}|{int(float(bgm_offset) * 1000)}")
+    if fade > 0:
+        chain.append(f"afade=t=out:st={max(0.0, total - fade):.3f}:d={fade:.3f}")
+    bgm_chain = ",".join(chain)
+
+    filt = (f"[1:a]{bgm_chain}[bg];"
+            f"[0:a]aresample=48000,asetpts=PTS-STARTPTS[vo];"
+            f"[bg]aresample=48000[bg2];"
+            # duration=first：以配音长度为基准，BGM 不会把成片拖长
+            f"[vo][bg2]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]")
+    cmd = [rc._ffmpeg_bin("ffmpeg"), "-y", "-v", "error",
+           "-i", str(voice), "-stream_loop", "-1", "-i", str(bgm_p),
+           "-filter_complex", filt, "-map", "[a]", "-t", f"{total:.3f}",
+           "-c:a", "aac", "-b:a", "192k", str(out)]
+    code, err = rc._run_ffmpeg(cmd, on_raw=on_raw)
+    if code != 0:
+        raise VideoError(f"混音失败：{err.strip()[:300]}")
+
+
+def mux(video: str | Path, audio: str | Path, out: str | Path,
+        srt: str | Path | None, params, *, crf: int = 20, preset: str = "veryfast",
+        on_progress=None, on_raw=None) -> None:
+    """画面 + 音轨（+ 可选烧字幕）→ 最终成片。
+
+    烧字幕复用 `roughcut._subtitle_vf` —— 它处理了"滤镜串里的 Windows 盘符与空格"
+    那个坑（把 cwd 切到字幕目录、滤镜里只给文件名），不重新踩一遍。
+    """
+    rc.require_ffmpeg()
+    # 烧字幕那条路会把 cwd 切到字幕目录（`_subtitle_vf` 的设计：滤镜串里只放文件名，
+    # 绕开 Windows 盘符/空格的坑）—— 于是所有**相对路径都会失效**。全部先绝对化。
+    vid, aud, dst = Path(video).resolve(), Path(audio).resolve(), Path(out).resolve()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    base = [rc._ffmpeg_bin("ffmpeg"), "-y", "-v", "error",
+            "-i", str(vid), "-i", str(aud)]
+    if srt is not None and getattr(params, "burn_subs", False):
+        vf, cwd = rc._subtitle_vf(Path(srt).resolve(), params)
+        cmd = base + ["-vf", vf, "-map", "0:v", "-map", "1:a",
+                      "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+                      "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+                      "-shortest", str(dst)]
+        code, err = rc._run_ffmpeg(cmd, cwd=cwd, on_progress=on_progress, on_raw=on_raw)
+    else:
+        cmd = base + ["-map", "0:v", "-map", "1:a",
+                      "-c:v", "copy", "-c:a", "copy", "-shortest", str(dst)]
+        code, err = rc._run_ffmpeg(cmd, on_progress=on_progress, on_raw=on_raw)
+    if code != 0:
+        raise VideoError(f"合成失败：{err.strip()[:300]}")
