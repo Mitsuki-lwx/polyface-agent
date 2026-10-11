@@ -69,7 +69,10 @@ def test_no_tmp_leftover_counted(tmp_path):
 
 
 def test_illegal_names_rejected(tmp_path):
-    for bad in ("../evil", "a/b", "a\\b", "", "  ", ".", "..", "x" * 65):
+    #  之类是 **Windows 文件名非法字符** —— 不挡的话落盘会静默失败
+    # （实测踩过：用 "画面:1" 当阶段名，done/ 一个文件都没写出来，续跑当然全不命中）
+    for bad in ("../evil", "a/b", "a\\b", "", "  ", ".", "..", "x" * 65,
+                "画面:1", "a*b", "a?b", 'a"b', "a<b", "a>b", "a|b"):
         with pytest.raises(ck.UnitNameError):
             ck.write_unit(tmp_path, "platform", bad, {})
 

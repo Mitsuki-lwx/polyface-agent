@@ -141,6 +141,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {tts.INSTALL_HINT}")
     for i, sc in enumerate(scenes, 1):
         wav = work / f"voice-{i:03d}.wav"
+        # 逐分镜落盘：中断后重跑不用把已经配好的再合成一遍
+        vstage = f"配音-{i}"
+        book = ck.DoneBook(work, params, Path(sc["image"]), {vstage: ()},
+                           extra={"text": str(sc.get("script") or sc.get("subtitle") or "")})
+        _u = book.get(vstage)
+        if _u is not None and wav.is_file():
+            durations.append(float(_u["seconds"]))
+            voice_parts.append(wav)
+            print(f"  分镜 {i}: {_u['seconds']:.2f}s（续跑，配音已在）")
+            continue
         if tts_ok:
             try:
                 d = tts.synthesize(str(sc.get("script") or sc.get("subtitle") or ""), wav)
@@ -155,6 +165,7 @@ def main(argv: list[str] | None = None) -> int:
         durations.append(d)
         if wav:
             voice_parts.append(wav)
+            book.put(vstage, seconds=round(d, 3), wav=str(wav))
         print(f"  分镜 {i}: {d:.2f}s" + ("" if wav else "（无配音）"))
 
     # ---- 2) 对齐策略 ----
@@ -206,10 +217,20 @@ def main(argv: list[str] | None = None) -> int:
     segs: list[Path] = []
     for i, (sc, sd) in enumerate(zip(scenes, seg_durs), 1):
         seg = work / f"scene-{i:03d}.mp4"
-        with log.stage(f"画面:{i}") as r:
-            V.ken_burns(sc["image"], seg, sd, zoom=args.zoom, size=size, fps=args.fps,
-                        on_progress=r.progress)
-            r.done(f"{sd:.2f}s")
+        # **分镜级落盘**：跑完一个分镜就记一个，中断后只补没做完的
+        sstage = f"画面-{i}"
+        book = ck.DoneBook(work, params, Path(sc["image"]), {sstage: ()},
+                           extra={"seconds": round(sd, 3), "zoom": args.zoom,
+                                  "size": list(size), "fps": args.fps})
+        _u = book.get(sstage)
+        if _u is not None and seg.is_file():
+            print(f"[续跑] 跳过 画面:{i}（已完成）")
+        else:
+            with log.stage(f"画面:{i}") as r:
+                V.ken_burns(sc["image"], seg, sd, zoom=args.zoom, size=size, fps=args.fps,
+                            on_progress=r.progress)
+                r.done(f"{sd:.2f}s")
+            book.put(sstage, out=str(seg))
         segs.append(seg)
 
     # ---- 4) 字幕（成片时间轴，由**最终**分镜时长推出）----

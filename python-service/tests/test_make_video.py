@@ -185,3 +185,65 @@ def test_pipeline_survives_without_librosa(tmp_path, monkeypatch):
     assert rec["beats"]["available"] is False
     assert rec["beats"]["hint"]
     assert rec["aligned_ratio"] == 0.0
+
+
+@pytest.mark.skipif(not tts.is_available(), reason="本机没有可用 TTS")
+def test_scene_duration_comes_from_voice_not_from_hint(tmp_path):
+    """**分镜时长必须等于配音的实际时长**，不是 `duration_hint`（spec 关键决定一）。
+
+    这条是补的：原先只断言"时长 > 0"，于是把"时长改由 duration_hint 决定"这个变异
+    **注入后测试全绿** —— 变异测试就是这么发现测试没咬住重点的。
+    """
+    import wave
+    plan = _plan(tmp_path, 2)
+    data = json.loads(plan.read_text(encoding="utf-8"))
+    # 故意把提示值写成一个**明显不对**的数：真按它算，断言必红
+    for sc in data["scenes"]:
+        sc["duration_hint"] = "99s"
+    plan.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    out = tmp_path / "film.mp4"
+    assert MV.main([str(plan), "-o", str(out), "--workdir", str(tmp_path / "w"),
+                    "--width", "180", "--height", "320", "--fps", "12",
+                    "--level", "quiet"]) == 0
+
+    rec = json.loads(out.with_suffix(".plan.json").read_text(encoding="utf-8"))
+    for i, sc in enumerate(rec["scenes"], 1):
+        wav = tmp_path / "w" / f"voice-{i:03d}.wav"
+        with wave.open(str(wav), "rb") as w:
+            real = round(w.getnframes() / float(w.getframerate()), 3)
+        assert sc["seconds"] == pytest.approx(real, abs=0.01), \
+            f"第 {i} 个分镜的时长应当来自配音（{real}s），不是提示值（{sc['seconds']}s）"
+        assert sc["seconds"] < 50, "提示值 99s 显然没有被采用"
+
+
+def test_second_run_resumes_and_skips_finished_scenes(tmp_path, monkeypatch):
+    """**分镜级落盘**：第二次跑同一个工作目录，已完成的分镜不该重做。
+
+    这条是补的 —— 原先 `make_video.py` 引了 `ck` 却**从没用过 DoneBook**，
+    "分镜级落盘"根本没实现，而当时没有任何测试会发现。端到端要真杀进程才能发现，
+    这里用"数调用次数"把它钉死。
+    """
+    plan = _plan(tmp_path, 3)
+    work = tmp_path / "w"
+    out = tmp_path / "film.mp4"
+    argv = [str(plan), "-o", str(out), "--workdir", str(work),
+            "--width", "180", "--height", "320", "--fps", "12", "--level", "quiet"]
+    assert MV.main(argv) == 0
+
+    calls = {"n": 0}
+    real = MV.V.ken_burns
+
+    def counting(*a, **kw):
+        calls["n"] += 1
+        return real(*a, **kw)
+
+    monkeypatch.setattr(MV.V, "ken_burns", counting)
+    assert MV.main(argv) == 0
+    assert calls["n"] == 0, f"已完成的画面段不该重做，实际调了 {calls['n']} 次"
+
+    # 删掉一个分镜的段 → 只有它应当被重做
+    (work / "scene-002.mp4").unlink()
+    calls["n"] = 0
+    assert MV.main(argv) == 0
+    assert calls["n"] == 1, f"只该补第 2 个分镜，实际 {calls['n']} 次"
