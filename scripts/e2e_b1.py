@@ -68,6 +68,18 @@ def upload(path: Path, name: str) -> dict:
 
 
 def make_stills(n: int) -> list[Path]:
+    """优先用**真照片**（`scripts/fetch_sample_media.py` 抓的）。
+
+    合成花纹图证明不了"真素材也能处理" —— 真照片有真实的亮度分布与细节，
+    缩放/缓动/编码的行为都不一样。
+    """
+    sample = ROOT / ".workbuddy-ai" / "sample"
+    real = sorted(sample.glob("photo*.jpg"))
+    if len(real) >= n:
+        print(f"   用真照片（{sample}）")
+        return real[:n]
+    print(f"   [warn] 真照片不够（{len(real)}/{n}），回退到合成图"
+          f" —— 想用真素材：python scripts/fetch_sample_media.py --photos {n}")
     WORK.mkdir(parents=True, exist_ok=True)
     srcs = ["testsrc2=s=1080x1920", "smptebars=s=1080x1920", "mandelbrot=s=1080x1920",
             "testsrc=s=1080x1920", "rgbtestsrc=s=1080x1920"]
@@ -81,7 +93,16 @@ def make_stills(n: int) -> list[Path]:
 
 
 def make_bgm(interval: float = 1.0, n: int = 40) -> Path:
-    """60 BPM 点击轨 —— 节拍**稀疏**一点，两种策略的对齐率才有区分度。"""
+    """优先用**真音乐**（有真节拍、真和声）。
+
+    点击轨规整得不像话 —— 用它测出来的对齐率没有意义。真音乐实测 137 BPM、
+    间隔标准差 0.021s，是真正在测节拍检测。
+    """
+    sample = ROOT / ".workbuddy-ai" / "sample"
+    real = sorted(sample.glob("music-*.mp3"))
+    if real:
+        print(f"   用真音乐：{real[0].name}")
+        return real[0]
     p = WORK / "bgm.wav"
     sr = 22050
     data = bytearray()
