@@ -20,6 +20,7 @@ from .. import dna as dna_lib
 from .. import llm, trace
 from ..config import get_settings
 from ..pipeline.understand import run_understand
+from ..pipeline import checkpoint as ck
 from ..pipeline.runlog import RunLog
 from ..schemas import AnalyzeRequest, StructuredMaterial
 from ..schemas_gen import (
@@ -640,6 +641,37 @@ def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
     failures: list[dict] = []
     cfg = get_settings()
 
+    # ---- 断点续跑（T2）----
+    # **落盘粒度 = 续跑粒度**（见 docs/spec_resume.md §5）：一个平台一完成就落盘，
+    # 续跑时只跑缺的那些。没有 events_path（CLI 直跑）时不启用 —— 保持两种用法行为一致。
+    workdir = ck.workdir_of(getattr(req, "events_path", None))
+    done_by_code: dict[str, PlatformDraft] = {}
+    todo: list[str] = []
+    for code in req.platforms:
+        payload = ck.read_unit(workdir, "platform", code) if workdir else None
+        if payload is not None:
+            try:
+                done_by_code[code] = PlatformDraft.model_validate(payload)
+                continue
+            except Exception:  # noqa: BLE001 —— 落盘读不出就当没完成，重跑
+                logger.warning("已完成平台 %s 的落盘读不出，重跑该平台", code)
+        todo.append(code)
+    if workdir and len(todo) < len(req.platforms):
+        skipped = [c for c in req.platforms if c not in todo]
+        logger.info("断点续跑：跳过已完成平台 %s，只跑 %s", skipped, todo)
+        with _stage(log, "续跑") as r:
+            r.done(f"跳过 {len(skipped)} 个已完成平台 {skipped}；只跑 {len(todo)} 个 {todo}")
+
+    def _remember(code: str, draft: PlatformDraft) -> None:
+        """一个平台一完成就落盘 —— 不等整批返回，否则中断即全丢。"""
+        done_by_code[code] = draft
+        if workdir:
+            try:
+                ck.write_unit(workdir, "platform", code,
+                              json.loads(draft.model_dump_json()))
+            except Exception:  # noqa: BLE001 —— 落盘失败不该毁掉本次生成
+                logger.exception("平台 %s 落盘失败（本次结果仍会返回）", code)
+
     def _submit(code: str):
         # 显式携带上下文：ThreadPoolExecutor **不会**继承 contextvars，
         # 不包装则子线程内 trace_id 丢失（各平台各自生成新 trace）
@@ -656,25 +688,27 @@ def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
             "error": f"{type(exc).__name__}: {str(exc)[:300]}",
         })
 
-    if cfg.llm_parallel and len(req.platforms) > 1:
+    if cfg.llm_parallel and len(todo) > 1:
         # 并行：快，但需上游额度宽裕（默认关闭，理由见 config）
-        with ThreadPoolExecutor(max_workers=min(4, len(req.platforms))) as ex:
-            futures = {ex.submit(_submit, code): code for code in req.platforms}
+        with ThreadPoolExecutor(max_workers=min(4, len(todo))) as ex:
+            futures = {ex.submit(_submit, code): code for code in todo}
             for f, code in futures.items():
                 try:
-                    results.append(f.result())
+                    _remember(code, f.result())
                 except Exception as e:  # noqa: BLE001 — 部分失败可容忍
                     _record_failure(code, e)
     else:
         # 串行 + 最小间隔：实测限流策略下的可靠路径
         interval = max(0, int(cfg.llm_min_interval_ms)) / 1000.0
-        for i, code in enumerate(req.platforms):
+        for i, code in enumerate(todo):
             if i > 0 and interval > 0:
                 time.sleep(interval)
             try:
-                results.append(_submit(code))
+                _remember(code, _submit(code))
             except Exception as e:  # noqa: BLE001 — 部分失败可容忍
                 _record_failure(code, e)
 
+    # 按请求顺序返回**完整**集合（已完成 + 本次新跑）——调用方分不出续跑与一次跑完
+    results = [done_by_code[c] for c in req.platforms if c in done_by_code]
     structured_dict = json.loads(structured.model_dump_json())
     return structured_dict, results, used_mock, failures

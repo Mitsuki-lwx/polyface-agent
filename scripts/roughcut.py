@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -29,7 +30,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "python-service"))
 
-from app.pipeline import asr, roughcut as rc  # noqa: E402
+from app.pipeline import asr, checkpoint as ck, roughcut as rc  # noqa: E402
 from app.pipeline.runlog import RunLog  # noqa: E402
 
 EXIT_OK, EXIT_ERR = 0, 1
@@ -164,6 +165,93 @@ def ask_all(params: rc.RoughcutParams, sources: dict[str, str]) -> rc.RoughcutPa
     return params
 
 
+
+# ---------------- 断点续跑（T3）----------------
+# 见 `docs/spec_resume.md` §5。粗剪的"单位"是**阶段**。它比生成更需要小心：
+# 参数变了、上游产物变了，下游的中间产物就不再代表这次的意图 —— 复用会产出
+# "剪点与视频对不上"的结果。所以每个阶段都要**按依赖校验**，不能只看"文件在不在"。
+
+_STAGE_DEPS: dict[str, tuple[str, ...]] = {
+    "探测": (),                                              # 只取决于源文件
+    "找停顿": ("pause_sec", "noise_db"),
+    "剪裁": ("keep_margin_sec",),
+    "抽音轨": (),
+    "转写": ("asr_model",),
+    "烧字幕": ("font", "font_size", "text_color", "outline", "margin_v", "burn_subs"),
+}
+
+
+def _src_id(src: Path) -> dict:
+    try:
+        st = src.stat()
+        return {"name": src.name, "size": st.st_size}
+    except OSError:
+        return {"name": src.name, "size": -1}
+
+
+class _Done:
+    """已完成阶段的记账本：跑完就落盘；重启后按依赖校验决定能不能跳过。
+
+    **判据是链式的**：本阶段的 key 带上游阶段的 key。这样"剪点变了"会自动
+    让下游全部失效 —— 不需要额外写失效逻辑，也不可能漏。
+    """
+
+    def __init__(self, work: Path, params, src: Path) -> None:
+        self.work = work
+        self.params = params          # 交互循环可能改它，调用方负责同步
+        self.src = src
+        self.prev_key = ""
+        self._keys: dict[str, str] = {}    # get 时算出的判据，put 必须复用它
+        self.skipped: list[str] = []
+        self.ran: list[str] = []
+
+    def key(self, stage: str) -> str:
+        material = json.dumps({
+            "prev": self.prev_key,
+            "src": _src_id(self.src),
+            "params": {k: getattr(self.params, k, None) for k in _STAGE_DEPS[stage]},
+        }, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha1(material.encode("utf-8")).hexdigest()[:16]
+
+    def get(self, stage: str) -> dict | None:
+        """已完成且依赖一致 → 返回上次的产物；否则 None（= 要重跑）。"""
+        want = self.key(stage)
+        # 关键：**先存下来**再推进 prev_key。否则 put 时会拿"本阶段的判据"当上游，
+        # 同一个阶段算出两个不同的值 —— 续跑永远命中不了。
+        self._keys[stage] = want
+        self.prev_key = want
+        payload = ck.read_unit(self.work, "stage", stage)
+        if payload is None:
+            self.ran.append(stage)
+            return None
+        if payload.get("key") != want:
+            # 有记录但对不上：多半是参数变了。说清楚，别让人以为"续跑失效了"。
+            print(f"[续跑] {stage} 的中间产物与本次参数/上游不一致，重跑该阶段")
+            self.ran.append(stage)
+            return None
+        self.skipped.append(stage)
+        return payload
+
+    def put(self, stage: str, **data) -> None:
+        """落盘。**失败只告警** —— 落盘失败不该毁掉本次粗剪。"""
+        key = self._keys.get(stage)
+        if key is None:
+            raise RuntimeError(f"put({stage}) 之前必须先 get({stage})，否则判据会算错")
+        try:
+            ck.write_unit(self.work, "stage", stage, {"key": key, **data})
+        except Exception as e:                              # noqa: BLE001
+            print(f"[warn] 阶段 {stage} 落盘失败（本次仍会继续）：{e}", file=sys.stderr)
+
+    def summary(self) -> str:
+        parts = []
+        if self.skipped:
+            parts.append(f"跳过 {len(self.skipped)} 个已完成阶段 {self.skipped}")
+        if self.ran:
+            parts.append(f"本次跑 {len(self.ran)} 个 {self.ran}")
+        return "；".join(parts)
+
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
@@ -216,80 +304,114 @@ def main(argv: list[str] | None = None) -> int:
     log = RunLog(run_id=run_id, sink=sink, level=level, heartbeat_sec=heartbeat)
 
     src = Path(args.input)
-    try:
-        with log.stage("探测") as r:
-            info = rc.probe(src, on_raw=log.raw)       # 前置探测，失败要大声
-            r.done(f"{info['width']}×{info['height']}，{info['duration']:.2f}s")
-    except rc.RoughcutError as e:
-        print(f"[错误] {e}", file=sys.stderr)
-        return EXIT_ERR
-
-    # ---------- 找停顿 + 预览（两段式）----------
-    while True:
-        with log.stage("找停顿") as r:
-            pauses = rc.detect_pauses(src, params.noise_db, params.pause_sec, on_raw=log.raw)
-            r.done(f"{len(pauses)} 段静音")
-        cuts = rc.plan_cuts(pauses, params.keep_margin_sec, info["duration"])
-        after = info["duration"] - rc.cut_seconds(cuts)
-        print(rc.summarize(cuts, info["duration"], after, params))
-
-        if not cuts:
-            # 没找到停顿不是失败 —— 可能素材本来就没长停顿，也可能里面有背景音乐
-            # （BGM 会让"静音"不存在）。如实说明并退出，**绝不产出一个空视频**。
-            print(f"\n未找到停顿（阈值 {params.pause_sec}s / 门限 {params.noise_db}dB）。"
-                  f"若素材里有背景音乐，本版不处理。未产出任何文件。")
-            return EXIT_OK
-        if dry_run:
-            show_params(params, sources)      # dry-run 更要看清"这次会用哪些值"
-            print("\n[dry-run] 只看剪点，未产出任何文件。")
-            return EXIT_OK
-        if ask_mode == "none":
-            break
-
-        show_params(params, sources)
-        if ask_mode == "all":
-            params = ask_all(params, sources)
-            print()
-            continue
-
-        # 刻意**不**用 `sys.stdin.isatty()` 提前跳过：那样管道喂进来的答案（`echo q | ...`）
-        # 会被无视，测试和脚本都没法驱动它。改成"永远问，读到 EOF 就当作放弃"——
-        # 既不会挂住，也绝不会在没得到明确确认的情况下动手。
-        ans = ask("\n回车=执行 / 输入新的停顿阈值(秒)=重算 / --ask all 可逐项改 / q=放弃 > ")
-        if ans.lower() in ("q", "quit", "exit"):
-            print("已放弃，未产出任何文件。")
-            return EXIT_OK
-        if not ans:
-            break
-        try:
-            params = params.merged(pause_sec=float(ans))
-            sources["pause_sec"] = "本次输入"
-        except ValueError:
-            print("没听懂，请输入一个数字（秒）或直接回车。")
-        print()
-
-    # ---------- 执行 ----------
+    # work 目录要在最前面定下来：断点续跑得先知道去哪读"已完成阶段"（docs/spec_resume.md §5）。
+    # mkdir 留到真正动手时再做 —— dry-run 不该留下空目录。
     out = Path(output) if output else src.with_name(f"{src.stem}-roughcut.mp4")
     work = Path(workdir) if workdir else out.with_suffix(out.suffix + ".work")
+    res = _Done(work, params, src)
+
+    _probe = res.get("探测")
+    if _probe is not None:
+        info = _probe["info"]
+        print(f"[续跑] 跳过探测（已完成：{info['width']}×{info['height']}，{info['duration']:.2f}s）")
+    else:
+        try:
+            with log.stage("探测") as r:
+                info = rc.probe(src, on_raw=log.raw)   # 前置探测，失败要大声
+                r.done(f"{info['width']}×{info['height']}，{info['duration']:.2f}s")
+        except rc.RoughcutError as e:
+            print(f"[错误] {e}", file=sys.stderr)
+            return EXIT_ERR
+        res.put("探测", info=info)
+
+    # ---------- 找停顿 + 预览（两段式）----------
+    _pause = res.get("找停顿")
+    if _pause is not None:
+        pauses, cuts = _pause["pauses"], _pause["cuts"]
+        after = info["duration"] - rc.cut_seconds(cuts)
+        print(f"[续跑] 跳过找停顿（已完成：{len(pauses)} 段静音，剪掉 {rc.cut_seconds(cuts):.2f}s）")
+        print(rc.summarize(cuts, info["duration"], after, params))
+    else:
+        while True:
+            with log.stage("找停顿") as r:
+                pauses = rc.detect_pauses(src, params.noise_db, params.pause_sec, on_raw=log.raw)
+                r.done(f"{len(pauses)} 段静音")
+            cuts = rc.plan_cuts(pauses, params.keep_margin_sec, info["duration"])
+            after = info["duration"] - rc.cut_seconds(cuts)
+            print(rc.summarize(cuts, info["duration"], after, params))
+
+            if not cuts:
+                # 没找到停顿不是失败 —— 可能素材本来就没长停顿，也可能里面有背景音乐
+                # （BGM 会让"静音"不存在）。如实说明并退出，**绝不产出一个空视频**。
+                print(f"\n未找到停顿（阈值 {params.pause_sec}s / 门限 {params.noise_db}dB）。"
+                      f"若素材里有背景音乐，本版不处理。未产出任何文件。")
+                return EXIT_OK
+            if dry_run:
+                show_params(params, sources)      # dry-run 更要看清"这次会用哪些值"
+                print("\n[dry-run] 只看剪点，未产出任何文件。")
+                return EXIT_OK
+            if ask_mode == "none":
+                break
+
+            show_params(params, sources)
+            if ask_mode == "all":
+                params = ask_all(params, sources)
+                print()
+                continue
+
+            # 刻意**不**用 `sys.stdin.isatty()` 提前跳过：那样管道喂进来的答案（`echo q | ...`）
+            # 会被无视，测试和脚本都没法驱动它。改成"永远问，读到 EOF 就当作放弃"——
+            # 既不会挂住，也绝不会在没得到明确确认的情况下动手。
+            ans = ask("\n回车=执行 / 输入新的停顿阈值(秒)=重算 / --ask all 可逐项改 / q=放弃 > ")
+            if ans.lower() in ("q", "quit", "exit"):
+                print("已放弃，未产出任何文件。")
+                return EXIT_OK
+            if not ans:
+                break
+            try:
+                params = params.merged(pause_sec=float(ans))
+                sources["pause_sec"] = "本次输入"
+            except ValueError:
+                print("没听懂，请输入一个数字（秒）或直接回车。")
+            print()
+        res.params = params        # 交互循环可能改过 pause_sec —— 判据要用**最终**值
+        res.put("找停顿", pauses=pauses, cuts=cuts)
+    # ---------- 执行 ----------
     work.mkdir(parents=True, exist_ok=True)
 
     try:
         cut = work / "cut.mp4"
-        with log.stage("剪裁") as r:
-            rc.cut_video(src, cut, cuts, expected_sec=after, on_progress=r.progress, on_raw=log.raw)
-            r.done(f"剪掉 {rc.cut_seconds(cuts):.2f}s", cut_sec=rc.cut_seconds(cuts))
+        _u = res.get("剪裁")
+        if _u is not None and cut.exists():
+            print("[续跑] 跳过剪裁（已完成）")
+        else:
+            with log.stage("剪裁") as r:
+                rc.cut_video(src, cut, cuts, expected_sec=after, on_progress=r.progress, on_raw=log.raw)
+                r.done(f"剪掉 {rc.cut_seconds(cuts):.2f}s", cut_sec=rc.cut_seconds(cuts))
+            res.put("剪裁", cut_sec=rc.cut_seconds(cuts))
 
         wav = work / "audio16k.wav"
-        with log.stage("抽音轨"):
-            rc.extract_wav(cut, wav, on_raw=log.raw)
+        _u = res.get("抽音轨")
+        if _u is not None and wav.exists():
+            print("[续跑] 跳过抽音轨（已完成）")
+        else:
+            with log.stage("抽音轨"):
+                rc.extract_wav(cut, wav, on_raw=log.raw)
+            res.put("抽音轨")
 
-        with log.stage("转写") as r:
-            try:
-                segments = asr.transcribe_segments(str(wav), on_progress=r.progress,
-                                                   total_sec=after)
-            except RuntimeError as e:
-                raise rc.AsrMissing(str(e)) from e
-            r.done(f"{len(segments)} 段字幕", segments=len(segments))
+        _u = res.get("转写")
+        if _u is not None:
+            segments = _u["segments"]
+            print(f"[续跑] 跳过转写（已完成：{len(segments)} 段字幕）")
+        else:
+            with log.stage("转写") as r:
+                try:
+                    segments = asr.transcribe_segments(str(wav), on_progress=r.progress,
+                                                       total_sec=after)
+                except RuntimeError as e:
+                    raise rc.AsrMissing(str(e)) from e
+                r.done(f"{len(segments)} 段字幕", segments=len(segments))
+            res.put("转写", segments=segments)
 
         srt = out.with_suffix(".srt")
         srt.write_text(rc.segments_to_srt(segments), encoding="utf-8")
@@ -301,13 +423,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\n[预览帧] {frame}（只渲了一帧，未做整片）")
             return EXIT_OK
 
-        if params.burn_subs:
-            with log.stage("烧字幕") as r:
-                rc.burn_subtitles(cut, out, srt, params, expected_sec=after,
-                                  on_progress=r.progress, on_raw=log.raw)
-                r.done(str(out.name))
+        _u = res.get("烧字幕")
+        if _u is not None and out.exists():
+            print("[续跑] 跳过烧字幕（已完成）")
         else:
-            out.write_bytes(cut.read_bytes())
+            if params.burn_subs:
+                with log.stage("烧字幕") as r:
+                    rc.burn_subtitles(cut, out, srt, params, expected_sec=after,
+                                      on_progress=r.progress, on_raw=log.raw)
+                    r.done(str(out.name))
+            else:
+                out.write_bytes(cut.read_bytes())
+            res.put("烧字幕", out=str(out))
 
         # 剪点落盘，便于复核与调参对照
         (work / "cuts.json").write_text(json.dumps(
@@ -319,6 +446,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[报告] 失败于上述阶段；事件文件：{sink}", file=sys.stderr)
         return EXIT_ERR
 
+    if res.skipped:
+        print(f"[续跑] {res.summary()}")
     report(rc.probe(out)["duration"], info["duration"], cuts, params, sources,
            out, srt, work, sink, log)
     return EXIT_OK
