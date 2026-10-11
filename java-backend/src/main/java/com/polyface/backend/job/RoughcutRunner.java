@@ -99,6 +99,8 @@ public class RoughcutRunner {
 
     public static final String KIND_ROUGHCUT = "roughcut";
     public static final String KIND_RENDER_TIMELINE = "render_timeline";
+    /** 图文成片（`docs/spec_b1.md`）—— 输入是一份**成片计划**（分镜 + 图 + BGM）。 */
+    public static final String KIND_MAKE_VIDEO = "make_video";
 
     /** 提交一个粗剪任务。返回 jobId（状态 `queued`）。 */
     public long submit(Long inputAssetId, String inputPath, Map<String, Object> params, String baseName) {
@@ -113,6 +115,30 @@ public class RoughcutRunner {
      */
     public long submitRender(long timelineAssetId, String timelinePath, Map<String, Object> params) {
         return submit(KIND_RENDER_TIMELINE, timelineAssetId, timelinePath, params, "render");
+    }
+
+    /**
+     * 图文成片（`docs/spec_b1.md` T7）：输入是**成片计划**的内容。
+     *
+     * <p>计划由 Java 侧从"成稿的剪辑单 + 用户选的图/BGM"拼出来（Python 不读库），
+     * 写进任务目录后再跑 —— 这样计划本身也成了可复核的产物。
+     */
+    public long submitMakeVideo(String planJson, Map<String, Object> params) {
+        Path outDir = mediaDir.root().resolve("roughcut").resolve("job-" + System.nanoTime());
+        try {
+            Files.createDirectories(outDir);
+            Path plan = outDir.resolve("plan.json");
+            Files.writeString(plan, planJson, java.nio.charset.StandardCharsets.UTF_8);
+            String events = outDir.resolve("events.jsonl").toString();
+            long jobId = store.insertJob(KIND_MAKE_VIDEO, toJson(params), null,
+                    plan.toString(), outDir.toString(), events);
+            store.pruneJobs(keepJobs);
+            pool.submit(() -> execute(jobId, KIND_MAKE_VIDEO, plan.toString(), outDir,
+                    "film", params));
+            return jobId;
+        } catch (IOException e) {
+            throw new IllegalStateException("无法创建成片任务目录：" + e.getMessage(), e);
+        }
     }
 
     private long submit(String kind, Long inputAssetId, String inputPath,
@@ -147,7 +173,11 @@ public class RoughcutRunner {
             return false;
         }
         // 基名按 kind 还原（与 submit 时一致）：粗剪是 out，渲染是 render
-        String baseName = KIND_RENDER_TIMELINE.equals(j.kind()) ? "render" : "out";
+        String baseName = switch (j.kind()) {
+            case KIND_RENDER_TIMELINE -> "render";
+            case KIND_MAKE_VIDEO -> "film";
+            default -> "out";
+        };
         pool.submit(() -> execute(jobId, j.kind(), j.inputPath(), Path.of(j.workdir()),
                 baseName, fromJson(j.paramsJson())));
         return true;
@@ -173,9 +203,11 @@ public class RoughcutRunner {
 
         int exit;
         try {
-            List<String> cmd = KIND_RENDER_TIMELINE.equals(kind)
-                    ? buildRenderCommand(inputPath, out, outDir, params)
-                    : buildCommand(inputPath, out, outDir, params);
+            List<String> cmd = switch (kind) {
+                case KIND_RENDER_TIMELINE -> buildRenderCommand(inputPath, out, outDir, params);
+                case KIND_MAKE_VIDEO -> buildMakeVideoCommand(inputPath, out, outDir, params);
+                default -> buildCommand(inputPath, out, outDir, params);
+            };
             log.info("job {} 启动：{}", jobId, String.join(" ", cmd));
             ProcessBuilder pb = new ProcessBuilder(cmd).directory(new java.io.File("."));
             pb.redirectErrorStream(true);
@@ -221,7 +253,9 @@ public class RoughcutRunner {
             return;
         }
         // 产物登记进素材库，并挂到源视频上 —— **登记失败不影响任务成功**
-        if (KIND_RENDER_TIMELINE.equals(kind)) {
+        if (KIND_MAKE_VIDEO.equals(kind)) {
+            registerFilmOutputs(jobId, out, srt, outDir.resolve("plan.json"));
+        } else if (KIND_RENDER_TIMELINE.equals(kind)) {
             registerRenderOutputs(jobId, out, srt);
         } else {
             registerOutputs(jobId, outDir, out, srt, cuts, timeline, params);
@@ -286,6 +320,47 @@ public class RoughcutRunner {
             cmd.add("--no-burn");
         }
         return cmd;
+    }
+
+    /** 成片命令：输入是**成片计划**，输出路径显式给。 */
+    private List<String> buildMakeVideoCommand(String planPath, Path out, Path outDir,
+                                               Map<String, Object> params) {
+        List<String> cmd = new ArrayList<>(List.of(resolvePython(),
+                resolveSiblingScript("make_video.py"), planPath,
+                "-o", out.toString(), "--level", "normal",
+                "--events", outDir.resolve("events.jsonl").toString(),
+                "--workdir", outDir.resolve("work").toString()));
+        putIf(cmd, params, "strategy", "--strategy");
+        putIf(cmd, params, "transition_sec", "--transition");
+        putIf(cmd, params, "zoom", "--zoom");
+        putIf(cmd, params, "bgm_volume_db", "--bgm-volume");
+        putIf(cmd, params, "font", "--font");
+        putIf(cmd, params, "font_size", "--font-size");
+        putIf(cmd, params, "margin_v", "--margin-v");
+        if (Boolean.FALSE.equals(params.get("burn_subs"))) {
+            cmd.add("--no-burn");
+        }
+        return cmd;
+    }
+
+    /** 成片产物：成片 + 字幕 + **初剪记录**（人工定稿要看它）。 */
+    private void registerFilmOutputs(long jobId, Path out, Path srt, Path plan) {
+        try {
+            Long srcAssetId = store.getJob(jobId).map(Store.JobRow::inputAssetId).orElse(null);
+            String stem = out.getFileName().toString().replace(".mp4", "");
+            long outId = assets.register(rel(out), "generated", stem + "（图文成片）", "图文成片");
+            if (Files.isRegularFile(srt)) {
+                assets.register(rel(srt), "generated", stem + ".srt（成片字幕）", "图文成片");
+            }
+            if (Files.isRegularFile(plan)) {
+                assets.register(rel(plan), "generated", stem + ".plan.json（初剪记录）", "图文成片");
+            }
+            if (srcAssetId != null) {
+                assets.link(outId, "asset", srcAssetId);
+            }
+        } catch (Exception e) {                              // noqa: BLE001
+            log.warn("job {} 成片产物登记失败（任务本身仍算成功）：{}", jobId, e.getMessage());
+        }
     }
 
     /** 渲染产物：成片 + 字幕。**不重登记时间线**（它是输入，不是这次跑出来的）。 */
@@ -398,9 +473,13 @@ public class RoughcutRunner {
 
     /** 渲染脚本与粗剪脚本**同目录** —— 跟着配置走，不写死路径。 */
     private String resolveRenderScript() {
+        return resolveSiblingScript("render_timeline.py");
+    }
+
+    /** 与本类的主脚本同目录的另一个脚本。跟着配置走，不写死路径。 */
+    private String resolveSiblingScript(String name) {
         Path parent = Path.of(resolveScript()).getParent();
-        return (parent == null ? Path.of("scripts") : parent)
-                .resolve("render_timeline.py").toString();
+        return (parent == null ? Path.of("scripts") : parent).resolve(name).toString();
     }
 
     private static String toJson(Map<String, Object> params) {

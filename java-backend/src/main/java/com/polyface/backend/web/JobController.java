@@ -42,6 +42,8 @@ public class JobController {
     public static final String KIND_GENERATE = "generate";
     /** 从时间线渲染成片（`docs/spec_timeline.md`）—— 输入是**时间线资产**。 */
     public static final String KIND_RENDER = "render_timeline";
+    /** 图文成片（`docs/spec_b1.md`）—— 输入是成稿的**剪辑单** + 用户选的图/BGM。 */
+    public static final String KIND_MAKE_VIDEO = "make_video";
 
     private final Store store;
     private final RoughcutRunner roughcut;
@@ -62,7 +64,9 @@ public class JobController {
     /** 发起请求体。粗剪用 `asset_id`；生成用 `material_id` + `platforms`。 */
     public record StartBody(String kind, Long asset_id, Long material_id, List<String> platforms,
                             Long template_id, JsonNode template, String tone_override,
-                            Map<String, Object> params) {
+                            Map<String, Object> params,
+                            // 图文成片（docs/spec_b1.md）：每个分镜一张图 + 一首 BGM，都是素材库里的资产
+                            List<Long> images, Long bgm_asset_id, String platform) {
     }
 
     // ---------------- 发起 ----------------
@@ -77,6 +81,7 @@ public class JobController {
             case KIND_ROUGHCUT -> startRoughcut(body);
             case KIND_GENERATE -> startGenerate(body);
             case KIND_RENDER -> startRender(body);
+            case KIND_MAKE_VIDEO -> startMakeVideo(body);
             default -> throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "暂不支持的任务类型：" + kind);
         };
@@ -140,6 +145,91 @@ public class JobController {
         }
         Map<String, Object> params = body.params() == null ? Map.of() : body.params();
         return roughcut.submitRender(row.id(), file.toString(), params);
+    }
+
+    /**
+     * 图文成片（`docs/spec_b1.md`）：从成稿的**剪辑单**起步。
+     *
+     * <p>计划由 Java 侧拼（Python 不读库）：分镜取剪辑单，图与 BGM 取用户选的资产。
+     * 缺图的分镜要**当场说清是第几个** —— 不要等到合成跑了几分钟才报错。
+     */
+    private long startMakeVideo(StartBody body) {
+        if (body.material_id() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "缺少 material_id");
+        }
+        String platform = body.platform() == null || body.platform().isBlank()
+                ? (body.platforms() == null || body.platforms().isEmpty() ? null
+                   : body.platforms().get(0))
+                : body.platform();
+        if (platform == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "缺少 platform（要按哪个平台的成稿做）");
+        }
+        List<Long> images = body.images() == null ? List.of() : body.images();
+
+        // 成稿里带的剪辑单 —— 成片的分镜结构就来自它
+        JsonNode sheet = null;
+        for (Store.DraftRow d : store.draftsByMaterial(body.material_id())) {
+            if (platform.equals(d.platformCode())) {
+                sheet = readJson(d.payloadJson()).path("clip_sheet");
+                break;
+            }
+        }
+        if (sheet == null || sheet.isMissingNode() || sheet.path("scenes").isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "这个平台（" + platform + "）的成稿里没有剪辑单 —— 只有视频类平台的成稿才有分镜");
+        }
+        ArrayNode scenes = (ArrayNode) sheet.path("scenes");
+        if (images.size() != scenes.size()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "图片数量与分镜数对不上：分镜 " + scenes.size() + " 个，给了 " + images.size() + " 张");
+        }
+
+        ArrayNode planScenes = mapper.createArrayNode();
+        List<String> missing = new ArrayList<>();
+        for (int i = 0; i < scenes.size(); i++) {
+            JsonNode sc = scenes.get(i);
+            ObjectNode one = mapper.createObjectNode();
+            one.put("seq", i + 1);
+            one.put("script", sc.path("script").asText(""));
+            one.put("subtitle", sc.path("subtitle").asText(""));
+            one.put("duration_hint", sc.path("duration_hint").asText(""));
+            String img = assetPath(images.get(i));
+            if (img == null) {
+                missing.add(String.valueOf(i + 1));      // 指出是第几个
+            }
+            one.put("image", img == null ? "" : img);
+            planScenes.add(one);
+        }
+        if (!missing.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "第 " + missing + " 个分镜没有可用的图片（图片必须是素材库里的图）");
+        }
+
+        ObjectNode plan = mapper.createObjectNode();
+        plan.set("scenes", planScenes);
+        if (body.bgm_asset_id() != null) {
+            String bgm = assetPath(body.bgm_asset_id());
+            if (bgm == null) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "BGM 资产不可用（必须是素材库里的音频）");
+            }
+            plan.put("bgm", bgm);
+        }
+        plan.putObject("source").put("material_id", body.material_id()).put("platform", platform);
+
+        Map<String, Object> params = body.params() == null ? Map.of() : body.params();
+        return roughcut.submitMakeVideo(plan.toString(), params);
+    }
+
+    /** 资产 id → 磁盘路径。不是素材库里的资产（或文件不在）返回 null。 */
+    private String assetPath(Long assetId) {
+        if (assetId == null) {
+            return null;
+        }
+        return assets.get(assetId)
+                .map(a -> mediaDir.resolveSafe(a.relPath()).toString())
+                .filter(p -> java.nio.file.Files.isRegularFile(java.nio.file.Path.of(p)))
+                .orElse(null);
     }
 
     // ---------------- 重试失败平台 ----------------
