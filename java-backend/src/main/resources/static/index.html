@@ -1318,7 +1318,9 @@ async function mvLoadSheet(){
     const m = await j("GET", `/api/materials/${mid}`);
     const d = (m.drafts || []).find(x=>x.platform_code === plat);
     if(!d){ $("mvLoadStatus").textContent = `这条素材没有「${plat}」的成稿`; return; }
-    const scenes = ((d.payload || {}).clip_sheet || {}).scenes || [];
+    // **列表只给摘要** —— 剪辑单在详情里（实测踩过：读摘要的 payload 是 null）
+    const detail = await j("GET", `/api/drafts/${d.id}`);
+    const scenes = ((detail.draft || {}).clip_sheet || {}).scenes || [];
     if(!scenes.length){
       $("mvLoadStatus").textContent = `「${plat}」的成稿里没有剪辑单（只有视频类平台才有分镜）`;
       return;
