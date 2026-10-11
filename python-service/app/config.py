@@ -71,6 +71,16 @@ class Settings(BaseSettings):
     # 用户补充的专名白名单（逗号分隔）—— 行业词表
     factguard_extra_names: str = ""
 
+    # ===== 两阶段校验（`Verify when Uncertain`，arXiv 2502.15845）=====
+    # 跨模型校验有效（实测 A7 支持率 93.2% → 97.2%），但 verifier 慢近 3 倍
+    # （140s vs 50s，且频繁撞超时）。论文的做法是**只在不确定时才调 verifier**。
+    #
+    # 我们的"不确定"判据（可观测、不靠模型自报置信度）：
+    #   **第一阶段的判决与它自己报的证据不一致** ——
+    #   即 `passed=True` 却同时报出 `claims_unsupported > 0`。
+    #   这个组合实测出现过（稿子"过了"，但里面有 2 条断言素材里找不到依据）。
+    factguard_two_stage: bool = True
+
     # ===== 可观测（FR-71/72）=====
     langfuse_enabled: bool = False
     langfuse_host: str = "http://localhost:3000"

@@ -299,3 +299,88 @@ def test_a7_without_counts_is_zero_not_guessed():
                        "rules": {}})
     a7 = next(r for r in res if r.code.startswith("A7"))
     assert a7.checked == 0 and a7.failed == 0
+
+
+# ============================================================ 两阶段校验
+
+def _stub_qa(monkeypatch, *, fast: dict, verify: dict | None = None):
+    """打桩 chat_json：记录每次调用用的 model，按 model 返回不同结果。"""
+    calls: list[str | None] = []
+
+    def fake(prompt, system=None, *, temperature=0.2, model=None, scene="", platform=None):
+        calls.append(model)
+        # 阶段一不传 model（走默认链 = 生成模型）；阶段二传 verifier
+        return verify if model else fast
+
+    monkeypatch.setattr(llm, "chat_json", fake)
+    return calls
+
+
+def _settings(monkeypatch, **over):
+    from app.config import Settings
+    base = dict(llm_qa_model="verifier-x", llm_model="gen-x", factguard_two_stage=True)
+    base.update(over)
+    s = Settings(**base)
+    monkeypatch.setattr(gen, "get_settings", lambda: s)
+    return s
+
+
+def test_two_stage_escalates_when_verdict_and_evidence_disagree(monkeypatch):
+    """**核心判据**：阶段一判"过"却报出有没依据的断言 → 升级到 verifier。
+
+    这个组合实测出现过（稿子"过了"，但里面有 2 条断言素材里找不到依据）——
+    判决与它自己报的证据不一致，就是"不确定"。
+    """
+    _settings(monkeypatch)
+    calls = _stub_qa(monkeypatch,
+                     fast={"passed": True, "claims_checked": 10, "claims_unsupported": 2},
+                     verify={"passed": False, "claims_checked": 10, "claims_unsupported": 2,
+                             "issues": ["有 2 条无依据"]})
+    rep = gen._llm_qa(_dna(), DraftPayload(titles=["t"], body="b", tags=["x"]), _mat(),
+                      [], [], "src")
+    assert calls == [None, "verifier-x"], "应当先快模型、再升级到 verifier"
+    assert rep.passed is False, "verifier 的判决应当生效"
+
+
+def test_two_stage_does_not_escalate_when_confident(monkeypatch):
+    """判决与证据一致（过了且零无依据）→ **不升级**，省掉 verifier 的 140 秒。"""
+    _settings(monkeypatch)
+    calls = _stub_qa(monkeypatch,
+                     fast={"passed": True, "claims_checked": 10, "claims_unsupported": 0},
+                     verify={"passed": False})
+    rep = gen._llm_qa(_dna(), DraftPayload(titles=["t"], body="b", tags=["x"]), _mat(),
+                      [], [], "src")
+    assert calls == [None], "不该调 verifier"
+    assert rep.passed is True
+
+
+def test_two_stage_does_not_escalate_when_failed(monkeypatch):
+    """阶段一判"不过" → 结论已明确，不必再花 verifier 的钱。"""
+    _settings(monkeypatch)
+    calls = _stub_qa(monkeypatch,
+                     fast={"passed": False, "issues": ["有编造"],
+                           "claims_checked": 8, "claims_unsupported": 3},
+                     verify={"passed": True})
+    rep = gen._llm_qa(_dna(), DraftPayload(titles=["t"], body="b", tags=["x"]), _mat(),
+                      [], [], "src")
+    assert calls == [None]
+    assert rep.passed is False
+
+
+def test_single_stage_always_uses_verifier(monkeypatch):
+    """关掉两阶段 → 每次都直接用 verifier（原行为）。"""
+    _settings(monkeypatch, factguard_two_stage=False)
+    calls = _stub_qa(monkeypatch,
+                     fast={"passed": True},
+                     verify={"passed": True, "claims_checked": 5, "claims_unsupported": 0})
+    gen._llm_qa(_dna(), DraftPayload(titles=["t"], body="b", tags=["x"]), _mat(), [], [], "src")
+    assert calls == ["verifier-x"]
+
+
+def test_two_stage_off_when_verifier_same_as_generator(monkeypatch):
+    """verifier 与生成模型相同时，两阶段无意义 → 退化为单阶段（不白跑两次）。"""
+    _settings(monkeypatch, llm_qa_model="same-x", llm_model="same-x")
+    calls = _stub_qa(monkeypatch, fast={"passed": True, "claims_checked": 1, "claims_unsupported": 1},
+                     verify={"passed": True})
+    gen._llm_qa(_dna(), DraftPayload(titles=["t"], body="b", tags=["x"]), _mat(), [], [], "src")
+    assert calls == ["same-x"], "只该调一次"

@@ -395,16 +395,36 @@ def _llm_qa(
     - LLM 的 passed=true **不能**覆盖任何阻断问题
     - 规则 warnings **必须保留**（此前被 LLM warnings 覆盖，导致「正文含无依据数字」告警丢失）
     """
-    # ⚠️ **裁判用另一个模型**（`LLM_QA_MODEL`）。
-    # 同一个模型判自己写的稿，是结构性的弱点：它的偏好会同时体现在"写"和"判"两边，
-    # 盲区重合。`Verify when Uncertain`（arXiv 2502.15845）实测：纯自一致性的改进空间
-    # 已接近上限，**跨模型**才有增益。
-    # 顺带修一处死配置：`llm_qa_model` 原先在 config.py 里定义了却从没被用过。
-    _qa_model = (get_settings().llm_qa_model or "").strip() or None
+    cfg = get_settings()
+    verifier = (cfg.llm_qa_model or "").strip() or None
+    two_stage = (cfg.factguard_two_stage and verifier
+                 and verifier != (cfg.llm_model or "").strip())
+
+    if two_stage:
+        # 阶段一：用**快模型**（生成模型，实测约 50s）先判
+        rep = _qa_once(dna, draft, mat, rule_issues, rule_warnings, source_text,
+                       model=None, scene="qa")
+        # "不确定"的判据（可观测，不靠模型自报置信度）：
+        #   **判决与它自己报的证据不一致** —— 判"过"却报出有没依据的断言。
+        if rep.passed and rep.claims_unsupported > 0:
+            logger.info("QA 不确定（passed 但有 %d 条无依据）→ 升级到 verifier %s",
+                        rep.claims_unsupported, verifier)
+            return _qa_once(dna, draft, mat, rule_issues, rule_warnings, source_text,
+                            model=verifier, scene="qa_verify")
+        return rep
+
+    # 单阶段：直接用 verifier（跨模型校验，实测 A7 支持率 +4 点但慢近 3 倍）
+    return _qa_once(dna, draft, mat, rule_issues, rule_warnings, source_text,
+                    model=verifier, scene="qa")
+
+
+def _qa_once(dna: dict, draft: DraftPayload, mat: StructuredMaterial,
+             rule_issues: list[str], rule_warnings: list[str],
+             source_text: str, *, model: str | None, scene: str) -> QaReport:
+    """跑一次 LLM 质检并把结果与规则结论合并（fail-closed）。"""
     data = llm.chat_json(
         build_qa_prompt(dna, draft, mat, source_text), system=QA_SYSTEM, temperature=0.2,
-        model=_qa_model,
-        scene="qa", platform=dna.get("code"),
+        model=model, scene=scene, platform=dna.get("code"),
     )
     llm_issues = [str(x).strip() for x in (data.get("issues") or []) if str(x).strip()]
     llm_warns = [str(x).strip() for x in (data.get("warnings") or []) if str(x).strip()]
