@@ -133,6 +133,16 @@ public class PythonClient {
         return post(genClient, "/compose/cover", body);
     }
 
+    /**
+     * 校验时间线。**校验只有一份实现**（在 Python）—— 见 `docs/tasks_timeline.md` T5。
+     *
+     * <p>不通过时 Python 返回 400；这里让异常往上抛，由控制器翻成 400 + 可读理由
+     * （指出是哪一段不对，而不是一句"格式错误"）。
+     */
+    public JsonNode validateTimeline(JsonNode body) {
+        return post(client, "/timeline/validate", body);
+    }
+
     private JsonNode post(String uri, Object body) {
         return post(client, uri, body);
     }

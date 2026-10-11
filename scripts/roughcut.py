@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "python-service"))
 
 from app.pipeline import asr, checkpoint as ck, roughcut as rc  # noqa: E402
+from app.pipeline import timeline as tlib  # noqa: E402
 from app.pipeline.runlog import RunLog  # noqa: E402
 
 EXIT_OK, EXIT_ERR = 0, 1
@@ -170,6 +171,7 @@ def ask_all(params: rc.RoughcutParams, sources: dict[str, str]) -> rc.RoughcutPa
 # 见 `docs/spec_resume.md` §5。粗剪的"单位"是**阶段**。它比生成更需要小心：
 # 参数变了、上游产物变了，下游的中间产物就不再代表这次的意图 —— 复用会产出
 # "剪点与视频对不上"的结果。所以每个阶段都要**按依赖校验**，不能只看"文件在不在"。
+# 记账本本身在 `app.pipeline.checkpoint.DoneBook`（与"从时间线渲染"共用一份）。
 
 _STAGE_DEPS: dict[str, tuple[str, ...]] = {
     "探测": (),                                              # 只取决于源文件
@@ -179,77 +181,6 @@ _STAGE_DEPS: dict[str, tuple[str, ...]] = {
     "转写": ("asr_model",),
     "烧字幕": ("font", "font_size", "text_color", "outline", "margin_v", "burn_subs"),
 }
-
-
-def _src_id(src: Path) -> dict:
-    try:
-        st = src.stat()
-        return {"name": src.name, "size": st.st_size}
-    except OSError:
-        return {"name": src.name, "size": -1}
-
-
-class _Done:
-    """已完成阶段的记账本：跑完就落盘；重启后按依赖校验决定能不能跳过。
-
-    **判据是链式的**：本阶段的 key 带上游阶段的 key。这样"剪点变了"会自动
-    让下游全部失效 —— 不需要额外写失效逻辑，也不可能漏。
-    """
-
-    def __init__(self, work: Path, params, src: Path) -> None:
-        self.work = work
-        self.params = params          # 交互循环可能改它，调用方负责同步
-        self.src = src
-        self.prev_key = ""
-        self._keys: dict[str, str] = {}    # get 时算出的判据，put 必须复用它
-        self.skipped: list[str] = []
-        self.ran: list[str] = []
-
-    def key(self, stage: str) -> str:
-        material = json.dumps({
-            "prev": self.prev_key,
-            "src": _src_id(self.src),
-            "params": {k: getattr(self.params, k, None) for k in _STAGE_DEPS[stage]},
-        }, ensure_ascii=False, sort_keys=True)
-        return hashlib.sha1(material.encode("utf-8")).hexdigest()[:16]
-
-    def get(self, stage: str) -> dict | None:
-        """已完成且依赖一致 → 返回上次的产物；否则 None（= 要重跑）。"""
-        want = self.key(stage)
-        # 关键：**先存下来**再推进 prev_key。否则 put 时会拿"本阶段的判据"当上游，
-        # 同一个阶段算出两个不同的值 —— 续跑永远命中不了。
-        self._keys[stage] = want
-        self.prev_key = want
-        payload = ck.read_unit(self.work, "stage", stage)
-        if payload is None:
-            self.ran.append(stage)
-            return None
-        if payload.get("key") != want:
-            # 有记录但对不上：多半是参数变了。说清楚，别让人以为"续跑失效了"。
-            print(f"[续跑] {stage} 的中间产物与本次参数/上游不一致，重跑该阶段")
-            self.ran.append(stage)
-            return None
-        self.skipped.append(stage)
-        return payload
-
-    def put(self, stage: str, **data) -> None:
-        """落盘。**失败只告警** —— 落盘失败不该毁掉本次粗剪。"""
-        key = self._keys.get(stage)
-        if key is None:
-            raise RuntimeError(f"put({stage}) 之前必须先 get({stage})，否则判据会算错")
-        try:
-            ck.write_unit(self.work, "stage", stage, {"key": key, **data})
-        except Exception as e:                              # noqa: BLE001
-            print(f"[warn] 阶段 {stage} 落盘失败（本次仍会继续）：{e}", file=sys.stderr)
-
-    def summary(self) -> str:
-        parts = []
-        if self.skipped:
-            parts.append(f"跳过 {len(self.skipped)} 个已完成阶段 {self.skipped}")
-        if self.ran:
-            parts.append(f"本次跑 {len(self.ran)} 个 {self.ran}")
-        return "；".join(parts)
-
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -308,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
     # mkdir 留到真正动手时再做 —— dry-run 不该留下空目录。
     out = Path(output) if output else src.with_name(f"{src.stem}-roughcut.mp4")
     work = Path(workdir) if workdir else out.with_suffix(out.suffix + ".work")
-    res = _Done(work, params, src)
+    res = ck.DoneBook(work, params, src, _STAGE_DEPS)
 
     _probe = res.get("探测")
     if _probe is not None:
@@ -416,6 +347,20 @@ def main(argv: list[str] | None = None) -> int:
         srt = out.with_suffix(".srt")
         srt.write_text(rc.segments_to_srt(segments), encoding="utf-8")
 
+        # ---- 时间线（T2）：把「剪」变成「改数据」----
+        # 见 docs/spec_timeline.md。两个要点：
+        #  ① `cuts` 是**剪掉**的区间，时间线要的是**保留**的 —— 必须显式转换（写反不报错，只会剪错）
+        #  ② ASR 的 segments 是**成片轴**（它跑在剪后的视频上），时间线统一存**源轴**，
+        #     所以这里映射回去**一次**；之后改 keep 就再也不碰字幕了
+        keep = tlib.cuts_to_keep(cuts, info["duration"])
+        tline = tlib.make(
+            {"path": str(src), "duration": round(float(info["duration"]), 3)},
+            keep, tlib.segments_to_source(segments, keep))
+        tlib.validate(tline, source_duration=info["duration"])
+        timeline_path = out.with_suffix(".timeline.json")
+        timeline_path.write_text(json.dumps(tline, ensure_ascii=False, indent=2),
+                                 encoding="utf-8")
+
         if preview_frame:
             frame = work / "preview.png"
             with log.stage("预览帧"):
@@ -466,7 +411,8 @@ def report(real_after: float, before: float, cuts, params, sources, out, srt, wo
     print(f"  时长     {before:.2f}s → {real_after:.2f}s（剪掉 {rc.cut_seconds(cuts):.2f}s）")
     show_params(params, sources)
     print("产物：")
-    for label, p in (("成片", out), ("字幕", srt), ("剪点", work / "cuts.json"),
+    for label, p in (("成片", out), ("字幕", srt), ("时间线", out.with_suffix(".timeline.json")),
+                     ("剪点", work / "cuts.json"),
                      ("中间件", work), ("事件", sink)):
         if p is None:
             print(f"  {label:<6} （未启用）")

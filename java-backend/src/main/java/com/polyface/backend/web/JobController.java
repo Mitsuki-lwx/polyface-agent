@@ -40,6 +40,8 @@ public class JobController {
 
     public static final String KIND_ROUGHCUT = "roughcut";
     public static final String KIND_GENERATE = "generate";
+    /** 从时间线渲染成片（`docs/spec_timeline.md`）—— 输入是**时间线资产**。 */
+    public static final String KIND_RENDER = "render_timeline";
 
     private final Store store;
     private final RoughcutRunner roughcut;
@@ -74,6 +76,7 @@ public class JobController {
         long jobId = switch (kind) {
             case KIND_ROUGHCUT -> startRoughcut(body);
             case KIND_GENERATE -> startGenerate(body);
+            case KIND_RENDER -> startRender(body);
             default -> throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "暂不支持的任务类型：" + kind);
         };
@@ -112,6 +115,31 @@ public class JobController {
                 ? List.of("xhs") : body.platforms();
         return generate.submit(body.material_id(), platforms, body.template_id(),
                 body.template(), body.tone_override());
+    }
+
+    /**
+     * 从时间线渲染成片：`asset_id` 指向**时间线资产**（不是源视频）。
+     *
+     * <p>产出新成片，**不覆盖**源视频与旧成片；血缘挂回时间线。
+     * 它和粗剪一样是分钟级任务（要从源视频重剪 + 烧字幕），所以走任务队列。
+     */
+    private long startRender(StartBody body) {
+        if (body.asset_id() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "缺少 asset_id（时间线资产）");
+        }
+        Store.AssetRow row = assets.get(body.asset_id())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "资产不存在"));
+        if (!"timeline".equals(row.kind())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "只有时间线能渲染，当前资产是 " + row.kind());
+        }
+        Path file = mediaDir.resolveSafe(row.relPath());
+        if (!java.nio.file.Files.isRegularFile(file)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                    "时间线文件不在磁盘上：" + row.relPath());
+        }
+        Map<String, Object> params = body.params() == null ? Map.of() : body.params();
+        return roughcut.submitRender(row.id(), file.toString(), params);
     }
 
     // ---------------- 重试失败平台 ----------------

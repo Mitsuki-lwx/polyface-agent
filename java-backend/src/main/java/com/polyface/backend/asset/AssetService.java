@@ -144,6 +144,22 @@ public class AssetService {
         return id;
     }
 
+    /** 文件被就地改写后，刷新该资产的 size/sha（见 `Store#updateAssetFileMeta`）。 */
+    public void refreshFileMeta(long assetId) {
+        try {
+            String rel = store.getAsset(assetId).map(Store.AssetRow::relPath).orElse(null);
+            if (rel == null) {
+                return;
+            }
+            Path abs = mediaDir.resolveSafe(rel);
+            if (Files.isRegularFile(abs)) {
+                store.updateAssetFileMeta(assetId, Files.size(abs), sha256Of(abs));
+            }
+        } catch (Exception e) {                                  // noqa: BLE001
+            log.warn("刷新资产文件元信息失败（asset={}）：{}", assetId, e.getMessage());
+        }
+    }
+
     // ---------------- 上传 ----------------
 
     /**

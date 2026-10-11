@@ -17,9 +17,11 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -117,3 +119,81 @@ def clear_units(workdir: str | os.PathLike[str], kind: str | None = None) -> int
         except OSError:
             pass
     return n
+
+
+class DoneBook:
+    """已完成阶段的记账本：跑完就落盘；重启后按依赖校验决定能不能跳过。
+
+    **判据是链式的**：本阶段的 key 带上游阶段的 key。这样"剪点变了"会自动
+    让下游全部失效 —— 不需要额外写失效逻辑，也不可能漏。
+
+    放在这里而不是某个脚本里：粗剪与"从时间线渲染"都要用它，
+    各写一份必然分叉（而分叉的后果是"该重跑的没重跑，拿旧产物当成品"）。
+    """
+
+    def __init__(self, workdir, params, source, deps: dict[str, tuple[str, ...]],
+                 extra: dict | None = None) -> None:
+        self.work = Path(workdir)
+        self.params = params          # 交互循环可能改它，调用方负责同步
+        self.src = Path(source)
+        self.deps = deps
+        self.extra = extra or {}      # 额外的判据材料（如"这次渲染用的是哪条时间线"）
+        self.prev_key = ""
+        self._keys: dict[str, str] = {}    # get 时算出的判据，put 必须复用它
+        self.skipped: list[str] = []
+        self.ran: list[str] = []
+
+    def key(self, stage: str) -> str:
+        material = json.dumps({
+            "prev": self.prev_key,
+            "src": _src_id(self.src),
+            "extra": self.extra,
+            "params": {k: getattr(self.params, k, None) for k in self.deps.get(stage, ())},
+        }, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha1(material.encode("utf-8")).hexdigest()[:16]
+
+    def get(self, stage: str) -> Any | None:
+        """已完成且依赖一致 → 返回上次的产物；否则 None（= 要重跑）。"""
+        want = self.key(stage)
+        # 关键：**先存下来**再推进 prev_key。否则 put 时会拿"本阶段的判据"当上游，
+        # 同一个阶段算出两个不同的值 —— 续跑永远命中不了。
+        self._keys[stage] = want
+        self.prev_key = want
+        payload = read_unit(self.work, "stage", stage)
+        if payload is None:
+            self.ran.append(stage)
+            return None
+        if payload.get("key") != want:
+            # 有记录但对不上：多半是参数变了。说清楚，别让人以为"续跑失效了"。
+            print(f"[续跑] {stage} 的中间产物与本次参数/上游不一致，重跑该阶段")
+            self.ran.append(stage)
+            return None
+        self.skipped.append(stage)
+        return payload
+
+    def put(self, stage: str, **data) -> None:
+        """落盘。**失败只告警** —— 落盘失败不该毁掉本次运行。"""
+        key = self._keys.get(stage)
+        if key is None:
+            raise RuntimeError(f"put({stage}) 之前必须先 get({stage})，否则判据会算错")
+        try:
+            write_unit(self.work, "stage", stage, {"key": key, **data})
+        except Exception as e:                              # noqa: BLE001
+            print(f"[warn] 阶段 {stage} 落盘失败（本次仍会继续）：{e}", file=sys.stderr)
+
+    def summary(self) -> str:
+        parts = []
+        if self.skipped:
+            parts.append(f"跳过 {len(self.skipped)} 个已完成阶段 {self.skipped}")
+        if self.ran:
+            parts.append(f"本次跑 {len(self.ran)} 个 {self.ran}")
+        return "；".join(parts)
+
+
+def _src_id(src: Path) -> dict:
+    """源文件的身份：改名不影响判据，改内容（大小变了）会让全部失效。"""
+    try:
+        st = src.stat()
+        return {"name": src.name, "size": st.st_size}
+    except OSError:
+        return {"name": src.name, "size": -1}

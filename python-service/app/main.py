@@ -10,6 +10,7 @@ from .pipeline.cover import CoverInvalid, CoverToolMissing, compose_cover
 from .pipeline.generate import generate
 from .pipeline.ingest import run_probe, run_transcribe
 from .pipeline.learn import run_learn
+from .pipeline import timeline as tlib
 from .pipeline.media import MediaInvalid, MediaToolMissing
 from .pipeline.understand import run_understand
 from .schemas import (
@@ -115,6 +116,23 @@ def health() -> dict:
 def platforms() -> dict:
     """列出当前 DNA 目录中实际可用的平台。"""
     return {"platforms": dna.list_platforms()}
+
+
+@app.post("/timeline/validate")
+def timeline_validate(req: dict) -> dict:
+    """校验一条时间线（`docs/spec_timeline.md`）。
+
+    **这是唯一一份校验实现** —— Java 侧不重复写一遍。两边各写一遍必然分叉，
+    而分叉的后果是"界面说没问题、渲染却剪错"（仓库里已有"数字口径统一在 numberish"的先例）。
+
+    请求：`{"timeline": {...}, "source_duration": 123.4}`（时长可省）。
+    通过 → 200 `{"ok": true, "normalized": {...}}`；不通过 → 400 + 可读理由（指出是哪一段）。
+    """
+    try:
+        normalized = tlib.parse(req.get("timeline"), source_duration=req.get("source_duration"))
+    except tlib.TimelineError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+    return {"ok": True, "normalized": normalized}
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)

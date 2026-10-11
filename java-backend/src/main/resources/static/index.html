@@ -213,6 +213,25 @@
     </div>
 
     <div class="card" style="margin-top:14px">
+      <h2>🎞 时间线 <span style="font-weight:400;color:var(--sub);font-size:11px" id="tlMeta"></span></h2>
+      <div style="font-size:12px;color:var(--sub);margin-bottom:8px">
+        <b>改数据就是改剪辑</b>：调保留区间的起止、删段、合并，然后重渲染出新片。
+        字幕跟着剪点走（删掉一段，落在里面的字幕自动不出现）。
+      </div>
+      <div id="tlPanel" style="display:none">
+        <div id="tlHead" style="font-size:12px;margin-bottom:8px"></div>
+        <div id="tlRows"></div>
+        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <button id="tlSave" class="sm">保存</button>
+          <button id="tlRender" class="ghost sm">🎬 重渲染成片</button>
+          <button id="tlClose" class="ghost sm">关闭</button>
+          <span class="status-line" id="tlStatus"></span>
+        </div>
+      </div>
+      <div class="side-list" id="tlList"><div class="empty">加载中…</div></div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
       <h2>④ 创作者画像 <span style="font-weight:400;color:var(--sub);font-size:11px" id="profMeta"></span></h2>
       <div style="font-size:12px;color:var(--sub);margin-bottom:8px">为 AI 提供"我是谁 / 我做什么 / 给谁看 / 不要什么"，影响 brief 与成稿风格</div>
       <input id="profVoice" placeholder="品牌声音（理性干货 / 真诚种草 / 犀利观点 …）">
@@ -360,7 +379,9 @@ async function init(){
   bindAssetHandlers();
   loadAssets();
   bindRoughcutHandlers();
+  bindTimelineHandlers();
   loadJobs();
+  loadTimelines();
   refreshRetro();
 }
 function renderPlats(list){
@@ -1051,7 +1072,10 @@ async function pollJob(id){
     if(["succeeded","failed","canceled","interrupted"].includes(job.status)){
       stopPolling();                      // ← 任务结束必须停，否则一直打接口
       loadJobs();
-      if(job.status === "succeeded") loadAssets();   // 产物已入素材库
+      if(job.status === "succeeded"){
+        loadAssets();        // 产物已入素材库
+        loadTimelines();     // 粗剪会产出时间线 —— 刷新列表，最新那条就在最上面（T9 入口①）
+      }
     }
   };
   await tick();
@@ -1087,6 +1111,150 @@ function bindRoughcutHandlers(){
   if(!$("rcStart")) return;
   $("rcStart").onclick = startRoughcut;
   $("rcFormCancel").onclick = closeRoughcutForm;
+}
+
+// ============ 时间线：把「剪」变成「改数据」（docs/spec_timeline.md）============
+// 数据里 `keep` 是**保留**区间（源视频时间轴）；`segments` 也是**源轴**。
+// 所以改 keep 不需要动字幕 —— "字幕跟着剪点走"是结构上自动成立的（见 spec 关键决定四）。
+
+let tlState = null;      // {asset_id, name, source, timeline}
+
+async function loadTimelines(){
+  let d;
+  try{ d = await j("GET", "/api/timelines"); }
+  catch(e){ $("tlList").innerHTML = '<div class="empty">时间线列表加载失败</div>'; return; }
+  const items = d.items || [];
+  $("tlMeta").textContent = items.length ? `最近 ${items.length} 条` : "";
+  if(!items.length){
+    $("tlList").innerHTML = '<div class="empty">还没有时间线（跑一次粗剪就会有）</div>';
+    return;
+  }
+  $("tlList").innerHTML = items.map(t=>`
+    <div class="side-item" data-tl="${t.asset_id}" style="cursor:pointer">
+      <b>#${t.asset_id}</b> ${esc(t.name || "")}
+      <div style="color:#9ca3af">${esc((t.created_at||"").slice(0,19))}</div>
+    </div>`).join("");
+  document.querySelectorAll("#tlList [data-tl]").forEach(el=>{
+    el.onclick = ()=> openTimeline(Number(el.dataset.tl));
+  });
+}
+
+async function openTimeline(assetId){
+  $("tlStatus").textContent = "加载中…";
+  let d;
+  try{ d = await j("GET", `/api/timelines/${assetId}`); }
+  catch(e){ $("tlStatus").textContent = "打开失败：" + e.message; return; }
+  tlState = d;
+  $("tlPanel").style.display = "";
+  $("tlStatus").textContent = "";
+  renderTimeline();
+}
+
+function tlKeptSeconds(){
+  return (tlState.timeline.keep || []).reduce((a, k)=> a + (Number(k[1]) - Number(k[0])), 0);
+}
+
+function tlHeadText(){
+  const srcDur = Number((tlState.source || {}).duration || 0);
+  const total = tlKeptSeconds();
+  return `源：${esc((tlState.source||{}).name || "—")} · ${srcDur.toFixed(2)}s　→　成片：`
+       + `<b>${total.toFixed(2)}s</b>（剪掉 ${Math.max(0, srcDur - total).toFixed(2)}s）`;
+}
+
+function tlSegsIn(s, e){
+  return (tlState.timeline.segments || []).filter(g => g.start < e - 1e-6 && g.end > s + 1e-6);
+}
+
+function renderTimeline(){
+  const t = tlState.timeline;
+  $("tlHead").innerHTML = tlHeadText();
+  const srcUrl = (tlState.source || {}).rel_path ? "/media/" + tlState.source.rel_path : "";
+  $("tlRows").innerHTML = (t.keep || []).map((k, i)=>{
+    const s = Number(k[0]), e = Number(k[1]);
+    const segs = tlSegsIn(s, e);
+    return `<div class="tl-row" style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px;display:flex;gap:10px;align-items:flex-start">
+      <div style="min-width:22px;color:var(--sub);font-size:12px;padding-top:4px">${i+1}</div>
+      <div style="flex:0 0 auto">
+        ${srcUrl ? `<video class="tl-frame" data-at="${s}" src="${esc(srcUrl)}" preload="metadata"
+             muted playsinline style="width:120px;border-radius:6px;background:#000"></video>` : ""}
+      </div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <input class="tl-start" data-i="${i}" type="number" step="0.01" value="${s}" style="width:80px">
+          <span style="color:var(--sub)">→</span>
+          <input class="tl-end" data-i="${i}" type="number" step="0.01" value="${e}" style="width:80px">
+          <span style="color:var(--sub)">(<b class="tl-len">${(e-s).toFixed(2)}</b>s)</span>
+          <button class="ghost sm tl-del" data-i="${i}" style="font-size:11px">删除这段</button>
+          ${i > 0 ? `<button class="ghost sm tl-merge" data-i="${i}" style="font-size:11px">与上一段合并</button>` : ""}
+        </div>
+        <div style="font-size:11.5px;color:var(--sub);margin-top:4px">
+          ${segs.length ? segs.map(g=>esc(g.text)).join(" / ") : "<i>（这一段没有字幕）</i>"}
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+
+  // 预览帧：等 metadata 到了再 seek —— 光靠 `#t=` 片段不保证渲染出画面
+  document.querySelectorAll(".tl-frame").forEach(v=>{
+    const at = Number(v.dataset.at || 0);
+    const seek = ()=>{ try{ v.currentTime = Math.max(0, Math.min(at, (v.duration || at + 1) - 0.05)); }catch(e){} };
+    if(v.readyState >= 1) seek(); else v.addEventListener("loadedmetadata", seek, {once:true});
+  });
+
+  $("tlRows").querySelectorAll(".tl-start,.tl-end").forEach(inp=>{
+    inp.onchange = ()=>{
+      const row = inp.closest(".tl-row");
+      const i = Number(inp.dataset.i);
+      const s = Number(row.querySelector(".tl-start").value);
+      const e = Number(row.querySelector(".tl-end").value);
+      tlState.timeline.keep[i] = [s, e];
+      row.querySelector(".tl-len").textContent = (e - s).toFixed(2);
+      $("tlHead").innerHTML = tlHeadText();      // 总时长实时变
+    };
+  });
+  $("tlRows").querySelectorAll(".tl-del").forEach(b=>{
+    b.onclick = ()=>{
+      tlState.timeline.keep.splice(Number(b.dataset.i), 1);
+      renderTimeline();
+    };
+  });
+  $("tlRows").querySelectorAll(".tl-merge").forEach(b=>{
+    b.onclick = ()=>{
+      const i = Number(b.dataset.i), k = tlState.timeline.keep;
+      k[i-1] = [Number(k[i-1][0]), Math.max(Number(k[i-1][1]), Number(k[i][1]))];
+      k.splice(i, 1);
+      renderTimeline();
+    };
+  });
+}
+
+async function saveTimeline(){
+  $("tlStatus").textContent = "保存中…";
+  try{
+    const r = await j("PUT", `/api/timelines/${tlState.asset_id}`, {timeline: tlState.timeline});
+    tlState.timeline = r.timeline;
+    $("tlStatus").textContent = "已保存";
+    renderTimeline();
+  }catch(e){
+    // 校验不通过时后端会**指出是哪一段** —— 原样显示，不要吞成一句"保存失败"
+    $("tlStatus").textContent = "❌ " + e.message;
+  }
+}
+
+async function renderFromTimeline(){
+  $("tlStatus").textContent = "正在发起渲染…";
+  try{
+    const r = await j("POST", "/api/jobs", {kind: "render_timeline", asset_id: tlState.asset_id});
+    $("tlStatus").textContent = `已发起渲染任务 #${r.job_id}（进度看「粗剪」面板）`;
+    loadJobs();
+  }catch(e){ $("tlStatus").textContent = "❌ 发起失败：" + e.message; }
+}
+
+function bindTimelineHandlers(){
+  if(!$("tlSave")) return;
+  $("tlSave").onclick = saveTimeline;
+  $("tlRender").onclick = renderFromTimeline;
+  $("tlClose").onclick = ()=>{ $("tlPanel").style.display = "none"; tlState = null; };
 }
 
 // ============ M4: 创作者画像 / 复盘报告 / 效果录入 ============

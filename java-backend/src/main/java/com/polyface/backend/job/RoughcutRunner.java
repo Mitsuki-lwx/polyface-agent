@@ -97,8 +97,26 @@ public class RoughcutRunner {
 
     // ---------------- 提交 ----------------
 
+    public static final String KIND_ROUGHCUT = "roughcut";
+    public static final String KIND_RENDER_TIMELINE = "render_timeline";
+
     /** 提交一个粗剪任务。返回 jobId（状态 `queued`）。 */
     public long submit(Long inputAssetId, String inputPath, Map<String, Object> params, String baseName) {
+        return submit(KIND_ROUGHCUT, inputAssetId, inputPath, params, baseName);
+    }
+
+    /**
+     * 从时间线渲染成片（`docs/spec_timeline.md`）：输入是**时间线文件**，产出新成片。
+     *
+     * <p>为什么它必须走任务：它是**分钟级**的（要从源视频重剪 + 烧字幕），
+     * 必须能看进度、能取消、能断点续跑 —— 这些 M8 已经全有了，复用它。
+     */
+    public long submitRender(long timelineAssetId, String timelinePath, Map<String, Object> params) {
+        return submit(KIND_RENDER_TIMELINE, timelineAssetId, timelinePath, params, "render");
+    }
+
+    private long submit(String kind, Long inputAssetId, String inputPath,
+                        Map<String, Object> params, String baseName) {
         Path outDir = mediaDir.root().resolve("roughcut").resolve("job-" + System.nanoTime());
         try {
             Files.createDirectories(outDir);
@@ -107,11 +125,10 @@ public class RoughcutRunner {
         }
         String events = outDir.resolve("events.jsonl").toString();
         String paramsJson = toJson(params);
-        long jobId = store.insertJob("roughcut", paramsJson, inputAssetId, inputPath,
+        long jobId = store.insertJob(kind, paramsJson, inputAssetId, inputPath,
                 outDir.toString(), events);
         store.pruneJobs(keepJobs);
-        Path finalOut = outDir;
-        pool.submit(() -> execute(jobId, inputPath, finalOut, baseName, params));
+        pool.submit(() -> execute(jobId, kind, inputPath, outDir, baseName, params));
         return jobId;
     }
 
@@ -129,9 +146,10 @@ public class RoughcutRunner {
         if (j == null || !Store.JOB_INTERRUPTED.equals(j.status())) {
             return false;
         }
-        // 基名沿用约定：submit 的唯一调用方（JobController#startRoughcut）用的就是 out
-        pool.submit(() -> execute(jobId, j.inputPath(), Path.of(j.workdir()), "out",
-                fromJson(j.paramsJson())));
+        // 基名按 kind 还原（与 submit 时一致）：粗剪是 out，渲染是 render
+        String baseName = KIND_RENDER_TIMELINE.equals(j.kind()) ? "render" : "out";
+        pool.submit(() -> execute(jobId, j.kind(), j.inputPath(), Path.of(j.workdir()),
+                baseName, fromJson(j.paramsJson())));
         return true;
     }
 
@@ -144,17 +162,20 @@ public class RoughcutRunner {
         }
     }
 
-    private void execute(long jobId, String inputPath, Path outDir, String baseName,
-                         Map<String, Object> params) {
+    private void execute(long jobId, String kind, String inputPath, Path outDir,
+                         String baseName, Map<String, Object> params) {
         store.markJobRunning(jobId);
         Path out = outDir.resolve(baseName + ".mp4");
         Path srt = outDir.resolve(baseName + ".srt");
         Path cuts = outDir.resolve("work").resolve("cuts.json");
+        Path timeline = outDir.resolve(baseName + ".timeline.json");
         Path errFile = outDir.resolve("stderr.log");
 
         int exit;
         try {
-            List<String> cmd = buildCommand(inputPath, out, outDir, params);
+            List<String> cmd = KIND_RENDER_TIMELINE.equals(kind)
+                    ? buildRenderCommand(inputPath, out, outDir, params)
+                    : buildCommand(inputPath, out, outDir, params);
             log.info("job {} 启动：{}", jobId, String.join(" ", cmd));
             ProcessBuilder pb = new ProcessBuilder(cmd).directory(new java.io.File("."));
             pb.redirectErrorStream(true);
@@ -200,7 +221,11 @@ public class RoughcutRunner {
             return;
         }
         // 产物登记进素材库，并挂到源视频上 —— **登记失败不影响任务成功**
-        registerOutputs(jobId, outDir, out, srt, cuts, params);
+        if (KIND_RENDER_TIMELINE.equals(kind)) {
+            registerRenderOutputs(jobId, out, srt);
+        } else {
+            registerOutputs(jobId, outDir, out, srt, cuts, timeline, params);
+        }
         store.finishJob(jobId, Store.JOB_SUCCEEDED, null, out.toString(),
                 srt.toString(), cuts.toString());
         log.info("job {} 完成：{}", jobId, out);
@@ -244,6 +269,42 @@ public class RoughcutRunner {
         return cmd;
     }
 
+    /** 渲染命令：输入是**时间线**，输出路径显式给（免得两边各猜一套命名）。 */
+    private List<String> buildRenderCommand(String timelinePath, Path out, Path outDir,
+                                            Map<String, Object> params) {
+        List<String> cmd = new ArrayList<>(List.of(resolvePython(),
+                resolveRenderScript(), timelinePath,
+                "-o", out.toString(),
+                "--level", "normal",
+                "--events", outDir.resolve("events.jsonl").toString(),
+                "--workdir", outDir.resolve("work").toString()));
+        putIf(cmd, params, "font", "--font");
+        putIf(cmd, params, "font_size", "--font-size");
+        putIf(cmd, params, "text_color", "--text-color");
+        putIf(cmd, params, "margin_v", "--margin-v");
+        if (Boolean.FALSE.equals(params.get("burn_subs"))) {
+            cmd.add("--no-burn");
+        }
+        return cmd;
+    }
+
+    /** 渲染产物：成片 + 字幕。**不重登记时间线**（它是输入，不是这次跑出来的）。 */
+    private void registerRenderOutputs(long jobId, Path out, Path srt) {
+        try {
+            Long tlAssetId = store.getJob(jobId).map(Store.JobRow::inputAssetId).orElse(null);
+            String stem = out.getFileName().toString().replace(".mp4", "");
+            long outId = assets.register(rel(out), "generated", stem + "（按时间线渲染）", "时间线渲染");
+            if (Files.isRegularFile(srt)) {
+                assets.register(rel(srt), "generated", stem + ".srt（渲染字幕）", "时间线渲染");
+            }
+            if (tlAssetId != null) {
+                assets.link(outId, "asset", tlAssetId);      // 血缘：这条成片是哪条时间线来的
+            }
+        } catch (Exception e) {                              // noqa: BLE001
+            log.warn("job {} 渲染产物登记失败（任务本身仍算成功）：{}", jobId, e.getMessage());
+        }
+    }
+
     private static void putIf(List<String> cmd, Map<String, Object> params, String key, String flag) {
         Object v = params.get(key);
         if (v != null && !String.valueOf(v).isBlank()) {
@@ -259,7 +320,7 @@ public class RoughcutRunner {
      * （沿用 M7 的既有约定）。
      */
     private void registerOutputs(long jobId, Path outDir, Path out, Path srt, Path cuts,
-                                 Map<String, Object> params) {
+                                 Path timeline, Map<String, Object> params) {
         try {
             Long sourceAssetId = store.getJob(jobId).map(Store.JobRow::inputAssetId).orElse(null);
             String stem = out.getFileName().toString().replace(".mp4", "");
@@ -267,6 +328,15 @@ public class RoughcutRunner {
             assets.register(rel(srt), "generated", stem + ".srt（粗剪字幕）", "粗剪");
             if (Files.isRegularFile(cuts)) {
                 assets.register(rel(cuts), "generated", stem + "（剪点）", "粗剪");
+            }
+            // 时间线（docs/spec_timeline.md）：**一等资产**，不是任务中间件 ——
+            // 它是"这个视频该怎么剪"的意图，得活得比任务久，用户才能改了再渲染。
+            if (Files.isRegularFile(timeline)) {
+                long tlId = assets.register(rel(timeline), "generated",
+                        stem + "（时间线）", "时间线");
+                if (sourceAssetId != null) {
+                    assets.link(tlId, "asset", sourceAssetId);   // 血缘挂回源视频
+                }
             }
             if (sourceAssetId != null) {
                 assets.link(outId, "asset", sourceAssetId);
@@ -324,6 +394,13 @@ public class RoughcutRunner {
 
     private String resolveScript() {
         return Files.isRegularFile(Path.of(script)) ? script : script;
+    }
+
+    /** 渲染脚本与粗剪脚本**同目录** —— 跟着配置走，不写死路径。 */
+    private String resolveRenderScript() {
+        Path parent = Path.of(resolveScript()).getParent();
+        return (parent == null ? Path.of("scripts") : parent)
+                .resolve("render_timeline.py").toString();
     }
 
     private static String toJson(Map<String, Object> params) {

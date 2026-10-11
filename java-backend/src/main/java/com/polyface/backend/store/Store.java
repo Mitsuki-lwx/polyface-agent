@@ -900,6 +900,18 @@ public class Store {
         }
     }
 
+    /**
+     * 就地改写文件后更新 size/sha。
+     *
+     * <p>为什么需要它：资产是**内容寻址**的（`sha256` 是它的身份）。
+     * 时间线被编辑保存后文件内容变了 —— 不更新的话，库里记的还是旧 sha，
+     * 于是"同一个资产"的摘要与实际文件对不上，去重与完整性检查都会失真。
+     */
+    public int updateAssetFileMeta(long id, long sizeBytes, String sha256) {
+        return updateJob("UPDATE asset SET size_bytes=?, sha256=? WHERE id=?",
+                sizeBytes, sha256, id);
+    }
+
     public Optional<AssetRow> getAsset(long id) {
         String sql = "SELECT " + ASSET_COLS + " FROM asset WHERE id=?";
         try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
