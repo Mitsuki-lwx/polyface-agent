@@ -167,8 +167,13 @@ def require_ffmpeg() -> None:
         raise ToolMissing("未检测到 ffmpeg。请安装后重试（或设 FFMPEG_PATH / POLYFACE_FFMPEG 指向它）。")
 
 
-def probe(path: str | Path, *, on_raw=None) -> dict:
-    """探测媒体信息。失败时给**互不相同**的明确原因，而不是甩 ffmpeg 日志。"""
+def probe(path: str | Path, *, on_raw=None, require_audio: bool = True) -> dict:
+    """探测媒体信息。失败时给**互不相同**的明确原因，而不是甩 ffmpeg 日志。
+
+    `require_audio=False` 用于**本来就没有音轨**的产物（比如 B1 图文成片的画面段）——
+    它们不需要音轨，拿"没有音轨"当错误会把正常产物判死。默认 `True` 保持粗剪的语义
+    （那里没音轨确实没法找停顿）。
+    """
     require_ffmpeg()
     src = Path(path)
     if not src.is_file():
@@ -183,13 +188,13 @@ def probe(path: str | Path, *, on_raw=None) -> dict:
     video = [s for s in streams if s.get("codec_type") == "video"]
     if not video:
         raise InputMissing(f"没有视频轨：{src}")
-    if not audio:
+    if not audio and require_audio:
         raise NoAudioTrack(f"这个视频没有音轨，无法判断停顿：{src}")
     return {
         "duration": float(info.get("format", {}).get("duration") or 0),
         "width": int(video[0].get("width") or 0),
         "height": int(video[0].get("height") or 0),
-        "has_audio": True,
+        "has_audio": bool(audio),
     }
 
 
