@@ -232,6 +232,34 @@
     </div>
 
     <div class="card" style="margin-top:14px">
+      <h2>🎬 图文成片 <span style="font-weight:400;color:var(--sub);font-size:11px" id="mvMeta"></span></h2>
+      <div style="font-size:12px;color:var(--sub);margin-bottom:8px">
+        从成稿的<b>剪辑单</b>起步：每个分镜配一张图 + 一首 BGM → 出片。
+        <b>数据不出本机</b>（配音与节拍检测都是本地跑）。产物是<b>初剪</b>，人工定稿后再发。
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;align-items:center">
+        <input id="mvMaterial" placeholder="素材 id（或先在下面选一条成稿）" style="width:150px">
+        <select id="mvPlatform" style="width:auto"></select>
+        <button class="ghost sm" id="mvLoad">读取剪辑单</button>
+        <span class="status-line" id="mvLoadStatus"></span>
+      </div>
+      <div id="mvPanel" style="display:none">
+        <div id="mvScenes"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+          <label style="font-size:12px;color:var(--sub)">BGM</label>
+          <select id="mvBgm" style="width:auto"><option value="">（不加背景音乐）</option></select>
+          <label style="font-size:12px;color:var(--sub)">对齐</label>
+          <select id="mvStrategy" style="width:auto">
+            <option value="voice_first">配音优先（脚本不动，推荐）</option>
+            <option value="beat_first">卡点优先（会改分镜时长）</option>
+          </select>
+          <button id="mvStart" class="sm">🎬 出片</button>
+          <span class="status-line" id="mvStatus"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
       <h2>④ 创作者画像 <span style="font-weight:400;color:var(--sub);font-size:11px" id="profMeta"></span></h2>
       <div style="font-size:12px;color:var(--sub);margin-bottom:8px">为 AI 提供"我是谁 / 我做什么 / 给谁看 / 不要什么"，影响 brief 与成稿风格</div>
       <input id="profVoice" placeholder="品牌声音（理性干货 / 真诚种草 / 犀利观点 …）">
@@ -380,6 +408,7 @@ async function init(){
   loadAssets();
   bindRoughcutHandlers();
   bindTimelineHandlers();
+  bindVideoHandlers();
   loadJobs();
   loadTimelines();
   refreshRetro();
@@ -1256,6 +1285,95 @@ function bindTimelineHandlers(){
   $("tlSave").onclick = saveTimeline;
   $("tlRender").onclick = renderFromTimeline;
   $("tlClose").onclick = ()=>{ $("tlPanel").style.display = "none"; tlState = null; };
+}
+
+// ============ B1 图文成片（docs/spec_b1.md）============
+// 分镜结构来自**成稿的剪辑单**；图与 BGM 都从素材库里选（不内置、不生成）。
+// 缺图要在**发起前**就指出来是第几个 —— 不要等合成跑完才报错。
+
+let mvScenes = [];
+
+async function mvLoadPlatforms(){
+  try{
+    const p = await j("GET", "/api/platforms");
+    $("mvPlatform").innerHTML = (p.platforms || [])
+      .map(x=>`<option value="${esc(x.code)}">${esc(x.name || x.code)}</option>`).join("");
+  }catch(e){ /* 拉不到就留空，用户自己填 */ }
+  try{
+    const d = await j("GET", "/api/assets?kind=image&limit=200");
+    const opts = (d.items || []).map(a=>`<option value="${a.id}">${esc(a.name || a.rel_path)}</option>`).join("");
+    $("mvBgm").insertAdjacentHTML("beforeend",
+      (await j("GET", "/api/assets?kind=audio&limit=200")).items
+        .map(a=>`<option value="${a.id}">${esc(a.name || a.rel_path)}</option>`).join(""));
+    window.__mvImages = (d.items || []);
+  }catch(e){ window.__mvImages = []; }
+}
+
+async function mvLoadSheet(){
+  const mid = Number($("mvMaterial").value || currentMaterialId || 0);
+  const plat = $("mvPlatform").value;
+  if(!mid){ $("mvLoadStatus").textContent = "先填素材 id"; return; }
+  $("mvLoadStatus").textContent = "读取中…";
+  try{
+    const m = await j("GET", `/api/materials/${mid}`);
+    const d = (m.drafts || []).find(x=>x.platform_code === plat);
+    if(!d){ $("mvLoadStatus").textContent = `这条素材没有「${plat}」的成稿`; return; }
+    const scenes = ((d.payload || {}).clip_sheet || {}).scenes || [];
+    if(!scenes.length){
+      $("mvLoadStatus").textContent = `「${plat}」的成稿里没有剪辑单（只有视频类平台才有分镜）`;
+      return;
+    }
+    mvScenes = scenes;
+    $("mvLoadStatus").textContent = `读到 ${scenes.length} 个分镜`;
+    $("mvPanel").style.display = "";
+    mvRenderScenes();
+  }catch(e){ $("mvLoadStatus").textContent = "读取失败：" + e.message; }
+}
+
+function mvRenderScenes(){
+  const imgs = window.__mvImages || [];
+  const opts = imgs.map(a=>`<option value="${a.id}">${esc(a.name || a.rel_path)}</option>`).join("");
+  $("mvMeta").textContent = `${mvScenes.length} 个分镜`;
+  $("mvScenes").innerHTML = mvScenes.map((s, i)=>`
+    <div class="mv-row" style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px;display:flex;gap:10px;align-items:flex-start">
+      <div style="min-width:22px;color:var(--sub);font-size:12px;padding-top:4px">${i+1}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12px;font-weight:600">${esc(s.subtitle || s.script || "")}</div>
+        <div style="font-size:11.5px;color:var(--sub);margin-top:2px">配音：${esc(s.script || "")}</div>
+        <div style="font-size:11.5px;color:var(--sub)">画面建议：${esc(s.visual || "—")} · 时长提示 ${esc(s.duration_hint || "—")}</div>
+      </div>
+      <select class="mv-img" data-i="${i}" style="width:auto;max-width:190px">
+        <option value="">（选图）</option>${opts}
+      </select>
+    </div>`).join("");
+}
+
+async function mvStart(){
+  const mid = Number($("mvMaterial").value || currentMaterialId || 0);
+  const images = [...document.querySelectorAll(".mv-img")].map(s=>s.value ? Number(s.value) : null);
+  const missing = images.map((v, i)=>v ? null : i + 1).filter(Boolean);
+  if(missing.length){
+    // **发起前就说清是第几个** —— 不要等合成跑几分钟才报错
+    $("mvStatus").textContent = `❌ 第 ${missing.join("、")} 个分镜还没选图`;
+    return;
+  }
+  $("mvStatus").textContent = "正在发起…";
+  const body = {kind: "make_video", material_id: mid, platform: $("mvPlatform").value,
+                images: images, params: {strategy: $("mvStrategy").value}};
+  const bgm = $("mvBgm").value;
+  if(bgm) body.bgm_asset_id = Number(bgm);
+  try{
+    const r = await j("POST", "/api/jobs", body);
+    $("mvStatus").textContent = `已发起成片任务 #${r.job_id}（进度看「粗剪」面板）`;
+    loadJobs();
+  }catch(e){ $("mvStatus").textContent = "❌ " + e.message; }
+}
+
+function bindVideoHandlers(){
+  if(!$("mvStart")) return;
+  $("mvLoad").onclick = mvLoadSheet;
+  $("mvStart").onclick = mvStart;
+  mvLoadPlatforms();
 }
 
 // ============ M4: 创作者画像 / 复盘报告 / 效果录入 ============
