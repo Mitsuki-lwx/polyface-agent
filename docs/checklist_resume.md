@@ -96,16 +96,80 @@
 
 ## 9. 变异测试（**必须做，绿不等于有效**）
 
-- [ ] 把 `recoverInterrupted` 改回「标为 `failed`」→ 对应测试**变红** → 还原
-- [ ] 把「只跑缺的」改成「全部重跑」→ 对应测试**变红** → 还原
-- [ ] 把原子写改成直接写 → §2 那条**变红** → 还原
+三条都做了，**都被抓住**：
+
+| 变异 | 期望 | 实际 |
+|---|---|---|
+| `recoverInterrupted` 改回「标为 `failed`」 | 变红 | ✅ `GenerateRunnerRecoverTest` 1 红 |
+| Python「只跑缺的」改成「全部重跑」（`continue` → `pass`） | 变红 | ✅ `test_resume_generate.py` 4 红 |
+| 原子写改成直接写 | 变红 | ✅ `test_checkpoint.py` 1 红（`DID NOT RAISE OSError`） |
+
+三条都**已还原**，还原后全量复跑：Python `644 passed / 3 skipped`、Java `103 passed`。
+
+> 顺带说明：`recoverInterrupted` 那条一开始**没有单测能抓**（端到端要几分钟且要真杀进程），
+> 所以专门补了 `GenerateRunnerRecoverTest`。补之前这条变异是"绿"的 —— 正是 checklist 说的
+> "绿不等于有效"。
 
 ---
 
-## 实测
+## 实测（2026-10-11）
 
-（验收后如实填写：真的中断了几次、每次跑到哪、续跑跑了哪些、原始输出）
+**真的中断了一次** —— 不是模拟。
+
+| # | 做了什么 | 观测 |
+|---|---|---|
+| 1 | 起服务（独立 data 目录 `data/e2e-resume`），建素材 | `POST /api/materials` → 200，material_id=1 |
+| 2 | 提交 3 平台生成任务（xhs/douyin/zhihu） | `POST /api/jobs` → 200，job_id=1 |
+| 3 | 等**第一个平台落盘** | 410s 时 `done/platform-douyin.json` 出现 |
+| 4 | **杀掉 Java 进程** | `8080 已停（Java 确实死了）`；job 表状态仍停在 `running` |
+| 5 | 重启 Java | 启动日志：`启动清理：1 个任务在上次运行中未结束，已标为「可继续」` |
+| 6 | 查状态 | `status=interrupted`、`can_resume=true`、`error='服务重启时任务尚未结束（可继续）'` |
+| 7 | 调 `resume` | 200 `{'resumed': True}` |
+| 8 | 等完成 | `status=succeeded`，`ok_count=3`、`fail_count=0` |
+
+**杀之前的落盘**（"跑了一半"的物理证据）：
+```
+data/e2e-resume/jobs/job-9791770998700/done/
+  platform-douyin.json   10688B  12:53
+  platform-xhs.json       5704B  12:54
+```
+
+### 续跑时**两层保护都被真实触发**
+
+| 平台 | 发生了什么 | 事件流原文 |
+|---|---|---|
+| **xhs** | Java 调了 Python，**Python 自己跳过**（落盘在）→ 返回**完整集合** | `续跑 end  跳过 1 个已完成平台 ['xhs']；只跑 0 个 []` |
+| **douyin** | Java **完全没调**（落盘在 **且** 草稿在库） | `平台 end {"drafts": 1, "platform": "douyin", "reused": true}` |
+| **zhihu** | 真跑（唯一缺的） | `平台 start {"platform": "zhihu", "total": 3, "index": 3}` |
+
+**最终库里三个平台的稿子都在**：`douyin id=1` / `xhs id=2` / `zhihu id=3`。
+
+### 意外收获：续跑把"客户端超时"也救回来了
+
+第一轮里 xhs 的 Java→Python 调用**在 240s 超时**（正好等于 `polyface.llm.timeout-sec`）：
+`12:47:10 平台 start {xhs}` → `12:51:10 平台 fail {I/O error on POST}`。
+但 **Python 侧没停**，它继续跑完并在 12:54 落盘 —— 续跑于是把这次"客户端已放弃、
+服务端其实成了"的调用也救回来了。**这是落盘契约顺带带来的好处，不是设计时专门做的。**
+
+### 与 checklist 的偏差（如实记）
+
+- 用了 **3 个平台**而非 5 个（成本考虑）。机制完全相同：**部分完成 + 部分未完成**。
+- 脚本 `java_pid()` 第一次因 netstat 输出含 GBK 字节、严格 UTF-8 解码失败而崩；
+  已改为 `errors="replace"`。中断那一步是**手工**在正确的时刻执行的（落盘里有 2 个平台时）。
 
 ## 未做（显式列出）
 
-（验收后如实填写）
+- **没做自动续跑**，必须用户点一下（理由见 spec 关键决定三：服务刚启动就打出一批 LLM 请求，
+  既花钱又可能撞限流）。启动时**确实没有**任何 LLM 调用 —— 实测第 5/6 步可证。
+- **续跑按原参数**：不支持"中断后换平台集合/换模板"。换参数属于新任务（新建 job）。
+- 只保证**同一数据目录、同一版本内**的续跑。跨版本没试过。
+- `done/` 里的中间产物**不进素材库**（中间产物不是资产）。
+- **已花掉的 LLM 额度不可恢复** —— 续跑省的是"重复的部分"，不是"已花的那些"。
+- 粗剪的续跑**只有单测覆盖**（stub 掉 ffmpeg/ASR 的编排测试 8 条），
+  **没有真的跑一次带 ffmpeg 的中断**。生成那条是真的端到端跑过的。
+- 端到端用了 **3 个平台**而非 checklist 写的 5 个（成本考虑）。
+- `resume` 返回体里的 `status` 读的是**调用前**的值（仍是 `interrupted`），
+  因为 `markJobRunning` 发生在异步执行里。前端立刻轮询，所以看不出来；
+  但严格说这个字段是"过期"的。
+- 第一轮暴露的 **Java→Python 240s 客户端超时**（Python 侧还在跑）是**既有问题**，
+  这次没修 —— 只是发现续跑能把它救回来。

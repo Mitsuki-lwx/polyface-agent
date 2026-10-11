@@ -76,16 +76,27 @@ public class GenerateRunner {
         recoverInterrupted();
     }
 
-    /** 与粗剪同样的启动清理：上次没跑完的标为失败，否则工作台会永远转圈。 */
+    /**
+     * 上次没跑完的任务：进程早没了，状态却还停在"运行中" —— 重启时必须收拾干净。
+     *
+     * <p>不这么做的话，工作台会永远显示一个**永远不会动的进度条**
+     * （checklist §3 明确要求"进程意外死亡能被识别"）。
+     *
+     * <p>但**"收拾干净"不等于"判死刑"**：标为 {@link Store#JOB_INTERRUPTED} 而不是
+     * {@code failed} —— 跑过的部分（每个平台的落盘）还在，用户点一下就能接着跑。
+     * 标成失败会让用户以为出了错，其实没有错，只是被打断了。见 `docs/spec_resume.md`。
+     *
+     * <p>刻意**不自动续跑**：服务刚启动就打出一批 LLM 请求，既花钱又可能撞限流，
+     * 而用户可能早就不想跑那个任务了。续跑要用户显式点一下。
+     */
     private void recoverInterrupted() {
         try {
             List<Store.JobRow> inFlight = store.jobsInFlight();
             for (Store.JobRow j : inFlight) {
-                store.finishJob(j.id(), Store.JOB_FAILED,
-                        "服务重启时任务尚未结束", null, null, null);
+                store.markJobInterrupted(j.id());
             }
             if (!inFlight.isEmpty()) {
-                log.warn("启动清理：{} 个任务在上次运行中未结束，已标记为失败", inFlight.size());
+                log.warn("启动清理：{} 个任务在上次运行中未结束，已标为「可继续」", inFlight.size());
             }
         } catch (Exception e) {
             log.warn("启动清理未完成：{}", e.getMessage());
@@ -134,6 +145,7 @@ public class GenerateRunner {
         ArrayNode okArr = result.putArray("ok");
         ArrayNode failArr = result.putArray("failed");
         String fatal = null;
+        int reused = 0;              // 续跑复用的平台数（供日志与结果）
         try {
             Store.MaterialRow m = store.getMaterial(materialId).orElse(null);
             if (m == null) {
@@ -143,12 +155,34 @@ public class GenerateRunner {
                         ? inlineTemplate : resolveTemplate(templateId);
                 // ① 事实先备好 —— 这是"理解只跑一次"的关键
                 ObjectNode facts = ensureFacts(jobId, m, events, dir);
-                // ② 每平台一次调用
+                // ② 断点续跑：已完成且**草稿确实在库里**的平台直接复用，不再调用
+                //    （见 docs/spec_resume.md §5：落盘粒度 = 续跑粒度）
+                Set<String> done = donePlatforms(dir);
+                Map<String, Store.DraftRow> existing = new LinkedHashMap<>();
+                for (Store.DraftRow d : store.draftsByMaterial(materialId)) {
+                    existing.putIfAbsent(d.platformCode(), d);
+                }
+                // ③ 每平台一次调用
                 for (int i = 0; i < platforms.size(); i++) {
                     String code = platforms.get(i);
                     if (cancelRequested.contains(jobId)) {
                         fatal = null;
                         break;
+                    }
+                    Store.DraftRow prev = done.contains(code) ? existing.get(code) : null;
+                    if (prev != null) {
+                        // 落盘在**且**草稿在库 —— 两个条件都要，缺一就重跑：
+                        // 落盘只是"Python 跑完了"的记录，产物在库里才算数。
+                        ObjectNode n = okArr.addObject();
+                        n.put("platform_code", code);
+                        n.put("platform_name", prev.platformName());
+                        n.put("draft_id", prev.id());
+                        n.put("status", prev.status());
+                        n.put("reused", true);
+                        reused++;
+                        appendEvent(events, "平台", "end",
+                                Map.of("platform", code, "reused", true, "drafts", 1));
+                        continue;
                     }
                     appendEvent(events, "平台", "start",
                             Map.of("index", i + 1, "total", platforms.size(), "platform", code));
@@ -213,7 +247,72 @@ public class GenerateRunner {
         result.put("ok_count", ok);
         result.put("fail_count", failed);
         store.finishJobWithResult(jobId, status, error, result.toString());
-        log.info("生成任务 {} 结束 status={} ok={} failed={}", jobId, status, ok, failed);
+        result.put("reused_count", reused);
+        log.info("生成任务 {} 结束 status={} ok={} failed={}（其中续跑复用 {}）",
+                jobId, status, ok, failed, reused);
+    }
+
+    /**
+     * 读任务目录里"已完成单位"的落盘（`done/platform-<code>.json`，见 `docs/spec_resume.md`）。
+     *
+     * <p>**解析不出来就当没完成** —— 与 Python 侧同一条规矩。半个 JSON 比没有更危险：
+     * 它会让续跑跳过本该重跑的步骤。
+     */
+    private Set<String> donePlatforms(Path dir) {
+        Set<String> out = new LinkedHashSet<>();
+        Path d = dir.resolve("done");
+        if (!Files.isDirectory(d)) {
+            return out;
+        }
+        try (java.nio.file.DirectoryStream<Path> ds =
+                     Files.newDirectoryStream(d, "platform-*.json")) {
+            for (Path f : ds) {
+                String name = f.getFileName().toString();
+                try {
+                    mapper.readTree(Files.readString(f, StandardCharsets.UTF_8));
+                } catch (Exception e) {                          // noqa: BLE001
+                    log.warn("落盘 {} 读不出，当作未完成：{}", name, e.getMessage());
+                    continue;
+                }
+                out.add(name.substring("platform-".length(), name.length() - ".json".length()));
+            }
+        } catch (IOException e) {
+            log.warn("读任务落盘目录失败（当作没有已完成平台）：{}", e.getMessage());
+        }
+        return out;
+    }
+
+    private JsonNode readJson(String s) {
+        try {
+            return s == null || s.isBlank() ? mapper.createObjectNode() : mapper.readTree(s);
+        } catch (Exception e) {                                  // noqa: BLE001
+            return mapper.createObjectNode();
+        }
+    }
+
+    /**
+     * 续跑一个「已中断」的任务：**沿用原来的任务目录**，只补没跑完的平台。
+     *
+     * <p>为什么必须沿用原目录：`done/` 就在那里 —— 换个目录等于把已跑过的部分丢掉，
+     * 那就不是续跑而是重跑了。
+     *
+     * @return 是否受理（状态不对时返回 false，由调用方给出可读理由）
+     */
+    public boolean resume(long jobId) {
+        Store.JobRow j = store.getJob(jobId).orElse(null);
+        if (j == null || !Store.JOB_INTERRUPTED.equals(j.status())) {
+            return false;
+        }
+        JsonNode p = readJson(j.paramsJson());
+        long materialId = p.path("material_id").asLong(0);
+        List<String> platforms = new ArrayList<>();
+        p.path("platforms").forEach(n -> platforms.add(n.asText()));
+        Long templateId = p.has("template_id") ? p.path("template_id").asLong() : null;
+        JsonNode inlineTpl = p.has("template") ? p.path("template") : null;
+        String tone = p.path("tone_override").asText(null);
+        Path dir = Path.of(j.workdir());
+        pool.submit(() -> execute(jobId, materialId, platforms, templateId, inlineTpl, tone, dir));
+        return true;
     }
 
     /**

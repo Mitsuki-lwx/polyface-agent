@@ -79,8 +79,9 @@ public class Store {
     /**
      * 一条异步任务（M8 第一片）。
      *
-     * <p>`status` 只有五个取值：{@link #JOB_QUEUED} / {@link #JOB_RUNNING} /
-     * {@link #JOB_SUCCEEDED} / {@link #JOB_FAILED} / {@link #JOB_CANCELED} —— 不设"隐含态"。
+     * <p>`status` 只有六个取值：{@link #JOB_QUEUED} / {@link #JOB_RUNNING} /
+     * {@link #JOB_SUCCEEDED} / {@link #JOB_FAILED} / {@link #JOB_CANCELED} /
+     * {@link #JOB_INTERRUPTED} —— 不设"隐含态"。（另有 {@link #JOB_PARTIAL} 表示部分失败。）
      */
     public record JobRow(long id, String kind, String status, String paramsJson,
                          Long inputAssetId, String inputPath, String outputPath,
@@ -1074,6 +1075,17 @@ public class Store {
      */
     public static final String JOB_PARTIAL = "partial";
 
+    /**
+     * **已中断**：服务重启时任务还没跑完 —— 跑过的部分还在，可以**继续**。
+     *
+     * <p>为什么要跟 {@link #JOB_FAILED} 分开：`failed` 的语义是"跑过了，结果是错的"，
+     * 用户该去看错误、改素材、改参数；`interrupted` 的语义是"没跑完，接着跑就行"。
+     * 混成一个，用户会对着一个"失败"的任务不知道该修什么 —— 其实没什么可修。
+     *
+     * <p>见 `docs/spec_resume.md` 关键决定二。
+     */
+    public static final String JOB_INTERRUPTED = "interrupted";
+
     /** 建任务（初始 `queued`）。 */
     public long insertJob(String kind, String paramsJson, Long inputAssetId, String inputPath,
                           String workdir, String eventsPath) {
@@ -1121,6 +1133,16 @@ public class Store {
         } catch (java.sql.SQLException e) {
             throw new RuntimeException("finishJobWithResult failed", e);
         }
+    }
+
+    /**
+     * 标为「已中断」：**不是失败** —— 跑过的部分还在，可以继续（见 `docs/spec_resume.md`）。
+     *
+     * <p>刻意**不设** `finished_at`：它没完成。设了会让运行报告显示一个假的"完成时间"。
+     */
+    public int markJobInterrupted(long id) {
+        return updateJob("UPDATE job SET status=?, error=? WHERE id=?",
+                JOB_INTERRUPTED, "服务重启时任务尚未结束（可继续）", id);
     }
 
     /** 落终态。`error` 只有失败时才有值。 */

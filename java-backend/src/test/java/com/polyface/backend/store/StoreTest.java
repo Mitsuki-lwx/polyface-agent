@@ -345,4 +345,59 @@ class StoreTest {
         assertThat(store.getAsset(img)).isEmpty();
         assertThat(store.deleteAsset(img)).isFalse();
     }
+
+    // ============ 断点续跑：interrupted 与 failed 必须是两种状态 ============
+
+    @Test
+    void interruptedIsNotFailed() {
+        Store store = newStore();
+        long id = store.insertJob("generate", "{}", null, "1", "/tmp/w", "/tmp/w/events.jsonl");
+        store.markJobRunning(id);
+
+        store.markJobInterrupted(id);
+
+        var row = store.getJob(id).orElseThrow();
+        assertThat(row.status()).isEqualTo(Store.JOB_INTERRUPTED);
+        assertThat(row.status()).isNotEqualTo(Store.JOB_FAILED);
+        // **没完成就不该有完成时间** —— 否则运行报告会显示一个假的"完成于"
+        assertThat(row.finishedAt()).isNull();
+        assertThat(row.error()).contains("可继续");
+    }
+
+    @Test
+    void interruptedJobIsNoLongerInFlight() {
+        Store store = newStore();
+        long a = store.insertJob("generate", "{}", null, "1", "/tmp/a", "/tmp/a/e.jsonl");
+        long b = store.insertJob("roughcut", "{}", null, "2", "/tmp/b", "/tmp/b/e.jsonl");
+        store.markJobRunning(a);
+        assertThat(store.jobsInFlight()).hasSize(2);
+
+        // 重启清理：两个都标成"可继续"
+        for (Store.JobRow j : store.jobsInFlight()) {
+            store.markJobInterrupted(j.id());
+        }
+
+        // 关键：清理过之后**不该再出现在 in-flight 里** —— 否则每次重启都会重复处理
+        assertThat(store.jobsInFlight()).isEmpty();
+        assertThat(store.getJob(a).orElseThrow().status()).isEqualTo(Store.JOB_INTERRUPTED);
+        assertThat(store.getJob(b).orElseThrow().status()).isEqualTo(Store.JOB_INTERRUPTED);
+    }
+
+    @Test
+    void interruptedJobCanBeCanceled() {
+        Store store = newStore();
+        long id = store.insertJob("generate", "{}", null, "1", "/tmp/w", "/tmp/w/e.jsonl");
+        store.markJobInterrupted(id);
+
+        store.finishJob(id, Store.JOB_CANCELED, "已取消", null, null, null);
+
+        assertThat(store.getJob(id).orElseThrow().status()).isEqualTo(Store.JOB_CANCELED);
+    }
+
+    @Test
+    void failedAndInterruptedAreDistinctValues() {
+        assertThat(Store.JOB_INTERRUPTED).isNotEqualTo(Store.JOB_FAILED);
+        assertThat(Store.JOB_INTERRUPTED).isNotEqualTo(Store.JOB_CANCELED);
+        assertThat(Store.JOB_INTERRUPTED).isNotEqualTo(Store.JOB_PARTIAL);
+    }
 }

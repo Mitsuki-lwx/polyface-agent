@@ -129,6 +129,13 @@ public class JobController {
         if (!KIND_GENERATE.equals(j.kind())) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "只有生成任务支持重试");
         }
+        if (Store.JOB_INTERRUPTED.equals(j.status())) {
+            // retry 会**从头**重跑；中断的任务该用 resume 接着跑。
+            // 不拦的话，用户会以为"接着跑了"，其实把已花的额度又花了一遍。
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "这个任务是「已中断」—— 请用 resume 接着跑；retry 会从头重跑，"
+                            + "把已经跑过的部分再花一遍额度");
+        }
         List<String> failed = failedPlatforms(j);
         if (failed.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "这个任务没有失败的平台");
@@ -160,6 +167,46 @@ public class JobController {
         return out;
     }
 
+    // ---------------- 继续（断点续跑）----------------
+
+    /**
+     * 继续一个「已中断」的任务：**跳过已完成的单位**，只补没跑完的。
+     *
+     * <p>与 {@link #retry(long)} 的区别必须明确，否则用户分不清：
+     * <table border="1">
+     *   <tr><th></th><th>retry</th><th>resume</th></tr>
+     *   <tr><td>适用状态</td><td>{@code failed}</td><td>{@code interrupted}</td></tr>
+     *   <tr><td>行为</td><td><b>从头</b>再跑</td><td><b>跳过已完成</b>，只补缺的</td></tr>
+     * </table>
+     *
+     * <p>状态不对时**明确报错**，不静默接受 —— 静默接受会让用户以为"续跑了"，
+     * 其实是"重跑了"（见 `docs/spec_resume.md` §5、`docs/tasks_resume.md` T6）。
+     */
+    @PostMapping(value = "/api/jobs/{id}/resume", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ObjectNode resume(@PathVariable long id) {
+        Store.JobRow j = store.getJob(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "任务不存在"));
+        if (Store.JOB_FAILED.equals(j.status())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "这个任务是**失败**（不是中断）—— 没有可续的部分，请用 retry 从头重跑");
+        }
+        if (!Store.JOB_INTERRUPTED.equals(j.status())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "只有「已中断」的任务能继续，当前状态：" + j.status());
+        }
+        boolean accepted = KIND_GENERATE.equals(j.kind())
+                ? generate.resume(id) : roughcut.resume(id);
+        if (!accepted) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "任务状态已变化（可能已被取消或已开始跑），请刷新后重试");
+        }
+        ObjectNode out = mapper.createObjectNode();
+        out.put("job_id", id);
+        out.put("resumed", true);
+        out.put("status", store.getJob(id).map(Store.JobRow::status).orElse(j.status()));
+        return out;
+    }
+
     // ---------------- 查询 ----------------
 
     @GetMapping(value = "/api/jobs", produces = MediaType.APPLICATION_JSON_VALUE)
@@ -187,12 +234,16 @@ public class JobController {
         Store.JobRow j = store.getJob(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "任务不存在"));
         boolean killed = KIND_GENERATE.equals(j.kind()) ? generate.cancel(id) : roughcut.cancel(id);
-        if (killed) {
-            store.finishJob(id, Store.JOB_CANCELED, "已取消", null, null, null);
+        // 已中断的任务**没有进程可杀**，但它确实需要能被"放弃" ——
+        // 否则它会永远躺在"可继续"里，用户既跑不掉也清不掉（见 docs/tasks_resume.md T8）。
+        boolean abandoned = !killed && Store.JOB_INTERRUPTED.equals(j.status());
+        if (killed || abandoned) {
+            store.finishJob(id, Store.JOB_CANCELED,
+                    abandoned ? "已放弃（不再继续）" : "已取消", null, null, null);
         }
         ObjectNode out = mapper.createObjectNode();
         out.put("job_id", id);
-        out.put("canceled", killed);
+        out.put("canceled", killed || abandoned);
         out.put("status", store.getJob(id).map(Store.JobRow::status).orElse(j.status()));
         return out;
     }
@@ -238,6 +289,9 @@ public class JobController {
         if (j.error() != null && !j.error().isBlank()) {
             n.put("error", j.error());
         }
+        // 「继续」按钮的开关：**只有 interrupted 给** —— failed 的任务没有可续的部分
+        // （它的语义是"跑过了、结果错了"），该用 retry 从头重跑。
+        n.put("can_resume", Store.JOB_INTERRUPTED.equals(j.status()));
         if (j.resultJson() != null && !j.resultJson().isBlank()) {
             n.set("result", readJson(j.resultJson()));
             List<String> failed = failedPlatforms(j);

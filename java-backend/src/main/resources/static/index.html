@@ -603,7 +603,7 @@ async function pollGenerateJob(jobId, total){
       + (p.pct != null ? ` (${p.pct}%)` : "")
       + ` · 已完成 ${(p.done_stages||[]).length} 步`
       + (p.stalled ? " · ⚠️ 疑似卡住" : "");
-    if(["succeeded","failed","partial","canceled"].includes(job.status)){
+    if(["succeeded","failed","partial","canceled","interrupted"].includes(job.status)){
       stopGenPolling();
       btn.disabled=false; btn.innerHTML="🚀 一键生成多平台稿件";
       await onGenerateJobDone(job, total);
@@ -627,6 +627,11 @@ async function onGenerateJobDone(job, total){
   }else if(job.status === "succeeded"){
     $("genStatus").textContent = `✅ 完成（成功 ${okN}${secs!=null?`，${secs}s`:""}）`;
     $("genStatus").style.color = "var(--ok)";
+  }else if(job.status === "interrupted"){
+    // 中断 ≠ 失败：已跑完的平台还在（工作台的按钮会显示"继续"）。
+    // 文案要让人分清 —— 对着"失败"会去查错，其实没什么可查的。
+    $("genStatus").textContent = "⏸ 已中断（服务重启）· 已跑完的部分还在，点「继续」接着跑";
+    $("genStatus").style.color = "var(--brand)";
   }else{
     $("genStatus").textContent = `❌ 失败：${job.error || "未知原因"}`;
     $("genStatus").style.color = "var(--brand)";
@@ -634,6 +639,19 @@ async function onGenerateJobDone(job, total){
   // 失败的平台：给原因 + 一键重试（只重跑失败的那些）
   const failed = (res.failed || []);
   renderFailures(failed.map(f=>({platform:f.platform_code, error:f.error})));
+  if(job.can_resume){
+    $("failLine").insertAdjacentHTML("beforeend",
+      `<div style="margin-top:6px"><button class="sm" id="btnResumeGen" style="font-size:12px">
+         ▶ 继续（跳过已跑完的平台）</button></div>`);
+    $("btnResumeGen").onclick = async ()=>{
+      const b=$("btnResumeGen"); b.disabled=true; b.textContent="正在继续…";
+      try{
+        await j("POST", `/api/jobs/${job.id}/resume`);
+        $("genStatus").textContent = "已继续，只跑没跑完的平台…";
+        pollGenerateJob(job.id, total);
+      }catch(e){ b.disabled=false; b.textContent="▶ 继续"; alertFallback(e.message); }
+    };
+  }
   if(job.can_retry){
     $("failLine").insertAdjacentHTML("beforeend",
       `<div style="margin-top:6px"><button class="ghost sm" id="btnRetryFailed" style="font-size:12px">
@@ -969,7 +987,8 @@ async function startRoughcut(){
 
 function renderActiveJob(j){
   const p = j.progress || {};
-  const label = {queued:"排队中", running:"进行中", succeeded:"✅ 完成", failed:"❌ 失败", canceled:"已取消"}[j.status] || j.status;
+  const label = {queued:"排队中", running:"进行中", succeeded:"✅ 完成", failed:"❌ 失败",
+                 canceled:"已取消", interrupted:"⏸ 已中断 · 可继续"}[j.status] || j.status;
   let bar = "";
   if(j.status === "running" || j.status === "queued"){
     const pct = (typeof p.pct === "number") ? p.pct : null;
@@ -995,6 +1014,9 @@ function renderActiveJob(j){
     ${links ? `<div style="margin-top:6px;font-size:12px">产物：${links}</div>` : ""}
     ${j.status === "running" || j.status === "queued"
         ? `<div style="margin-top:8px"><button class="ghost sm" id="rcStop" style="font-size:11px">取消任务</button></div>` : ""}
+    ${j.status === "interrupted"
+        ? `<div style="margin-top:8px"><button class="sm" id="rcResume" style="font-size:11px">
+             ▶ 继续（跳过已完成的阶段）</button></div>` : ""}
   </div>`;
   const stop = $("rcStop");
   if(stop) stop.onclick = async ()=>{
@@ -1002,6 +1024,14 @@ function renderActiveJob(j){
     try{ await j("POST", `/api/jobs/${j.id}/cancel`); }catch(e){ /* 幂等，失败也无所谓 */ }
     stopPolling();
     loadJobs();
+  };
+  const resume = $("rcResume");
+  if(resume) resume.onclick = async ()=>{
+    resume.disabled = true; resume.textContent = "正在继续…";
+    try{
+      await j("POST", `/api/jobs/${j.id}/resume`);
+      pollJob(j.id);
+    }catch(e){ resume.disabled=false; resume.textContent="▶ 继续"; alertFallback(e.message); }
   };
 }
 
@@ -1012,7 +1042,7 @@ async function pollJob(id){
     try{ job = await j("GET", `/api/jobs/${id}`); }
     catch(e){ stopPolling(); $("rcActive").innerHTML = `<div class="meta">任务查询失败：${esc(e.message)}</div>`; return; }
     renderActiveJob(job);
-    if(["succeeded","failed","canceled"].includes(job.status)){
+    if(["succeeded","failed","canceled","interrupted"].includes(job.status)){
       stopPolling();                      // ← 任务结束必须停，否则一直打接口
       loadJobs();
       if(job.status === "succeeded") loadAssets();   // 产物已入素材库
@@ -1034,7 +1064,8 @@ async function loadJobs(){
   $("rcMeta").textContent = items.length ? `最近 ${items.length} 条` : "";
   if(!items.length){ $("rcJobs").innerHTML = '<div class="empty">还没有粗剪任务</div>'; return; }
   $("rcJobs").innerHTML = items.map(j=>{
-    const label = {queued:"排队", running:"进行中", succeeded:"✅", failed:"❌", canceled:"已取消"}[j.status] || j.status;
+    const label = {queued:"排队", running:"进行中", succeeded:"✅", failed:"❌",
+                   canceled:"已取消", interrupted:"⏸ 可继续"}[j.status] || j.status;
     return `<div class="side-item" data-job="${j.id}" style="cursor:pointer">
       <b>#${j.id}</b> ${esc(label)} ${esc(j.input_name || "")}
       <div style="color:#9ca3af">${esc((j.created_at||"").slice(0,19))}

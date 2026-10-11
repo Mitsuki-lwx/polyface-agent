@@ -72,20 +72,23 @@ public class RoughcutRunner {
     }
 
     /**
-     * 上次没跑完的任务：进程早没了，状态却还停在"运行中" —— 重启时必须把它们标成失败。
+     * 上次没跑完的任务：进程早没了，状态却还停在"运行中" —— 重启时必须收拾干净。
      *
      * <p>不这么做的话，工作台会永远显示一个**永远不会动的进度条**
      * （checklist §3 明确要求"进程意外死亡能被识别"）。
+     *
+     * <p>但**"收拾干净"不等于"判死刑"**：标为 {@link Store#JOB_INTERRUPTED} 而不是
+     * {@code failed} —— 粗剪的中间产物本来就落盘保留，用户点一下就能从断掉的阶段接着跑。
+     * 见 `docs/spec_resume.md`。
      */
     private void recoverInterrupted() {
         try {
             List<Store.JobRow> inFlight = store.jobsInFlight();
             for (Store.JobRow j : inFlight) {
-                store.finishJob(j.id(), Store.JOB_FAILED,
-                        "服务重启时任务尚未结束（进程已随服务退出）", null, null, null);
+                store.markJobInterrupted(j.id());
             }
             if (!inFlight.isEmpty()) {
-                log.warn("启动清理：{} 个任务在上次运行中未结束，已标记为失败", inFlight.size());
+                log.warn("启动清理：{} 个任务在上次运行中未结束，已标为「可继续」", inFlight.size());
             }
         } catch (Exception e) {
             log.warn("启动清理未完成：{}", e.getMessage());
@@ -112,6 +115,35 @@ public class RoughcutRunner {
         return jobId;
     }
 
+    /**
+     * 续跑一个「已中断」的粗剪任务：**沿用原来的任务目录**。
+     *
+     * <p>跳过逻辑在 **Python 侧**（`scripts/roughcut.py` 的 `_Done`）：它读 `work/done/`
+     * 里已完成的阶段，按依赖校验后只跑缺的。Java 这边只要把**同样的命令**再发一次 ——
+     * 目录不变，判据不变，自然就接上了。
+     *
+     * @return 是否受理（状态不对时返回 false，由调用方给出可读理由）
+     */
+    public boolean resume(long jobId) {
+        Store.JobRow j = store.getJob(jobId).orElse(null);
+        if (j == null || !Store.JOB_INTERRUPTED.equals(j.status())) {
+            return false;
+        }
+        // 基名沿用约定：submit 的唯一调用方（JobController#startRoughcut）用的就是 out
+        pool.submit(() -> execute(jobId, j.inputPath(), Path.of(j.workdir()), "out",
+                fromJson(j.paramsJson())));
+        return true;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> fromJson(String s) {
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper().readValue(s, Map.class);
+        } catch (Exception e) {                                  // noqa: BLE001
+            return Map.of();
+        }
+    }
+
     private void execute(long jobId, String inputPath, Path outDir, String baseName,
                          Map<String, Object> params) {
         store.markJobRunning(jobId);
@@ -132,7 +164,9 @@ public class RoughcutRunner {
             exit = p.waitFor();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            store.finishJob(jobId, Store.JOB_FAILED, "任务被中断", null, null, null);
+            // **"被中断"不等于"失败"**：已跑完阶段的落盘都在，可以继续。
+            // 标成 failed 会让它从"可继续"里消失 —— 那正是这次要修的东西。
+            store.markJobInterrupted(jobId);
             return;
         } catch (IOException e) {
             store.finishJob(jobId, Store.JOB_FAILED, "启动失败：" + e.getMessage(), null, null, null);
