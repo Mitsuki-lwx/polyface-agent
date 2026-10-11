@@ -64,6 +64,10 @@ public class TimelineController {
         if (!Files.isRegularFile(file)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "时间线文件不在磁盘上：" + row.relPath());
         }
+        if (!isTimelineFile(file)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "这个资产的内容不是时间线：" + row.relPath());
+        }
         JsonNode timeline;
         try {
             timeline = mapper.readTree(Files.readString(file, StandardCharsets.UTF_8));
@@ -76,7 +80,9 @@ public class TimelineController {
         out.put("asset_id", assetId);
         out.put("name", row.name());
         out.put("rel_path", row.relPath());
-        out.put("url", "/media/" + row.relPath());
+        // 用权威构造器（MediaController.mediaUrl）—— 自己拼前缀实测踩过：
+        // 托管路径是 `/api/media/**`，写成 `/media/` 就是 404（预览帧全空）。
+        out.put("url", MediaController.mediaUrl(row.relPath()));
         out.set("timeline", timeline);
 
         // 源视频：从血缘里取（粗剪登记时挂的就是它）
@@ -88,7 +94,7 @@ public class TimelineController {
                     src.put("asset_id", a.id());
                     src.put("name", a.name());
                     src.put("rel_path", a.relPath());
-                    src.put("url", "/media/" + a.relPath());
+                    src.put("url", MediaController.mediaUrl(a.relPath()));
                 });
             }
         }
@@ -147,6 +153,22 @@ public class TimelineController {
         return row;
     }
 
+    /**
+     * 这个文件**真的是**一条时间线吗？
+     *
+     * <p>`timeline` 在资产模型里是个**类**（json/srt/vtt/ass 都归它），所以只判 kind 不够 ——
+     * 实测踩过：`/api/timelines` 把 `render.srt` 也列了出来，`GET` 它还把字幕文本当 JSON 解。
+     * 判据只能是**内容**：有 `version` 且有 `keep` 才是时间线（粗剪的 `cuts.json` 只有 `cuts`，不是）。
+     */
+    private boolean isTimelineFile(Path f) {
+        try {
+            JsonNode n = mapper.readTree(Files.readString(f, StandardCharsets.UTF_8));
+            return n.isObject() && n.has("version") && n.has("keep");
+        } catch (Exception e) {                                // noqa: BLE001
+            return false;
+        }
+    }
+
     /** 调 Python 校验。**Python 返回 400 时把它的理由原样翻成我们的错误体** —— 不能吞掉。 */
     private JsonNode callValidate(JsonNode body) {
         ObjectNode req = mapper.createObjectNode();
@@ -182,11 +204,15 @@ public class TimelineController {
         ObjectNode out = mapper.createObjectNode();
         ArrayNode items = out.putArray("items");
         for (Store.AssetRow a : store.listAssets(List.of("timeline"), null, 100, 0)) {
+            // 同 kind 里还混着 srt/vtt —— 只列内容真是时间线的
+            if (!isTimelineFile(mediaDir.resolveSafe(a.relPath()))) {
+                continue;
+            }
             ObjectNode n = items.addObject();
             n.put("asset_id", a.id());
             n.put("name", a.name());
             n.put("rel_path", a.relPath());
-            n.put("url", "/media/" + a.relPath());
+            n.put("url", MediaController.mediaUrl(a.relPath()));
             n.put("created_at", a.createdAt());
         }
         return out;

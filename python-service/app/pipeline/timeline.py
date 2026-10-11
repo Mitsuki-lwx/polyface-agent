@@ -37,14 +37,24 @@ def keep_seconds(keep: Sequence[Sequence[float]]) -> float:
     return round(sum(float(e) - float(s) for s, e in keep), 3)
 
 
-def film_to_source(t_film: float, keep: Sequence[Sequence[float]]) -> float | None:
-    """成片时间轴 → 源时间轴。超出成片长度返回 None。"""
+def film_to_source(t_film: float, keep: Sequence[Sequence[float]],
+                   prefer: str = "earlier") -> float | None:
+    """成片时间轴 → 源时间轴。超出成片长度返回 None。
+
+    剪点是瞬时的：源 10.0（第 1 段尾）与 20.0（第 2 段头）都落在成片 10.0。
+    所以边界上的反推有歧义，用 `prefer` 指定取哪一侧：
+    字幕**起点**要 earlier（贴左），**终点**要 later（贴右）—— 否则会短掉/多出一点点。
+    """
     acc = 0.0
     for s, e in keep:
         s, e = float(s), float(e)
-        if t_film <= acc + (e - s) + _EPS:
+        length = e - s
+        if t_film < acc + length - _EPS:
             return round(s + max(0.0, t_film - acc), 3)
-        acc += e - s
+        if t_film <= acc + length + _EPS:
+            # 正好在边界上
+            return round(e if prefer == "earlier" else s, 3)
+        acc += length
     return None
 
 
@@ -99,34 +109,63 @@ def segments_to_source(segments_film: Iterable[dict], keep: Sequence[Sequence[fl
     """
     out: list[dict] = []
     for seg in segments_film:
-        a = film_to_source(float(seg["start"]), keep)
-        b = film_to_source(float(seg["end"]), keep)
+        # 起点贴左、终点贴右：否则边界上会短掉/多出一点点
+        a = film_to_source(float(seg["start"]), keep, prefer="earlier")
+        b = film_to_source(float(seg["end"]), keep, prefer="later")
         if a is None or b is None or b - a <= _EPS:
             continue
         out.append({"start": a, "end": b, "text": str(seg.get("text", ""))})
     return out
 
 
+def _clamp_forward(t: float, keep: Sequence[Sequence[float]]) -> float | None:
+    """落在被剪区间里的时间点，向**后**夹到最近的保留区间起点。全被剪光则 None。"""
+    for s, e in keep:
+        s, e = float(s), float(e)
+        if t < s - _EPS:
+            return s
+        if t <= e + _EPS:
+            return t
+    return None
+
+
+def _clamp_backward(t: float, keep: Sequence[Sequence[float]]) -> float | None:
+    """落在被剪区间里的时间点，向**前**夹到最近的保留区间终点。全被剪光则 None。"""
+    last = None
+    for s, e in keep:
+        s, e = float(s), float(e)
+        if t < s - _EPS:
+            return last
+        if t <= e + _EPS:
+            return t
+        last = e
+    return last
+
+
 def segments_to_film(segments_src: Iterable[dict], keep: Sequence[Sequence[float]],
                      ) -> list[dict]:
     """源轴字幕 → 成片轴。**渲染时现推** —— 这就是"字幕跟着剪点走"。
 
-    完全落在被剪区间里的段整条丢掉；跨边界的**截断**到保留区间边界。
-    一段横跨多个保留区间时拆成多条（实测极少 —— ASR 在剪后视频上跑，
-    本来就在停顿处断开 —— 但不能错）。
+    **一个条目，不拆。** 关键认识：**成片是连续的** —— 被剪掉的停顿在成片里根本不存在，
+    所以源区间 `[a, b]` 在成片里就是 `[film(a), film(b)]` 这一段连续时间。
+    早先按保留区间拆开是错的：同一句话会出现两次，其中一段还可能只有几十毫秒
+    （实测抓到过 28ms 的碎片）。
+
+    整段都落在被剪区间里 → 丢掉（这正是"删掉一段，那段字幕就没了"）。
     """
     out: list[dict] = []
     for seg in segments_src:
         s, e = float(seg["start"]), float(seg["end"])
         text = str(seg.get("text", ""))
-        for ks, ke in keep:
-            a, b = max(s, float(ks)), min(e, float(ke))
-            if b - a <= _EPS:
-                continue
-            fa, fb = source_to_film(a, keep), source_to_film(b, keep)
-            if fa is None or fb is None or fb - fa <= _EPS:
-                continue
-            out.append({"start": round(fa, 3), "end": round(fb, 3), "text": text})
+        a = _clamp_forward(s, keep)
+        b = _clamp_backward(e, keep)
+        if a is None or b is None:
+            continue                       # 整段都在被剪区间里
+        fa = source_to_film(a, keep)
+        fb = source_to_film(b, keep)
+        if fa is None or fb is None or fb - fa <= _EPS:
+            continue
+        out.append({"start": round(fa, 3), "end": round(fb, 3), "text": text})
     out.sort(key=lambda x: (x["start"], x["end"]))
     return out
 

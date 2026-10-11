@@ -155,6 +155,44 @@ class TimelineControllerTest {
     }
 
     @Test
+    void srtAssetIsNotATimeline() throws Exception {
+        // `timeline` 在资产模型里是个**类**（json/srt/vtt/ass 都归它）。
+        // 实测踩过：/api/timelines 把 render.srt 也列了出来，GET 它还把字幕文本当 JSON 解。
+        // 判据只能是**内容**：有 version + keep 才是时间线。
+        Path dir = Path.of("target/test-data-timeline/media/roughcut");
+        Path srt = dir.resolve("t-" + System.nanoTime() + ".srt");
+        Files.writeString(srt, "1\n00:00:00,000 --> 00:00:02,000\n你好\n", StandardCharsets.UTF_8);
+        long srtId = store.insertAsset("timeline", "generated", "测试字幕",
+                "roughcut/" + srt.getFileName(), "application/x-subrip",
+                Files.size(srt), 0, 0, 0d, "s", "粗剪");
+
+        mockMvc.perform(get("/api/timelines/" + srtId))
+                .andExpect(status().isBadRequest());
+
+        String list = mockMvc.perform(get("/api/timelines"))
+                .andExpect(status().isOk())
+                // 必须显式按 UTF-8 取：MockMvc 默认按响应头里的 charset 解码，
+                // 没有 charset 时用 ISO-8859-1 —— 中文名会变成乱码（测试自身的问题，不是接口的）
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+        assertThat(list).doesNotContain(srt.getFileName().toString());
+        assertThat(list).contains("测试时间线");
+    }
+
+    @Test
+    void cutsJsonIsNotATimeline() throws Exception {
+        // 粗剪的 cuts.json 同属 timeline 类，但它只有 cuts 没有 keep —— 不是时间线
+        Path dir = Path.of("target/test-data-timeline/media/roughcut");
+        Path cuts = dir.resolve("c-" + System.nanoTime() + ".json");
+        Files.writeString(cuts, "{\"cuts\": [[1.0, 2.0]]}", StandardCharsets.UTF_8);
+        long id = store.insertAsset("timeline", "generated", "测试剪点",
+                "roughcut/" + cuts.getFileName(), "application/json",
+                Files.size(cuts), 0, 0, 0d, "s", "粗剪");
+
+        mockMvc.perform(get("/api/timelines/" + id))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     void validateEndpointProxies() throws Exception {
         ObjectNode ok = mapper.createObjectNode();
         ok.put("ok", true);

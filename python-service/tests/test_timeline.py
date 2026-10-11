@@ -141,15 +141,19 @@ def test_segments_follow_cuts_without_drift():
     assert film[1]["start"] == pytest.approx(15.0)
 
 
-def test_segment_straddling_a_cut_is_truncated():
+def test_segment_straddling_a_cut_stays_one_entry():
+    """**成片是连续的** —— 跨界的段在成片里就是一段连续时间，**不拆**。
+
+    早先按保留区间拆开是错的：同一句话出现两次，其中一段还可能只有几十毫秒
+    （端到端实测抓到过 28ms 的碎片）。
+    """
     keep = [[0.0, 10.0], [20.0, 30.0]]
     src = [{"start": 8.0, "end": 25.0, "text": "跨了边界"}]
     film = tl.segments_to_film(src, keep)
 
-    # 拆成两段：8~10（成片 8~10）与 20~25（成片 10~15）—— 绝不错位
-    assert [g["text"] for g in film] == ["跨了边界", "跨了边界"]
-    assert (film[0]["start"], film[0]["end"]) == (8.0, 10.0)
-    assert (film[1]["start"], film[1]["end"]) == (10.0, 15.0)
+    assert len(film) == 1, f"不该拆成多条：{film}"
+    # 8s（源）→ 成片 8s；25s（源）→ 成片 15s。中间被剪掉的 10s 停顿在成片里不存在
+    assert (film[0]["start"], film[0]["end"]) == (8.0, 15.0)
 
 
 def test_film_to_source_for_building_timeline():

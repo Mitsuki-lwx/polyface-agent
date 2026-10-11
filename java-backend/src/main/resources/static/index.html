@@ -1168,7 +1168,8 @@ function tlSegsIn(s, e){
 function renderTimeline(){
   const t = tlState.timeline;
   $("tlHead").innerHTML = tlHeadText();
-  const srcUrl = (tlState.source || {}).rel_path ? "/media/" + tlState.source.rel_path : "";
+  // 用接口给的 url（权威构造器带逐段编码）—— 自己拼前缀实测踩过 404
+  const srcUrl = (tlState.source || {}).url || "";
   $("tlRows").innerHTML = (t.keep || []).map((k, i)=>{
     const s = Number(k[0]), e = Number(k[1]);
     const segs = tlSegsIn(s, e);
