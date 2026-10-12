@@ -181,6 +181,9 @@ def main(argv: list[str] | None = None) -> int:
                 beats_list = bt.detect(bgm)
                 bp.write_text(json.dumps(beats_list), encoding="utf-8")
             bounds = [round(sum(durations[:i]), 3) for i in range(1, len(durations) + 1)]
+            # "平移前"对**两种**策略都算：不然后面记的是 0%，看着像"完全对不齐"，
+            # 其实只是没算 —— 记录里留一个会误导人的数比留空更糟
+            ratio_before = bt.aligned_ratio(bounds, beats_list, tolerance=args.beat_tolerance)
             if args.strategy == "beat_first":
                 final = bt.snap_durations(durations, beats_list,
                                           tolerance=args.beat_tolerance)
@@ -188,9 +191,6 @@ def main(argv: list[str] | None = None) -> int:
                 ratio = bt.aligned_ratio(nb, beats_list, tolerance=args.beat_tolerance)
                 bgm_offset = 0.0
             else:
-                # 平移**前**的对齐率也记下来 —— 否则"卡点到底有没有起作用"看不出来
-                ratio_before = bt.aligned_ratio(bounds, beats_list,
-                                                tolerance=args.beat_tolerance)
                 bgm_offset, ratio = bt.best_offset(bounds, beats_list,
                                                    tolerance=args.beat_tolerance)
                 # 正偏移 = BGM 晚开始（开头静音），换算成"跳过 BGM 开头"
