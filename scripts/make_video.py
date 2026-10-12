@@ -35,6 +35,7 @@ from app.pipeline import checkpoint as ck  # noqa: E402
 from app.pipeline import roughcut as rc  # noqa: E402
 from app.pipeline import timeline as tlib  # noqa: E402
 from app.pipeline import tts  # noqa: E402
+from app.pipeline import tts_plugin as tp  # noqa: E402
 from app.pipeline import video as V  # noqa: E402
 from app.pipeline.runlog import RunLog  # noqa: E402
 from roughcut import setup_output_encoding  # noqa: E402
@@ -107,8 +108,10 @@ def build_parser(base: rc.RoughcutParams) -> argparse.ArgumentParser:
     p.add_argument("--no-burn", action="store_true")
     p.add_argument("--voice", default="", help="TTS 音色（留空=自动挑中文音色）；列可用值：--list-voices")
     p.add_argument("--preset", default="", help="配音风格预设（一键选）；列可用值：--list-presets")
+    p.add_argument("--plugin", default="", help="用哪个配音插件（默认 windows-sapi）；列可用值：--list-plugins")
     p.add_argument("--list-voices", action="store_true", help="列出可用音色后退出")
     p.add_argument("--list-presets", action="store_true", help="列出配音风格预设后退出")
+    p.add_argument("--list-plugins", action="store_true", help="列出配音插件（所有可用方案）后退出")
     p.add_argument("--dry-run", action="store_true", help="只打印会做成什么样")
     p.add_argument("--font", default=base.font)
     p.add_argument("--font-size", dest="font_size", type=int, default=base.font_size)
@@ -122,6 +125,18 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     setup_output_encoding()
     args = build_parser(rc.RoughcutParams()).parse_args(argv)
+    if args.list_plugins:
+        c = tp.catalog()
+        print(f"配音插件（目录 {c['dir']}）—— **所有可用方案都在这儿**：")
+        for x in c["items"]:
+            net = "⚠️ 要联网" if x["network"] else "本地"
+            print(f"  [{x['source']:<7}] {x['id']:<16} {x['name']:<22} {net}  "
+                  f"音色 {len(x['voices'])} 个")
+            if x["note"]:
+                print(f"              {x['note']}")
+        for x in c["skipped"]:
+            print(f"  [跳过] {x['id']}：{x['reason']}")
+        return EXIT_OK
     if args.list_presets:
         print("配音风格预设（一键选）：")
         for x in tts.list_presets():
@@ -162,7 +177,10 @@ def main(argv: list[str] | None = None) -> int:
     # ---- 1) 配音：拿到每个分镜的**实际时长**（这是后续一切的基础）----
     durations: list[float] = []
     voice_parts: list[Path] = []
-    tts_ok = tts.is_available()
+    used: list[dict] = []        # 每个分镜实际用了哪个插件/音色（记录里要写清）
+    cat = tp.catalog()
+    plugins_ok = bool(cat["items"])
+    tts_ok = plugins_ok          # 有插件就等于有配音能力（内置的那两个也是插件）
     rate, volume = 0, 100
     voice_used = args.voice or ""
     preset_name = ""
@@ -175,8 +193,12 @@ def main(argv: list[str] | None = None) -> int:
         voice_used = voice_used or (pr["voice"] or "")
         rate, volume, preset_name = pr["rate"], pr["volume"], pr["name"]
     voice_used = voice_used or tts.default_voice() or ""
-    print(f"配音：{'可用（' + str(tts.describe()['backend']) + '，音色 ' + (voice_used or '引擎默认')
-          + ('，预设 ' + preset_name if preset_name else '') + '）' if tts_ok else '不可用 → 降级为无声 + 字幕'}")
+    print(f"配音插件 {len(cat['items'])} 个：{[x['id'] for x in cat['items']]}"
+          + (f"（预设 {preset_name}）" if preset_name else ""))
+    if cat["skipped"]:
+        print(f"  跳过的插件：{[(x['id'], x['reason']) for x in cat['skipped']]}")
+    if not plugins_ok:
+        print("  ⚠️ 一个可用的配音插件都没有 → 降级为无声 + 字幕")
     if not tts_ok:
         print(f"  {tts.INSTALL_HINT}")
     for i, sc in enumerate(scenes, 1):
@@ -189,39 +211,38 @@ def main(argv: list[str] | None = None) -> int:
         if _u is not None and wav.is_file():
             durations.append(float(_u["seconds"]))
             voice_parts.append(wav)
-            print(f"  分镜 {i}: {_u['seconds']:.2f}s（续跑，配音已在）")
+            # 续跑也要记上**用的是哪个插件/音色** —— 否则记录里这一镜是空的
+            used.append({"seq": i, "plugin": _u.get("plugin"), "voice": _u.get("voice")})
+            print(f"  分镜 {i}: {_u['seconds']:.2f}s（续跑，配音已在：{_u.get('plugin')}）")
             continue
+        # ---- 配音：**走插件**（内置的那两个也是插件，与第三方同一条路）----
         own = str(sc.get("voice_file", "")).strip()
         if own:
-            # **用户自己的配音**：可能是 mp3/m4a/任意采样率 —— 统一转成 22050 单声道 wav，
-            # 免得后面 `_concat_wavs` 面对一堆不一致的格式（那条路已经踩过变调的坑）
-            with log.stage(f"导入配音-{i}") as r:
-                rc._run_ffmpeg([rc._ffmpeg_bin("ffmpeg"), "-y", "-v", "error",
-                                "-i", str(own), "-ac", "1", "-ar", "22050", str(wav)])
-                d = tts.wav_seconds(wav)
-                r.done(f"{d:.2f}s")
-            durations.append(d)
-            voice_parts.append(wav)
-            book.put(vstage, seconds=round(d, 3), wav=str(wav), own=True)
-            print(f"  分镜 {i}: {d:.2f}s（用你自己的配音）")
-            continue
-        if tts_ok:
-            try:
-                d = tts.synthesize(str(sc.get("script") or sc.get("subtitle") or ""), wav,
-                                   voice=voice_used or None, rate=rate, volume=volume)
-            except tts.TtsUnavailable as e:
-                print(f"  [warn] 第 {i} 个分镜配音失败，改用字幕时长：{e}")
-                tts_ok = False
-                d = _hint_seconds(sc, 3.0)
-                wav = None
+            plugin, voice = "own-audio", "own"
+            pparams = {"file": own}
         else:
-            d = _hint_seconds(sc, 3.0)
+            plugin = str(sc.get("plugin") or args.plugin or "windows-sapi").strip()
+            voice = str(sc.get("voice") or voice_used or "").strip() or None
+            pparams = {}
+        if not plugins_ok:
+            d = _hint_seconds(sc, 3.0)          # 一个插件都没有 → 降级为无声 + 字幕
             wav = None
+        else:
+            try:
+                with log.stage(f"配音-{i}") as r:
+                    d = tp.synthesize(plugin, str(sc.get("script") or sc.get("subtitle") or ""),
+                                      wav, voice=voice, rate=rate, volume=volume, params=pparams)
+                    r.done(f"{d:.2f}s · {plugin}")
+            except tp.PluginError as e:
+                # **说清是哪个分镜、哪个插件** —— 一句"配音失败"没法排查
+                print(f"  [warn] 第 {i} 个分镜配音失败（插件 {plugin}）：{e}")
+                d, wav = _hint_seconds(sc, 3.0), None
         durations.append(d)
         if wav:
             voice_parts.append(wav)
-            book.put(vstage, seconds=round(d, 3), wav=str(wav))
-        print(f"  分镜 {i}: {d:.2f}s" + ("" if wav else "（无配音）"))
+            book.put(vstage, seconds=round(d, 3), wav=str(wav), plugin=plugin, voice=voice)
+        used.append({"seq": i, "plugin": plugin if wav else None, "voice": voice if wav else None})
+        print(f"  分镜 {i}: {d:.2f}s" + (f"（{plugin}）" if wav else "（无配音）"))
 
     # ---- 2) 对齐策略 ----
     bgm = str(plan.get("bgm") or "").strip() or None
@@ -332,7 +353,9 @@ def main(argv: list[str] | None = None) -> int:
         "transition_sec": args.transition,
         "zoom": args.zoom,
         "size": {"width": size[0], "height": size[1], "fps": args.fps},
-        "tts": {**tts.describe(), "voice": voice_used, "preset": args.preset or None,
+        "tts": {"plugins": [x["id"] for x in cat["items"]],
+                "skipped": cat["skipped"],
+                "voice": voice_used, "preset": args.preset or None,
                 "rate": rate, "volume": volume},
         "beats": bt.describe(),
         "bgm": bgm,
@@ -345,7 +368,9 @@ def main(argv: list[str] | None = None) -> int:
              "segment_seconds": round(seg_durs[i], 3),
              "image": scenes[i]["image"],
              "subtitle": str(scenes[i].get("subtitle") or ""),
-             "has_voice": i < len(voice_parts)}
+             "has_voice": i < len(voice_parts),
+             "plugin": (used[i].get("plugin") if i < len(used) else None),
+             "voice": (used[i].get("voice") if i < len(used) else None)}
             for i, d in enumerate(durations)
         ],
         "total_sec": total,

@@ -162,7 +162,12 @@ def test_full_pipeline_produces_film_and_record(tmp_path, strategy):
 
 
 def test_pipeline_survives_without_tts(tmp_path, monkeypatch):
-    """**没装 TTS 也要出片**（无声 + 字幕）—— checklist §3 的核心。"""
+    """**一个配音插件都没有，也要出片**（无声 + 字幕）—— checklist §3 的核心。
+
+    插件化之后，"没有 TTS"的等价说法是"插件目录里什么都没有"。
+    """
+    empty = tmp_path / "no-plugins"; empty.mkdir()
+    monkeypatch.setenv("POLYFACE_TTS_PLUGINS", str(empty))
     monkeypatch.setenv("POLYFACE_TTS", "none")
     plan = _plan(tmp_path, 2)
     out = tmp_path / "film.mp4"
@@ -171,8 +176,7 @@ def test_pipeline_survives_without_tts(tmp_path, monkeypatch):
     assert code == 0, "缺 TTS 不该让成片失败"
     assert out.is_file()
     rec = json.loads(out.with_suffix(".plan.json").read_text(encoding="utf-8"))
-    assert rec["tts"]["available"] is False
-    assert rec["tts"]["hint"], "降级时必须给出安装指引"
+    assert rec["tts"]["plugins"] == [], "没有插件时清单应当是空的"
     assert all(not s["has_voice"] for s in rec["scenes"])
     assert all(s["seconds"] > 0 for s in rec["scenes"]), "没有配音时用 duration_hint 兜底"
 
@@ -335,3 +339,76 @@ def test_own_voice_file_is_used_and_not_tts(tmp_path):
     rec = json.loads(out.with_suffix(".plan.json").read_text(encoding="utf-8"))
     assert rec["scenes"][1]["seconds"] == pytest.approx(2.5, abs=0.02), \
         "第 2 个分镜的时长应当等于用户给的配音长度"
+
+
+# ---------------- T5：插件是**主路径**，且能逐分镜混用 ----------------
+
+def test_record_names_the_plugin_per_scene(tmp_path):
+    """记录里必须能查到**每个分镜**用了哪个插件/音色。
+
+    这是 spec 关键决定三的兑现：装插件等于执行别人的代码 ——
+    那就得能回答"这一镜到底是谁合成的"。
+    """
+    plan = _plan(tmp_path, 2)
+    out = tmp_path / "film.mp4"
+    assert MV.main([str(plan), "-o", str(out), "--workdir", str(tmp_path / "w"),
+                    "--width", "180", "--height", "320", "--fps", "12",
+                    "--level", "quiet"]) == 0
+    rec = json.loads(out.with_suffix(".plan.json").read_text(encoding="utf-8"))
+    assert rec["tts"]["plugins"], "记录里要写上这次有哪些插件可用"
+    for sc in rec["scenes"]:
+        if sc["has_voice"]:
+            assert sc["plugin"], f"第 {sc['seq']} 个分镜有配音却没记插件"
+
+
+def test_scene_can_pick_a_different_source(tmp_path):
+    """**逐分镜混用**：一个用 TTS、一个用自己的音频 —— 两个都生效且各自记上。"""
+    own = tmp_path / "mine.wav"
+    with wave.open(str(own), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(22050)
+        w.writeframes(b"\x00\x00" * int(22050 * 2.0))
+
+    plan = _plan(tmp_path, 2)
+    data = json.loads(plan.read_text(encoding="utf-8"))
+    data["scenes"][1]["voice_file"] = str(own)
+    plan.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    out = tmp_path / "film.mp4"
+    assert MV.main([str(plan), "-o", str(out), "--workdir", str(tmp_path / "w"),
+                    "--width", "180", "--height", "320", "--fps", "12",
+                    "--level", "quiet"]) == 0
+    rec = json.loads(out.with_suffix(".plan.json").read_text(encoding="utf-8"))
+    assert rec["scenes"][1]["plugin"] == "own-audio", "给了 voice_file 就该走 own-audio 插件"
+    assert rec["scenes"][1]["seconds"] == pytest.approx(2.0, abs=0.05)
+
+
+def test_broken_plugin_does_not_kill_the_film(tmp_path, monkeypatch, capsys):
+    """插件坏了 → **只影响那一镜**，其余照跑（spec 能力清单第 5 条）。"""
+    import app.pipeline.tts_plugin as tp
+
+    real = tp.synthesize
+
+    def boom(plugin_id, *a, **kw):
+        if plugin_id == "windows-sapi":
+            raise tp.PluginError("插件 windows-sapi 故意炸了")
+        return real(plugin_id, *a, **kw)
+
+    monkeypatch.setattr(tp, "synthesize", boom)
+    plan = _plan(tmp_path, 2)
+    out = tmp_path / "film.mp4"
+    code = MV.main([str(plan), "-o", str(out), "--workdir", str(tmp_path / "w"),
+                    "--width", "180", "--height", "320", "--fps", "12", "--level", "quiet"])
+    assert code == 0, "插件坏了不该让整片失败"
+    assert out.is_file()
+    err = capsys.readouterr().out
+    assert "第 1 个分镜配音失败" in err and "windows-sapi" in err, \
+        "要**说清是哪个分镜、哪个插件**"
+
+
+def test_list_plugins_shows_every_option(tmp_path, capsys):
+    """`--list-plugins` 要**把所有方案摆出来**（含 network 标记与 note）。"""
+    plan = _plan(tmp_path, 1)
+    assert MV.main([str(plan), "-o", str(tmp_path / "o.mp4"), "--list-plugins"]) == 0
+    out = capsys.readouterr().out
+    assert "windows-sapi" in out and "own-audio" in out
+    assert "本地" in out or "要联网" in out, "要标出联网与否（数据边界）"
