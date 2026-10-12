@@ -1,0 +1,56 @@
+{
+  "id": "windows-sapi",
+  "name": "系统语音（Windows SAPI）",
+  "kind": "tts",
+  "version": 1,
+  "builtin": true,
+  "network": false,
+  "note": "系统自带，零安装。⚠️ 中文只有 Huihui 一个女声；换音色只能换语速/音量。",
+  "languages": [
+    "zh-CN",
+    "en-US"
+  ],
+  "voices": [
+    {
+      "id": "Microsoft Huihui Desktop",
+      "name": "Huihui（中文女声）",
+      "language": "zh-CN",
+      "gender": "Female"
+    },
+    {
+      "id": "Microsoft Zira Desktop",
+      "name": "Zira（英文女声）",
+      "language": "en-US",
+      "gender": "Female"
+    },
+    {
+      "id": "Microsoft David Desktop",
+      "name": "David（英文男声）",
+      "language": "en-US",
+      "gender": "Male"
+    }
+  ],
+  "params": [
+    {
+      "id": "rate",
+      "name": "语速",
+      "min": -10,
+      "max": 10,
+      "default": 0
+    },
+    {
+      "id": "volume",
+      "name": "音量",
+      "min": 0,
+      "max": 100,
+      "default": 100
+    }
+  ],
+  "run": {
+    "command": [
+      "{python}",
+      "run.py"
+    ],
+    "timeout_sec": 300
+  }
+}

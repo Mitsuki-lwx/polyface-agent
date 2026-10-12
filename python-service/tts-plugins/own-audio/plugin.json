@@ -1,0 +1,34 @@
+{
+  "id": "own-audio",
+  "name": "用户自己的音频",
+  "kind": "tts",
+  "version": 1,
+  "builtin": true,
+  "network": false,
+  "note": "用自己的录音、或用别的工具（剪映之类）导出的配音。每个分镜给一个文件（params.file）；给了就**不调任何 TTS**。",
+  "languages": [
+    "*"
+  ],
+  "voices": [
+    {
+      "id": "own",
+      "name": "（每个分镜各自指定文件）",
+      "language": "*",
+      "gender": ""
+    }
+  ],
+  "params": [
+    {
+      "id": "file",
+      "name": "音频文件路径",
+      "required": true
+    }
+  ],
+  "run": {
+    "command": [
+      "{python}",
+      "run.py"
+    ],
+    "timeout_sec": 300
+  }
+}
