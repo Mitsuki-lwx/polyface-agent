@@ -288,3 +288,50 @@ def test_concat_rejects_mixed_rates(tmp_path):
     b = wav(tmp_path / "b.wav", 0.5, 22050)
     with pytest.raises(Exception, match="采样率"):
         MV._concat_wavs([a, b], [0.5, 0.5], tmp_path / "o.wav", 1.0)
+
+
+# ---------------- 音色选择 / 导入自己的配音 ----------------
+
+def test_list_voices_shape():
+    vs = tts.list_voices()
+    for v in vs:
+        assert set(v) >= {"id", "name", "language", "gender", "backend"}
+        assert v["id"]
+    if vs and any((x.get("language") or "").lower().startswith("zh") for x in vs):
+        assert tts.default_voice() in [x["id"] for x in vs], "默认应当挑一个真实存在的音色"
+
+
+def test_plan_rejects_missing_voice_file_and_names_index(tmp_path):
+    """用户自己的配音要真实存在 —— 缺了要说清是第几个分镜。"""
+    plan = _plan(tmp_path, 3)
+    data = json.loads(plan.read_text(encoding="utf-8"))
+    data["scenes"][2]["voice_file"] = str(tmp_path / "没有.wav")
+    plan.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(MV.PlanError) as e:
+        MV.load_plan(plan)
+    assert "[3]" in str(e.value)
+
+
+def test_own_voice_file_is_used_and_not_tts(tmp_path):
+    """给了 `voice_file` 就用**用户的配音**，不再调 TTS。
+
+    用一段已知时长的 wav 当"用户素材"，成片里那一镜的时长必须等于它 ——
+    如果走了 TTS，时长会是那句台词的合成长度，对不上。
+    """
+    own = tmp_path / "my-voice.wav"
+    with wave.open(str(own), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(22050)
+        w.writeframes(b"\x00\x00" * int(22050 * 2.5))
+
+    plan = _plan(tmp_path, 2)
+    data = json.loads(plan.read_text(encoding="utf-8"))
+    data["scenes"][1]["voice_file"] = str(own)
+    plan.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    out = tmp_path / "film.mp4"
+    assert MV.main([str(plan), "-o", str(out), "--workdir", str(tmp_path / "w"),
+                    "--width", "180", "--height", "320", "--fps", "12",
+                    "--level", "quiet"]) == 0
+    rec = json.loads(out.with_suffix(".plan.json").read_text(encoding="utf-8"))
+    assert rec["scenes"][1]["seconds"] == pytest.approx(2.5, abs=0.02), \
+        "第 2 个分镜的时长应当等于用户给的配音长度"

@@ -172,3 +172,43 @@ def _piper(text: str, out: Path, *, voice: str | None) -> None:
                         errors="replace", timeout=600)
     if cp.returncode != 0 or not out.is_file():
         raise TtsUnavailable(f"piper 合成失败：{(cp.stderr or '')[:300]}")
+
+
+def list_voices() -> list[dict]:
+    """列出可用音色（供用户挑 —— 不替他定死一个）。
+
+    各后端能报的字段不一样：SAPI 有名字/语言/性别，piper 只有模型名。
+    统一成 `{id, name, language, gender, backend}`，缺的字段留空。
+    """
+    b = backend()
+    if b == "windows_sapi":
+        try:
+            cp = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "Add-Type -AssemblyName System.Speech; "
+                 "(New-Object System.Speech.Synthesis.SpeechSynthesizer).GetInstalledVoices()"
+                 " | ForEach-Object { $v=$_.VoiceInfo; Write-Output ($v.Name + \"|\" + "
+                 "$v.Culture.Name + \"|\" + $v.Gender) }"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+            out = []
+            for line in (cp.stdout or "").splitlines():
+                bits = [x.strip() for x in line.split("|")]
+                if len(bits) == 3 and bits[0]:
+                    out.append({"id": bits[0], "name": bits[0], "language": bits[1],
+                                "gender": bits[2], "backend": b})
+            return out
+        except Exception:                                # noqa: BLE001
+            return []
+    if b == "piper":
+        model = os.environ.get("POLYFACE_PIPER_MODEL") or ""
+        return [{"id": model, "name": Path(model).name or "(未设置 POLYFACE_PIPER_MODEL)",
+                 "language": "", "gender": "", "backend": b}]
+    return []
+
+
+def default_voice() -> str | None:
+    """默认音色：优先**中文**（本产品面向中文口播），没有就交给引擎自己挑。"""
+    for v in list_voices():
+        if (v.get("language") or "").lower().startswith("zh"):
+            return v["id"]
+    return None

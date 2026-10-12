@@ -66,6 +66,7 @@ def load_plan(path: Path) -> dict:
         raise PlanError("计划里至少要有一个分镜（scenes 不能为空）")
 
     missing: list[int] = []
+    bad_voice: list[int] = []
     for i, sc in enumerate(scenes, 1):
         if not isinstance(sc, dict):
             raise PlanError(f"第 {i} 个分镜格式不对：{sc!r}")
@@ -74,9 +75,14 @@ def load_plan(path: Path) -> dict:
         img = str(sc.get("image", "")).strip()
         if not img or not Path(img).is_file():
             missing.append(i)
+        own = str(sc.get("voice_file", "")).strip()
+        if own and not Path(own).is_file():
+            bad_voice.append(i)
     if missing:
         # **一次把缺的都说了**，别让人改一个跑一次
         raise PlanError(f"第 {missing} 个分镜没有可用的图片（image 缺失或文件不在）")
+    if bad_voice:
+        raise PlanError(f"第 {bad_voice} 个分镜指定的 voice_file 找不到（用户自己的配音要真实存在）")
     return data
 
 
@@ -99,6 +105,8 @@ def build_parser(base: rc.RoughcutParams) -> argparse.ArgumentParser:
     p.add_argument("--bgm-volume", dest="bgm_volume_db", type=float, default=-18.0)
     p.add_argument("--bgm-fade-out", dest="bgm_fade_out", type=float, default=1.5)
     p.add_argument("--no-burn", action="store_true")
+    p.add_argument("--voice", default="", help="TTS 音色（留空=自动挑中文音色）；列可用值：--list-voices")
+    p.add_argument("--list-voices", action="store_true", help="列出可用音色后退出")
     p.add_argument("--dry-run", action="store_true", help="只打印会做成什么样")
     p.add_argument("--font", default=base.font)
     p.add_argument("--font-size", dest="font_size", type=int, default=base.font_size)
@@ -112,6 +120,13 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     setup_output_encoding()
     args = build_parser(rc.RoughcutParams()).parse_args(argv)
+    if args.list_voices:
+        vs = tts.list_voices()
+        print(f"可用音色（{tts.describe().get('backend') or '无 TTS'}）：")
+        for v in vs:
+            print(f"  {v['id']:<34} {v.get('language',''):<8} {v.get('gender','')}")
+        print(f"默认（自动挑中文）：{tts.default_voice() or '（无）'}")
+        return EXIT_OK
     log = RunLog(sink=Path(args.events) if args.events else None, level=args.level)
 
     try:
@@ -136,7 +151,8 @@ def main(argv: list[str] | None = None) -> int:
     durations: list[float] = []
     voice_parts: list[Path] = []
     tts_ok = tts.is_available()
-    print(f"配音：{'可用（' + str(tts.describe()['backend']) + '）' if tts_ok else '不可用 → 降级为无声 + 字幕'}")
+    voice_used = args.voice or tts.default_voice() or ""
+    print(f"配音：{'可用（' + str(tts.describe()['backend']) + '，音色 ' + (voice_used or '引擎默认') + '）' if tts_ok else '不可用 → 降级为无声 + 字幕'}")
     if not tts_ok:
         print(f"  {tts.INSTALL_HINT}")
     for i, sc in enumerate(scenes, 1):
@@ -151,9 +167,24 @@ def main(argv: list[str] | None = None) -> int:
             voice_parts.append(wav)
             print(f"  分镜 {i}: {_u['seconds']:.2f}s（续跑，配音已在）")
             continue
+        own = str(sc.get("voice_file", "")).strip()
+        if own:
+            # **用户自己的配音**：可能是 mp3/m4a/任意采样率 —— 统一转成 22050 单声道 wav，
+            # 免得后面 `_concat_wavs` 面对一堆不一致的格式（那条路已经踩过变调的坑）
+            with log.stage(f"导入配音-{i}") as r:
+                rc._run_ffmpeg([rc._ffmpeg_bin("ffmpeg"), "-y", "-v", "error",
+                                "-i", str(own), "-ac", "1", "-ar", "22050", str(wav)])
+                d = tts.wav_seconds(wav)
+                r.done(f"{d:.2f}s")
+            durations.append(d)
+            voice_parts.append(wav)
+            book.put(vstage, seconds=round(d, 3), wav=str(wav), own=True)
+            print(f"  分镜 {i}: {d:.2f}s（用你自己的配音）")
+            continue
         if tts_ok:
             try:
-                d = tts.synthesize(str(sc.get("script") or sc.get("subtitle") or ""), wav)
+                d = tts.synthesize(str(sc.get("script") or sc.get("subtitle") or ""), wav,
+                                   voice=args.voice or None)
             except tts.TtsUnavailable as e:
                 print(f"  [warn] 第 {i} 个分镜配音失败，改用字幕时长：{e}")
                 tts_ok = False
@@ -277,7 +308,7 @@ def main(argv: list[str] | None = None) -> int:
         "transition_sec": args.transition,
         "zoom": args.zoom,
         "size": {"width": size[0], "height": size[1], "fps": args.fps},
-        "tts": tts.describe(),
+        "tts": {**tts.describe(), "voice": voice_used},
         "beats": bt.describe(),
         "bgm": bgm,
         "bgm_offset_sec": bgm_offset,
