@@ -106,7 +106,9 @@ def build_parser(base: rc.RoughcutParams) -> argparse.ArgumentParser:
     p.add_argument("--bgm-fade-out", dest="bgm_fade_out", type=float, default=1.5)
     p.add_argument("--no-burn", action="store_true")
     p.add_argument("--voice", default="", help="TTS 音色（留空=自动挑中文音色）；列可用值：--list-voices")
+    p.add_argument("--preset", default="", help="配音风格预设（一键选）；列可用值：--list-presets")
     p.add_argument("--list-voices", action="store_true", help="列出可用音色后退出")
+    p.add_argument("--list-presets", action="store_true", help="列出配音风格预设后退出")
     p.add_argument("--dry-run", action="store_true", help="只打印会做成什么样")
     p.add_argument("--font", default=base.font)
     p.add_argument("--font-size", dest="font_size", type=int, default=base.font_size)
@@ -120,6 +122,16 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     setup_output_encoding()
     args = build_parser(rc.RoughcutParams()).parse_args(argv)
+    if args.list_presets:
+        print("配音风格预设（一键选）：")
+        for x in tts.list_presets():
+            try:
+                r = tts.resolve_preset(x["id"])
+                print(f"  {x['id']:<9} {x['name']:<14} 音色 {r['voice'] or '(引擎默认)'}"
+                      f"  语速 {r['rate']:+d}  {x['note']}")
+            except tts.TtsUnavailable:
+                print(f"  {x['id']:<9} {x['name']:<14}（本机没有可用 TTS）")
+        return EXIT_OK
     if args.list_voices:
         vs = tts.list_voices()
         print(f"可用音色（{tts.describe().get('backend') or '无 TTS'}）：")
@@ -151,8 +163,20 @@ def main(argv: list[str] | None = None) -> int:
     durations: list[float] = []
     voice_parts: list[Path] = []
     tts_ok = tts.is_available()
-    voice_used = args.voice or tts.default_voice() or ""
-    print(f"配音：{'可用（' + str(tts.describe()['backend']) + '，音色 ' + (voice_used or '引擎默认') + '）' if tts_ok else '不可用 → 降级为无声 + 字幕'}")
+    rate, volume = 0, 100
+    voice_used = args.voice or ""
+    preset_name = ""
+    if args.preset:
+        try:
+            pr = tts.resolve_preset(args.preset)
+        except tts.TtsUnavailable as e:
+            print(f"[错误] {e}", file=sys.stderr)
+            return EXIT_ERR
+        voice_used = voice_used or (pr["voice"] or "")
+        rate, volume, preset_name = pr["rate"], pr["volume"], pr["name"]
+    voice_used = voice_used or tts.default_voice() or ""
+    print(f"配音：{'可用（' + str(tts.describe()['backend']) + '，音色 ' + (voice_used or '引擎默认')
+          + ('，预设 ' + preset_name if preset_name else '') + '）' if tts_ok else '不可用 → 降级为无声 + 字幕'}")
     if not tts_ok:
         print(f"  {tts.INSTALL_HINT}")
     for i, sc in enumerate(scenes, 1):
@@ -184,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
         if tts_ok:
             try:
                 d = tts.synthesize(str(sc.get("script") or sc.get("subtitle") or ""), wav,
-                                   voice=args.voice or None)
+                                   voice=voice_used or None, rate=rate, volume=volume)
             except tts.TtsUnavailable as e:
                 print(f"  [warn] 第 {i} 个分镜配音失败，改用字幕时长：{e}")
                 tts_ok = False
@@ -308,7 +332,8 @@ def main(argv: list[str] | None = None) -> int:
         "transition_sec": args.transition,
         "zoom": args.zoom,
         "size": {"width": size[0], "height": size[1], "fps": args.fps},
-        "tts": {**tts.describe(), "voice": voice_used},
+        "tts": {**tts.describe(), "voice": voice_used, "preset": args.preset or None,
+                "rate": rate, "volume": volume},
         "beats": bt.describe(),
         "bgm": bgm,
         "bgm_offset_sec": bgm_offset,

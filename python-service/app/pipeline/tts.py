@@ -34,6 +34,7 @@ INSTALL_HINT = (
 _PS_TEMPLATE = """Add-Type -AssemblyName System.Speech
 $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
 $synth.Rate = {rate}
+$synth.Volume = {volume}
 {voice}
 $synth.SetOutputToWaveFile('{out}')
 $synth.Speak([Console]::In.ReadToEnd())
@@ -111,7 +112,7 @@ def wav_seconds(path: str | Path) -> float:
 
 
 def synthesize(text: str, out_wav: str | Path, *, rate: int = 0,
-               voice: str | None = None) -> float:
+               voice: str | None = None, volume: int = 100) -> float:
     """把一段文本合成为 WAV，返回**实际时长**（秒）。
 
     **时长是返回值，不是估算** —— 后续所有分镜时长都以它为准（spec 关键决定一）。
@@ -130,7 +131,7 @@ def synthesize(text: str, out_wav: str | Path, *, rate: int = 0,
     if b is None:
         raise TtsUnavailable(INSTALL_HINT)
     if b == "windows_sapi":
-        _sapi(text, out, rate=rate, voice=voice)
+        _sapi(text, out, rate=rate, voice=voice, volume=volume)
     else:
         _piper(text, out, voice=voice)
     return wav_seconds(out)
@@ -144,7 +145,7 @@ def _write_silence(out: Path, seconds: float) -> None:
         w.writeframes(b"\x00\x00" * int(16000 * seconds))
 
 
-def _sapi(text: str, out: Path, *, rate: int, voice: str | None) -> None:
+def _sapi(text: str, out: Path, *, rate: int, voice: str | None, volume: int = 100) -> None:
     voice_line = ""
     if voice:
         voice_line = f"$synth.SelectVoice('{voice}')"
@@ -153,7 +154,8 @@ def _sapi(text: str, out: Path, *, rate: int, voice: str | None) -> None:
         voice_line = ("$zh = $synth.GetInstalledVoices() | Where-Object "
                       "{ $_.VoiceInfo.Culture.Name -like 'zh*' } | Select-Object -First 1; "
                       "if ($zh) { $synth.SelectVoice($zh.VoiceInfo.Name) }")
-    script = _PS_TEMPLATE.format(rate=int(rate), voice=voice_line, out=str(out).replace("'", "''"))
+    script = _PS_TEMPLATE.format(rate=int(rate), voice=voice_line,
+                                 volume=int(volume), out=str(out).replace("'", "''"))
     # 走 stdin 喂文本：避免命令行长度限制与引号转义地狱（中文尤其容易踩）
     cp = subprocess.run(["powershell", "-NoProfile", "-Command", script],
                         input=text, capture_output=True, text=True, encoding="utf-8",
@@ -211,4 +213,53 @@ def default_voice() -> str | None:
     for v in list_voices():
         if (v.get("language") or "").lower().startswith("zh"):
             return v["id"]
+    return None
+
+
+# ---------------- 风格预设（一键选）----------------
+# ⚠️ **如实说明**：Windows 自带的中文音色**只有 Huihui 一个女声**（本机实测），
+# 所以预设之间能变的只有**语速与音量**，音色本身变不了。
+# 想要真正不同的音色，得靠 piper 的多套中文模型（本地、要下载），
+# 或云端 TTS（那就动了 ADR-017 的数据边界）。
+PRESETS: list[dict] = [
+    {"id": "steady", "name": "沉稳女声", "rate": -2, "volume": 100, "pick": "zh",
+     "note": "语速慢一点，适合干货/复盘类"},
+    {"id": "standard", "name": "标准女声", "rate": 0, "volume": 100, "pick": "zh",
+     "note": "默认"},
+    {"id": "lively", "name": "轻快女声", "rate": 3, "volume": 100, "pick": "zh",
+     "note": "语速快一点，适合种草/日常"},
+    {"id": "male", "name": "男声（英文音色）", "rate": 0, "volume": 100, "pick": "en-male",
+     "note": "⚠️ 系统没有中文男声；用英文音色读中文会读成乱码，仅作演示"},
+]
+
+
+def list_presets() -> list[dict]:
+    """给 UI/命令行用。**带上 note** —— 用户要知道"轻快"到底变了什么。"""
+    return [dict(x) for x in PRESETS]
+
+
+def resolve_preset(preset_id: str) -> dict:
+    """预设 → `{voice, rate, volume}`。不认识的 id **明确报错**，不静默用默认。"""
+    for x in PRESETS:
+        if x["id"] == preset_id:
+            return {"voice": _pick_voice(x["pick"]), "rate": x["rate"],
+                    "volume": x["volume"], "name": x["name"], "note": x["note"]}
+    raise TtsUnavailable(
+        f"不认识的配音预设：{preset_id!r}；可用：{[x['id'] for x in PRESETS]}")
+
+
+def _pick_voice(kind: str) -> str | None:
+    """按预设的意图挑一个**真实存在**的音色；挑不到就返回 None（交给引擎默认）。"""
+    vs = list_voices()
+    if kind == "zh":
+        for v in vs:
+            if (v.get("language") or "").lower().startswith("zh"):
+                return v["id"]
+        return None
+    if kind == "en-male":
+        for v in vs:
+            if (v.get("language") or "").lower().startswith("en") and \
+                    (v.get("gender") or "").lower().startswith("m"):
+                return v["id"]
+        return None
     return None
