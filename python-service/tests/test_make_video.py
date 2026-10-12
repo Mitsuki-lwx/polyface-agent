@@ -123,11 +123,15 @@ def test_hint_seconds_parses_common_forms():
 # ---------------- 配音拼接：按分镜时长补足 ----------------
 
 def test_concat_wavs_pads_to_scene_durations(tmp_path):
-    """`beat_first` 会把某段拉长 —— 不补的话音轨比画面短，后面全错位。"""
+    """`beat_first` 会把某段拉长 —— 不补的话音轨比画面短，后面全错位。
+
+    **采样率故意用 22050**（TTS 的真实输出率），不是 16000 ——
+    原先写 16000 时测试全绿，而线上是 1.38 倍速 + 尾部被截。见下一条。
+    """
     def wav(p: Path, sec: float):
         with wave.open(str(p), "wb") as w:
-            w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
-            w.writeframes(b"\x00\x00" * int(16000 * sec))
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(22050)
+            w.writeframes(b"\x00\x00" * int(22050 * sec))
         return p
 
     a = wav(tmp_path / "a.wav", 1.0)
@@ -247,3 +251,40 @@ def test_second_run_resumes_and_skips_finished_scenes(tmp_path, monkeypatch):
     calls["n"] = 0
     assert MV.main(argv) == 0
     assert calls["n"] == 1, f"只该补第 2 个分镜，实际 {calls['n']} 次"
+
+
+def test_concat_keeps_the_real_sample_rate(tmp_path):
+    """**必须用片段自己的采样率**。
+
+    写死成 16000 过的后果：TTS 输出 22050Hz → 配音 1.38 倍速、还高了 1.38 个八度，
+    标称时长 103s（真实 75s）→ 尾部 28 秒被 `-t` 截掉。
+    **机器量的是"有声"，人是听出来的** —— 这条是用户听出来之后补的。
+    """
+    def wav(p: Path, sec: float, rate: int):
+        with wave.open(str(p), "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+            w.writeframes(b"\x00\x00" * int(rate * sec))
+        return p
+
+    a = wav(tmp_path / "a.wav", 1.0, 22050)
+    b = wav(tmp_path / "b.wav", 1.0, 22050)
+    out = tmp_path / "o.wav"
+    MV._concat_wavs([a, b], [1.0, 1.0], out, 2.0)
+
+    with wave.open(str(out), "rb") as w:
+        assert w.getframerate() == 22050, "不能把采样率改成别的 —— 那会变速变调"
+        assert w.getnframes() / w.getframerate() == pytest.approx(2.0, abs=0.02)
+
+
+def test_concat_rejects_mixed_rates(tmp_path):
+    """采样率不一致时**不静默拼** —— 拼出来的必然有一个是变调的。"""
+    def wav(p: Path, sec: float, rate: int):
+        with wave.open(str(p), "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+            w.writeframes(b"\x00\x00" * int(rate * sec))
+        return p
+
+    a = wav(tmp_path / "a.wav", 0.5, 16000)
+    b = wav(tmp_path / "b.wav", 0.5, 22050)
+    with pytest.raises(Exception, match="采样率"):
+        MV._concat_wavs([a, b], [0.5, 0.5], tmp_path / "o.wav", 1.0)

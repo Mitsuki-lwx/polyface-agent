@@ -322,16 +322,27 @@ def _concat_wavs(parts: list[Path], durations: list[float], out: Path, total: fl
     补足是必要的：`beat_first` 会把某段拉长，不补的话音轨会比画面短，后面全错位。
     """
     import wave
+    # **必须用各片段自己的采样率**，不能写死。写死过的后果实测过：
+    # TTS 输出 22050Hz 而这里声明 16000Hz → 配音 1.38 倍速、还高了 1.38 个八度，
+    # 而且标称时长 103s（真实只有 75s）→ 后面 28 秒的配音被 -t 直接截掉。
+    # 用户一听就发现了（"音轨只有 BGM 吗，不应该还有配音吗"）—— 机器量的是"有声"，人是听出来的。
+    rates = []
+    for q in parts:
+        with wave.open(str(q), "rb") as r:
+            rates.append(r.getframerate())
+    rate = rates[0]
+    if any(x != rate for x in rates):
+        raise V.VideoError(f"配音片段采样率不一致：{sorted(set(rates))} —— 不静默拼，会变调")
     with wave.open(str(out), "wb") as w:
-        w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
-        for p, d in zip(parts, durations):
-            with wave.open(str(p), "rb") as r:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+        for q, d in zip(parts, durations):
+            with wave.open(str(q), "rb") as r:
                 frames = r.readframes(r.getnframes())
             w.writeframes(frames)
-            have = len(frames) // 2 / 16000.0
+            have = len(frames) // 2 / float(rate)
             pad = max(0.0, d - have)
             if pad > 0:
-                w.writeframes(b"\x00\x00" * int(16000 * pad))
+                w.writeframes(b"\x00\x00" * int(rate * pad))
 
 
 def _silent_track(out: Path, total: float) -> None:
