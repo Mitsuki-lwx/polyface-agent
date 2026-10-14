@@ -405,6 +405,19 @@ def test_broken_plugin_does_not_kill_the_film(tmp_path, monkeypatch, capsys):
         "要**说清是哪个分镜、哪个插件**"
 
 
+def test_subtitle_slash_becomes_newline():
+    """剪辑单里的字幕用 ` / ` 表示**分行**，不是字面斜杠。
+
+    实测踩过：不转换的话成片字幕显示成「不满足就痛苦 / 满足了就无聊 / …」——
+    一眼能看出不对，但**只有真的看了片子才发现**
+    （接口 200、时长对、记录对、测试全绿，一串斜杠就那么挂在画面上）。
+    """
+    assert MV._subtitle_lines("不满足就痛苦 / 满足了就无聊 / 人生像钟摆") == \
+        "不满足就痛苦\n满足了就无聊\n人生像钟摆"
+    assert MV._subtitle_lines("普通一句，没有分隔符") == "普通一句，没有分隔符"
+    assert MV._subtitle_lines(" 两边有空格 / 要去掉 ") == "两边有空格\n要去掉"
+
+
 def test_list_plugins_shows_every_option(tmp_path, capsys):
     """`--list-plugins` 要**把所有方案摆出来**（含 network 标记与 note）。"""
     plan = _plan(tmp_path, 1)

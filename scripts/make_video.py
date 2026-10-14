@@ -312,7 +312,7 @@ def main(argv: list[str] | None = None) -> int:
     # ---- 4) 字幕（成片时间轴，由**最终**分镜时长推出）----
     cursor, sub_segments = 0.0, []
     for sc, d in zip(scenes, durations):
-        text = str(sc.get("subtitle") or "").strip()
+        text = _subtitle_lines(str(sc.get("subtitle") or ""))
         if text:
             sub_segments.append({"start": round(cursor, 3),
                                  "end": round(cursor + d - 0.05, 3), "text": text})
@@ -384,6 +384,18 @@ def main(argv: list[str] | None = None) -> int:
     if abs(real - total) > 0.35:
         print(f"  ⚠️ 与预计差 {abs(real - total):.2f}s —— 超过容差", file=sys.stderr)
     return EXIT_OK
+
+
+def _subtitle_lines(text: str) -> str:
+    """剪辑单里的字幕用 ` / ` 当**分行**的意思（模型就是这么写的），不是字面斜杠。
+
+    实测踩过：不转换的话成片里字幕会显示成「不满足就痛苦 / 满足了就无聊 / …」——
+    一眼就能看出不对，但只有真的看了片子才发现。
+    """
+    t = text.strip()
+    for sep in (" / ", "／", " | "):
+        t = t.replace(sep, "\n")
+    return t.strip()
 
 
 def _hint_seconds(sc: dict, default: float) -> float:
