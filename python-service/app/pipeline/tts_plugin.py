@@ -153,19 +153,38 @@ def synthesize(plugin_id: str, text: str, out: str | Path, *,
 
 
 def _resolve_cmd(run: dict, meta: dict) -> list[str]:
-    """入口命令。支持 `{python}` 占位符（用当前解释器）与相对路径（相对插件目录）。"""
+    """入口命令。支持占位符（相对路径一律用正斜杠 —— 反斜杠会被 bash 当转义）：
+
+    - `{python}`：主程序的解释器
+    - `{kokoro_python}`：Kokoro 的 Python 3.12 环境（它要求 <3.13，装不进主环境）
+    - `{dir}`：插件自己的目录
+    """
     raw = run.get("command")
     if isinstance(raw, str):
         raw = [raw]
     if not isinstance(raw, list) or not raw:
         raise PluginError(f"插件 {meta['id']} 的 run.command 不合法：{raw!r}")
+    kpy = os.environ.get("POLYFACE_KOKORO_PYTHON") or _default_kokoro_python()
+    repl = {"{python}": Path(sys.executable).as_posix(),
+            "{kokoro_python}": Path(kpy).as_posix(),
+            "{dir}": Path(meta["_dir"]).as_posix()}
     out = []
-    for i, part in enumerate(raw):
-        # 同理用正斜杠：入口路径里带反斜杠的话，bash 起的插件会 command not found
-        s = (str(part).replace("{python}", Path(sys.executable).as_posix())
-             .replace("{dir}", Path(meta["_dir"]).as_posix()))
+    for part in raw:
+        s = str(part)
+        for k, v in repl.items():
+            s = s.replace(k, v)
         out.append(s)
     exe = out[0]
     if not (Path(exe).is_file() or shutil.which(exe)):
         raise PluginError(f"插件 {meta['id']} 的入口不存在：{exe}")
     return out
+
+
+def _default_kokoro_python() -> str:
+    """Kokoro 需要 Python <3.13，所以它有自己的 venv（`python-service/.venv-kokoro`）。"""
+    base = Path(__file__).resolve().parents[2] / ".venv-kokoro"
+    for rel in ("Scripts/python.exe", "bin/python"):
+        p = base / rel
+        if p.is_file():
+            return str(p)
+    return str(base / "Scripts" / "python.exe")          # 不存在时给出预期路径（报错里能看见）

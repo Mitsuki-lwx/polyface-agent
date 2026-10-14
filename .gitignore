@@ -64,3 +64,7 @@ eval/reports/
 
 # ===== B1 图文成片演示产物（scripts/make_video.py 生成，可重跑）=====
 outputs/b1-demo/
+
+# ===== Kokoro 模型与它自己的 Python 3.12 环境（体积大，不进仓库）=====
+python-service/kokoro-models/
+python-service/.venv-kokoro/

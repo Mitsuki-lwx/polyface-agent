@@ -1,0 +1,198 @@
+{
+  "id": "kokoro",
+  "name": "Kokoro（本地，音色多）",
+  "kind": "tts",
+  "version": 1,
+  "network": false,
+  "note": "本地跑，不联网。中文 21 个音色 + 英文 7 个。需要 python-service/.venv-kokoro（Python 3.12）与 kokoro-models/。",
+  "languages": [
+    "zh",
+    "en"
+  ],
+  "voices": [
+    {
+      "id": "af_maple",
+      "name": "af_maple（中文）",
+      "language": "zh",
+      "gender": "Male"
+    },
+    {
+      "id": "af_sol",
+      "name": "af_sol（中文）",
+      "language": "zh",
+      "gender": "Male"
+    },
+    {
+      "id": "bf_vale",
+      "name": "bf_vale（中文）",
+      "language": "zh",
+      "gender": "Male"
+    },
+    {
+      "id": "zf_001",
+      "name": "zf_001（中文）",
+      "language": "zh",
+      "gender": "Female"
+    },
+    {
+      "id": "zf_002",
+      "name": "zf_002（中文）",
+      "language": "zh",
+      "gender": "Female"
+    },
+    {
+      "id": "zf_003",
+      "name": "zf_003（中文）",
+      "language": "zh",
+      "gender": "Female"
+    },
+    {
+      "id": "zf_004",
+      "name": "zf_004（中文）",
+      "language": "zh",
+      "gender": "Female"
+    },
+    {
+      "id": "zf_005",
+      "name": "zf_005（中文）",
+      "language": "zh",
+      "gender": "Female"
+    },
+    {
+      "id": "zf_007",
+      "name": "zf_007（中文）",
+      "language": "zh",
+      "gender": "Female"
+    },
+    {
+      "id": "zf_019",
+      "name": "zf_019（中文）",
+      "language": "zh",
+      "gender": "Female"
+    },
+    {
+      "id": "zf_048",
+      "name": "zf_048（中文）",
+      "language": "zh",
+      "gender": "Female"
+    },
+    {
+      "id": "zf_051",
+      "name": "zf_051（中文）",
+      "language": "zh",
+      "gender": "Female"
+    },
+    {
+      "id": "zf_084",
+      "name": "zf_084（中文）",
+      "language": "zh",
+      "gender": "Female"
+    },
+    {
+      "id": "zf_085",
+      "name": "zf_085（中文）",
+      "language": "zh",
+      "gender": "Female"
+    },
+    {
+      "id": "zm_012",
+      "name": "zm_012（中文）",
+      "language": "zh",
+      "gender": "Male"
+    },
+    {
+      "id": "zm_013",
+      "name": "zm_013（中文）",
+      "language": "zh",
+      "gender": "Male"
+    },
+    {
+      "id": "zm_014",
+      "name": "zm_014（中文）",
+      "language": "zh",
+      "gender": "Male"
+    },
+    {
+      "id": "zm_015",
+      "name": "zm_015（中文）",
+      "language": "zh",
+      "gender": "Male"
+    },
+    {
+      "id": "zm_016",
+      "name": "zm_016（中文）",
+      "language": "zh",
+      "gender": "Male"
+    },
+    {
+      "id": "zm_020",
+      "name": "zm_020（中文）",
+      "language": "zh",
+      "gender": "Male"
+    },
+    {
+      "id": "zm_037",
+      "name": "zm_037（中文）",
+      "language": "zh",
+      "gender": "Male"
+    },
+    {
+      "id": "af_bella",
+      "name": "af_bella（英文）",
+      "language": "en",
+      "gender": "Female"
+    },
+    {
+      "id": "af_heart",
+      "name": "af_heart（英文）",
+      "language": "en",
+      "gender": "Female"
+    },
+    {
+      "id": "af_nicole",
+      "name": "af_nicole（英文）",
+      "language": "en",
+      "gender": "Female"
+    },
+    {
+      "id": "am_michael",
+      "name": "am_michael（英文）",
+      "language": "en",
+      "gender": "Male"
+    },
+    {
+      "id": "am_puck",
+      "name": "am_puck（英文）",
+      "language": "en",
+      "gender": "Male"
+    },
+    {
+      "id": "bf_emma",
+      "name": "bf_emma（英文）",
+      "language": "en",
+      "gender": "Female"
+    },
+    {
+      "id": "bm_george",
+      "name": "bm_george（英文）",
+      "language": "en",
+      "gender": "Male"
+    }
+  ],
+  "params": [
+    {
+      "id": "speed",
+      "name": "语速",
+      "min": 0.5,
+      "max": 2.0,
+      "default": 1.0
+    }
+  ],
+  "run": {
+    "command": [
+      "{kokoro_python}",
+      "run.py"
+    ],
+    "timeout_sec": 600
+  }
+}

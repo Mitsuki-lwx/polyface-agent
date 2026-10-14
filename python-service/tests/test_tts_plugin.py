@@ -211,3 +211,32 @@ def test_builtin_plugins_are_present_and_local(monkeypatch):
     assert "windows-sapi" in items, "内置的 SAPI 插件应当在默认插件目录里"
     assert "own-audio" in items, "「用户自己的音频」也应当是一个插件（同一张清单）"
     assert all(not x["network"] for x in items.values()), "内置的都不联网"
+
+
+# ---------------- Kokoro（真的在仓库里，但依赖外部的模型与 3.12 环境）----------------
+
+def _kokoro_ready() -> bool:
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    return ((root / "kokoro-models" / "zh" / "kokoro-v1_1-zh.pth").is_file()
+            and (root / ".venv-kokoro" / "Scripts" / "python.exe").is_file())
+
+
+@pytest.mark.skipif(not _kokoro_ready(), reason="没下模型 / 没建 3.12 环境")
+def test_kokoro_plugin_lists_zh_voices_and_synthesizes(tmp_path):
+    """Kokoro 插件：中文音色要列出来，且**真的能合成中文**。
+
+    这条是"提供多种配音方案"从口号变成事实的那一条 —— 之前本机中文只有一个女声。
+    """
+    items = {x["id"]: x for x in tp.catalog()["items"]}
+    assert "kokoro" in items, "下好模型后 Kokoro 应当出现在清单里"
+    k = items["kokoro"]
+    assert k["network"] is False, "Kokoro 是本地跑的，不该标成联网"
+    zh = [v["id"] for v in k["voices"] if v.get("language") == "zh"]
+    assert len(zh) >= 5, f"中文音色应当有好几个，实际 {zh}"
+    assert any(v.startswith("zf_") for v in zh) and any(v.startswith("zm_") for v in zh), \
+        "男女声都要有"
+
+    d = tp.synthesize("kokoro", "你好，这是本地合成。", tmp_path / "k.wav", voice=zh[0])
+    assert d > 0.5, f"应当产出有长度的音频，实际 {d}s"
+    assert (tmp_path / "k.wav").stat().st_size > 10000
