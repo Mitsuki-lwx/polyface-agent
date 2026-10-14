@@ -89,6 +89,11 @@ public class PythonClient {
         return get("/platforms");
     }
 
+    /** 配音插件清单（`docs/spec_tts_plugin.md`）：所有可用方案 + 是否联网。 */
+    public JsonNode ttsPlugins() {
+        return get("/tts/plugins");
+    }
+
     /** Python 服务健康状态（含 mock/model，供前端徽章正确显示运行模式）。 */
     public JsonNode health() {
         return get("/health");

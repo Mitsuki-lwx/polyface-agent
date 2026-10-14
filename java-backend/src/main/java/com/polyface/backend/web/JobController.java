@@ -66,7 +66,9 @@ public class JobController {
                             Long template_id, JsonNode template, String tone_override,
                             Map<String, Object> params,
                             // 图文成片（docs/spec_b1.md）：每个分镜一张图 + 一首 BGM，都是素材库里的资产
-                            List<Long> images, Long bgm_asset_id, String platform) {
+                            List<Long> images, Long bgm_asset_id, String platform,
+                            // 配音方案（docs/spec_tts_plugin.md）：插件 id + 音色 id
+                            String plugin, String voice) {
     }
 
     // ---------------- 发起 ----------------
@@ -217,7 +219,15 @@ public class JobController {
         }
         plan.putObject("source").put("material_id", body.material_id()).put("platform", platform);
 
-        Map<String, Object> params = body.params() == null ? Map.of() : body.params();
+        // 配音方案随 params 传下去 → 变成 make_video.py 的 --plugin / --voice
+        Map<String, Object> params = new java.util.LinkedHashMap<>(
+                body.params() == null ? Map.of() : body.params());
+        if (body.plugin() != null && !body.plugin().isBlank()) {
+            params.put("plugin", body.plugin());
+        }
+        if (body.voice() != null && !body.voice().isBlank()) {
+            params.put("voice", body.voice());
+        }
         return roughcut.submitMakeVideo(plan.toString(), params);
     }
 

@@ -118,6 +118,19 @@ def platforms() -> dict:
     return {"platforms": dna.list_platforms()}
 
 
+@app.get("/tts/plugins")
+def tts_plugins() -> dict:
+    """配音插件清单（`docs/spec_tts_plugin.md`）。
+
+    **一张清单，不是"选后端"** —— 内置的、用户自己放的、以及每个音色/参数/是否联网
+    全在这儿。UI 直接把它摆出来让用户挑。
+
+    `network=true` 的插件会**改变数据边界**（ADR-017），所以必须如实转述，不能藏。
+    """
+    from .pipeline import tts_plugin as tp
+    return tp.catalog()
+
+
 @app.post("/timeline/validate")
 def timeline_validate(req: dict) -> dict:
     """校验一条时间线（`docs/spec_timeline.md`）。

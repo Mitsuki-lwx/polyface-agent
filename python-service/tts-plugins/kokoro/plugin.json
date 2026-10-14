@@ -4,30 +4,12 @@
   "kind": "tts",
   "version": 1,
   "network": false,
-  "note": "本地跑，不联网。中文 21 个音色 + 英文 7 个。需要 python-service/.venv-kokoro（Python 3.12）与 kokoro-models/。",
+  "note": "本地跑，不联网。中文 18 个音色 + 英文 10 个。需要 python-service/.venv-kokoro（Python 3.12）与 kokoro-models/。",
   "languages": [
     "zh",
     "en"
   ],
   "voices": [
-    {
-      "id": "af_maple",
-      "name": "af_maple（中文）",
-      "language": "zh",
-      "gender": "Male"
-    },
-    {
-      "id": "af_sol",
-      "name": "af_sol（中文）",
-      "language": "zh",
-      "gender": "Male"
-    },
-    {
-      "id": "bf_vale",
-      "name": "bf_vale（中文）",
-      "language": "zh",
-      "gender": "Male"
-    },
     {
       "id": "zf_001",
       "name": "zf_001（中文）",
@@ -135,6 +117,24 @@
       "name": "zm_037（中文）",
       "language": "zh",
       "gender": "Male"
+    },
+    {
+      "id": "af_maple",
+      "name": "af_maple（英文）",
+      "language": "en",
+      "gender": "Female"
+    },
+    {
+      "id": "af_sol",
+      "name": "af_sol（英文）",
+      "language": "en",
+      "gender": "Female"
+    },
+    {
+      "id": "bf_vale",
+      "name": "bf_vale（英文）",
+      "language": "en",
+      "gender": "Female"
     },
     {
       "id": "af_bella",

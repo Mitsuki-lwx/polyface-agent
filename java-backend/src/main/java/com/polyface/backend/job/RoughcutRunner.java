@@ -331,6 +331,8 @@ public class RoughcutRunner {
                 "--events", outDir.resolve("events.jsonl").toString(),
                 "--workdir", outDir.resolve("work").toString()));
         putIf(cmd, params, "strategy", "--strategy");
+        putIf(cmd, params, "plugin", "--plugin");
+        putIf(cmd, params, "voice", "--voice");
         putIf(cmd, params, "transition_sec", "--transition");
         putIf(cmd, params, "zoom", "--zoom");
         putIf(cmd, params, "bgm_volume_db", "--bgm-volume");

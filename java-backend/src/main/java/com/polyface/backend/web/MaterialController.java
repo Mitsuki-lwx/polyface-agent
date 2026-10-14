@@ -65,6 +65,17 @@ public class MaterialController {
         return python.platforms();
     }
 
+    /**
+     * 配音插件清单 —— 成片面板把它摆出来让用户挑（**不是"选后端"下拉框**）。
+     *
+     * <p>每个条目都带 `network`：插件可以联网，但那会改变数据边界（ADR-017），
+     * 所以必须**如实转述**给用户，不能藏。
+     */
+    @GetMapping(value = "/api/tts/plugins", produces = MediaType.APPLICATION_JSON_VALUE)
+    public JsonNode ttsPlugins() {
+        return python.ttsPlugins();
+    }
+
     // ---------------- 素材 ----------------
     @PostMapping(value = "/api/materials", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<JsonNode> createMaterial(@Valid @RequestBody CreateMaterialRequest req) {

@@ -246,6 +246,9 @@
       <div id="mvPanel" style="display:none">
         <div id="mvScenes"></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+          <label style="font-size:12px;color:var(--sub)">配音</label>
+          <select id="mvPlugin" style="width:auto"></select>
+          <select id="mvVoice" style="width:auto;max-width:200px"></select>
           <label style="font-size:12px;color:var(--sub)">BGM</label>
           <select id="mvBgm" style="width:auto"><option value="">（不加背景音乐）</option></select>
           <label style="font-size:12px;color:var(--sub)">对齐</label>
@@ -256,6 +259,7 @@
           <button id="mvStart" class="sm">🎬 出片</button>
           <span class="status-line" id="mvStatus"></span>
         </div>
+        <div id="mvVoiceNote" style="font-size:11.5px;color:var(--sub);margin-top:6px"></div>
       </div>
     </div>
 
@@ -1301,12 +1305,52 @@ async function mvLoadPlatforms(){
   }catch(e){ /* 拉不到就留空，用户自己填 */ }
   try{
     const d = await j("GET", "/api/assets?kind=image&limit=200");
-    const opts = (d.items || []).map(a=>`<option value="${a.id}">${esc(a.name || a.rel_path)}</option>`).join("");
     $("mvBgm").insertAdjacentHTML("beforeend",
       (await j("GET", "/api/assets?kind=audio&limit=200")).items
         .map(a=>`<option value="${a.id}">${esc(a.name || a.rel_path)}</option>`).join(""));
     window.__mvImages = (d.items || []);
   }catch(e){ window.__mvImages = []; }
+  await mvLoadVoiceCatalog();
+}
+
+// 配音：**把清单摆出来让用户挑**（不是"选后端"下拉框）。
+// 每条都带 network 与 note —— 插件能联网会改变数据边界（ADR-017），必须如实转达。
+async function mvLoadVoiceCatalog(){
+  let c;
+  try{ c = await j("GET", "/api/tts/plugins"); }
+  catch(e){
+    $("mvPlugin").innerHTML = '<option value="">（拿不到配音清单）</option>';
+    $("mvVoiceNote").textContent = "配音清单加载失败：" + e.message;
+    return;
+  }
+  window.__mvCatalog = c;
+  const opts = (c.items || []).map(x=>{
+    const net = x.network ? "⚠️要联网" : "本地";
+    return `<option value="${esc(x.id)}">${esc(x.name)}（${net}，${(x.voices||[]).length} 个音色）</option>`;
+  }).join("");
+  $("mvPlugin").innerHTML = opts || '<option value="">（一个可用的配音插件都没有）</option>';
+  const skipped = (c.skipped || []);
+  if(skipped.length){
+    $("mvVoiceNote").innerHTML = "被跳过的插件："
+      + skipped.map(x=>`<b>${esc(x.id)}</b>（${esc(x.reason)}）`).join("、");
+  }
+  mvFillVoices();
+}
+
+function mvFillVoices(){
+  const c = window.__mvCatalog || {items: []};
+  const item = (c.items || []).find(x=>x.id === $("mvPlugin").value);
+  const vs = (item && item.voices) || [];
+  $("mvVoice").innerHTML = vs.map(v=>
+    `<option value="${esc(v.id)}">${esc(v.name || v.id)}${v.language ? " · " + esc(v.language) : ""}</option>`
+  ).join("") || '<option value="">（这个插件没有可选的音色）</option>';
+  const notes = [];
+  if(item && item.note) notes.push(esc(item.note));
+  if(item && item.network){
+    notes.push("<b style='color:#b03a2e'>⚠️ 这个插件会联网 —— 会把内容发给第三方（改变了数据边界）</b>");
+  }
+  notes.push("插件是**你自己装的**，它能执行任意代码；程序不为它的质量与合法性背书。");
+  $("mvVoiceNote").innerHTML = notes.join("<br>");
 }
 
 async function mvLoadSheet(){
@@ -1361,7 +1405,10 @@ async function mvStart(){
   }
   $("mvStatus").textContent = "正在发起…";
   const body = {kind: "make_video", material_id: mid, platform: $("mvPlatform").value,
-                images: images, params: {strategy: $("mvStrategy").value}};
+                images: images,
+                // 选中的配音方案（插件 + 音色）随计划一起传下去
+                plugin: $("mvPlugin").value, voice: $("mvVoice").value,
+                params: {strategy: $("mvStrategy").value}};
   const bgm = $("mvBgm").value;
   if(bgm) body.bgm_asset_id = Number(bgm);
   try{
@@ -1375,6 +1422,7 @@ function bindVideoHandlers(){
   if(!$("mvStart")) return;
   $("mvLoad").onclick = mvLoadSheet;
   $("mvStart").onclick = mvStart;
+  $("mvPlugin").onchange = mvFillVoices;      // 换插件 → 音色跟着换
   mvLoadPlatforms();
 }
 
