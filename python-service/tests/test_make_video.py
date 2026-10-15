@@ -471,6 +471,22 @@ def test_title_card_fits_and_has_motion(tmp_path):
         "模板也要有运动（静止就退化成 docs/49 §5.1 打击的形态）"
 
 
+def test_subtitle_margin_is_in_script_units_not_pixels():
+    """**libass 的 `MarginV` 是脚本单位，不是像素** —— 这是实测出来的换算。
+
+    1280 高的画面：MV=20 → 距底 96px、MV=40 → 185px、MV=115 → 519px，
+    即 `像素 ≈ MV × 画面高/288`（PlayResY 默认 288）。
+
+    所以"距底 N%"= `MV = N% × 288`，**与分辨率无关**（两边约掉了）。
+    不知道这件事的后果：把 `margin_v` 当像素设成 115，字幕会跑到画面中间去（实测踩过）。
+    """
+    assert MV.PLAYRES_Y == 288
+    margin = round(MV.PLAYRES_Y * MV.SUBTITLE_BOTTOM_RATIO)
+    assert margin == 26, "距底 9% 应当换算成 MarginV=26"
+    # 反推：26 脚本单位在 1280 高的画面里约等于 115px —— 与实测的 96~185 区间一致
+    assert 96 <= margin * 1280 / MV.PLAYRES_Y <= 185
+
+
 def test_list_plugins_shows_every_option(tmp_path, capsys):
     """`--list-plugins` 要**把所有方案摆出来**（含 network 标记与 note）。"""
     plan = _plan(tmp_path, 1)

@@ -43,6 +43,11 @@ from roughcut import setup_output_encoding  # noqa: E402
 
 EXIT_OK, EXIT_ERR = 0, 1
 
+# libass 的脚本单位基准（PlayResY 默认值）—— MarginV 按它换算，不是像素
+PLAYRES_Y = 288
+# 字幕距底边占画面高度的比例
+SUBTITLE_BOTTOM_RATIO = 0.09
+
 _STAGE_DEPS: dict[str, tuple[str, ...]] = {
     "配音": (),                       # 只取决于文本
     "画面": (),                       # 只取决于图与时长
@@ -122,7 +127,9 @@ def build_parser(base: rc.RoughcutParams) -> argparse.ArgumentParser:
     p.add_argument("--font-size", dest="font_size", type=int, default=base.font_size)
     p.add_argument("--text-color", dest="text_color", default=base.text_color)
     p.add_argument("--outline", type=int, default=base.outline)
-    p.add_argument("--margin-v", dest="margin_v", type=int, default=base.margin_v)
+    # 不传就**按画面高度算**（见下面）：固定像素在 1280 高的竖屏上只占 3%，字幕会飘在中间
+    p.add_argument("--margin-v", dest="margin_v", type=int, default=None,
+                   help="字幕距底边像素（默认按画面高度的 9%% 算）")
     return p
 
 
@@ -174,9 +181,16 @@ def main(argv: list[str] | None = None) -> int:
     work.mkdir(parents=True, exist_ok=True)
     out.parent.mkdir(parents=True, exist_ok=True)
     size = (args.width, args.height)
+    # 字幕边距：**libass 的 MarginV 是「脚本单位」，不是像素**。
+    # 实测（1280 高的画面）：MV=20 → 距底 96px、MV=40 → 185px、MV=115 → 519px，
+    # 即 像素 ≈ MV × 1280/288 —— PlayResY 默认 288。
+    # 所以"距底 N% 的画面" = MarginV = N% × 288，**与分辨率无关**（两边约掉了）。
+    # 想要距底 9% → 26。粗剪默认的 40 换算过来是 14%，在竖屏上偏中间（实测看到过）。
+    margin_v = (args.margin_v if args.margin_v is not None
+                else round(PLAYRES_Y * SUBTITLE_BOTTOM_RATIO))
     params = rc.RoughcutParams().merged(
         font=args.font, font_size=args.font_size, text_color=args.text_color,
-        outline=args.outline, margin_v=args.margin_v,
+        outline=args.outline, margin_v=margin_v,
         burn_subs=False if args.no_burn else None)
 
     # ---- 1) 配音：拿到每个分镜的**实际时长**（这是后续一切的基础）----
@@ -367,6 +381,7 @@ def main(argv: list[str] | None = None) -> int:
         "strategy": args.strategy,
         "transition_sec": args.transition,
         "zoom": args.zoom,
+        "margin_v": margin_v,
         "size": {"width": size[0], "height": size[1], "fps": args.fps},
         "tts": {"plugins": [x["id"] for x in cat["items"]],
                 "skipped": cat["skipped"],
