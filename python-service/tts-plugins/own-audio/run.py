@@ -10,7 +10,11 @@ from pathlib import Path
 
 
 def main() -> int:
-    req = json.loads(sys.stdin.read() or "{}")
+    # **必须 readline，不能 read**：常驻 worker 不会关 stdin，read() 会一直等 EOF 挂死
+    line = sys.stdin.readline()
+    if not line:
+        return 0
+    req = json.loads(line or "{}")
     src = (req.get("params") or {}).get("file") or ""
     try:
         if not src or not Path(src).is_file():

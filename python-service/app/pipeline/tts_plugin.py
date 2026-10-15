@@ -14,14 +14,24 @@
    接口定错会立刻暴露，而不是等第一个第三方插件来踩。
 2. **坏插件不能毁掉整个清单。** 解析失败的跳过并**记下原因**，其余照常可用。
 3. **失败要说清是哪个插件。** 一句"配音失败"没法排查；要带上插件 id 与它的 stderr 片段。
+4. **读 stdin 必须"读一行"，不能"读到 EOF"。** 加载器会把进程热着（见 `_Worker`：
+   模型加载一次 ~25s，一问一答就退出的话每个分镜都白等），stdin 不会关 ——
+   Python 里用 `sys.stdin.readline()`，用 `sys.stdin.read()` 会一直等下去直接挂死。
+   实测踩过：常驻化之后两个内置插件当场挂死，是测试抓出来的。
+
+回完就退出也行（一问一答型）：加载器发现 EOF 会重开，**老插件不用改**。
+想拿加速就循环读行（`for line in sys.stdin:`）—— 常驻插件只起一次进程。
 """
 from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 DEFAULT_DIR = Path(__file__).resolve().parents[2] / "tts-plugins"
@@ -32,6 +42,144 @@ REQUIRED = ("id", "name", "kind", "run")
 
 class PluginError(RuntimeError):
     """插件不可用/调用失败。**消息里必须带插件 id**。"""
+
+
+class _Worker:
+    """一个常驻的插件进程。
+
+    **为什么要有它**：契约是"一问一答"，但如果每次都新起进程，插件就得每问一次重载一次
+    模型 —— Kokoro 实测 **25 秒/次**，10 个分镜白等 4 分钟。
+
+    所以加载器**替插件把进程热着**：
+    - 插件选择常驻（读完一行再读下一行）→ 直接白拿加速
+    - 插件回完就退出 → 加载器发现 EOF，下次重开（**老插件照常能用，不用改**）
+
+    超时靠读线程 + 队列（Windows 上管道不能 `select`，这是可移植的做法）。
+    """
+
+    def __init__(self, meta: dict) -> None:
+        self.meta = meta
+        self.id = meta["id"]
+        self.dir = meta["_dir"]
+        self.cmd = _resolve_cmd(meta.get("run") or {}, meta)
+        self.timeout = int((meta.get("run") or {}).get("timeout_sec") or DEFAULT_TIMEOUT)
+        self.lock = threading.Lock()
+        self.proc: subprocess.Popen | None = None
+        self.queue: queue.Queue = queue.Queue()
+        self.tail: list[str] = []          # 出错时给人看的那几行
+
+    def _spawn(self) -> None:
+        self.queue = queue.Queue()
+        self.tail = []
+        self.proc = subprocess.Popen(
+            self.cmd, cwd=self.dir, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+            bufsize=1)
+        threading.Thread(target=self._read_stdout, daemon=True).start()
+        threading.Thread(target=self._read_stderr, daemon=True).start()
+
+    def _read_stdout(self) -> None:
+        p = self.proc
+        try:
+            for line in p.stdout:                        # type: ignore[union-attr]
+                self.queue.put(line)
+        except Exception:                                # noqa: BLE001
+            pass
+        self.queue.put(None)                             # EOF 标记
+
+    def _read_stderr(self) -> None:
+        p = self.proc
+        try:
+            for line in p.stderr:                        # type: ignore[union-attr]
+                self.tail.append(line.rstrip())
+                del self.tail[:-20]                      # 只留最后 20 行
+        except Exception:                                # noqa: BLE001
+            pass
+
+    def alive(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+    def call(self, req: dict) -> dict:
+        """一问一答。进程死了会自动重开一次。"""
+        with self.lock:
+            if not self.alive():
+                self._spawn()
+            try:
+                return self._once(req)
+            except (BrokenPipeError, OSError):
+                # 插件上次回完就退出了（一问一答型）—— 重开再来
+                self._spawn()
+                try:
+                    return self._once(req)
+                except (BrokenPipeError, OSError):
+                    # 重开还是立刻退出：多半是入口坏了/一启动就崩。
+                    # **要带上它的 stderr**，不然"插件进程已退出"没法排查（实测踩过）。
+                    raise PluginError(
+                        f"插件 {self.id} 起不来或一启动就退出"
+                        f"（退出码 {self.proc.poll() if self.proc else '?'}）："
+                        f"{' / '.join(self.tail[-3:])[:300] or '(没有输出)'}") from None
+
+    def _once(self, req: dict) -> dict:
+        assert self.proc and self.proc.stdin
+        try:
+            self.proc.stdin.write(json.dumps(req, ensure_ascii=False) + "\n")
+            self.proc.stdin.flush()
+        except Exception as e:                           # noqa: BLE001
+            raise PluginError(f"插件 {self.id} 写不进去（可能已退出）：{e}") from None
+
+        deadline = time.monotonic() + self.timeout
+        while True:
+            remain = deadline - time.monotonic()
+            if remain <= 0:
+                self.kill()
+                raise PluginError(f"插件 {self.id} 超时（{self.timeout}s）")
+            try:
+                line = self.queue.get(timeout=min(remain, 5.0))
+            except queue.Empty:
+                continue
+            if line is None:                             # EOF：进程没了
+                raise BrokenPipeError("插件进程已退出")
+            s = line.strip()
+            if not s.startswith("{"):
+                continue                                 # 插件打的日志，跳过
+            try:
+                return json.loads(s)
+            except Exception:                            # noqa: BLE001
+                raise PluginError(f"插件 {self.id} 的 stdout 不是合法 JSON：{s[:160]}") from None
+
+    def kill(self) -> None:
+        try:
+            if self.proc and self.proc.poll() is None:
+                self.proc.kill()
+        except Exception:                                # noqa: BLE001
+            pass
+
+
+_WORKERS: dict[str, _Worker] = {}
+
+
+def _worker_for(meta: dict) -> _Worker:
+    w = _WORKERS.get(meta["id"])
+    if w is None or w.dir != meta["_dir"]:
+        if w is not None:
+            w.kill()
+        w = _Worker(meta)
+        _WORKERS[meta["id"]] = w
+    return w
+
+
+def shutdown(wait: float = 2.0) -> None:
+    """收工：把所有常驻插件进程关掉（脚本结束时调，免得留孤儿）。
+
+    `wait` 是给进程一点时间真的退出 —— 刚 `kill()` 就断言"已死"会偶发失败（实测）。
+    """
+    ws = list(_WORKERS.values())
+    for w in ws:
+        w.kill()
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline and any(w.alive() for w in ws):
+        time.sleep(0.05)
+    _WORKERS.clear()
 
 
 def plugins_dir() -> Path:
@@ -109,37 +257,13 @@ def synthesize(plugin_id: str, text: str, out: str | Path, *,
     if out.exists():
         out.unlink()                                     # 免得拿上一次的产物当成功
 
-    run = meta.get("run") or {}
-    cmd = _resolve_cmd(run, meta)
-    timeout = int(run.get("timeout_sec") or DEFAULT_TIMEOUT)
     # **交给插件的路径一律用正斜杠**：Windows API 认 `/`，而 bash 会把 `\` 当转义。
     # 实测踩过：`out` 带反斜杠时 shell 插件把文件写到了被改坏的路径上，
     # 然后报"说成功但没产出" —— 这种坑不该让每个插件作者各踩一次。
     req = {"text": text, "voice": voice, "out": out.as_posix(),
            "rate": int(rate), "volume": int(volume), "params": params or {}}
 
-    try:
-        cp = subprocess.run(cmd, input=json.dumps(req, ensure_ascii=False),
-                            capture_output=True, text=True, encoding="utf-8",
-                            errors="replace", timeout=timeout,
-                            cwd=meta["_dir"])
-    except subprocess.TimeoutExpired:
-        raise PluginError(f"插件 {plugin_id} 超时（{timeout}s）") from None
-    except Exception as e:                               # noqa: BLE001
-        raise PluginError(f"插件 {plugin_id} 起不来：{e}") from None
-
-    last = ""
-    for line in reversed((cp.stdout or "").splitlines()):
-        if line.strip().startswith("{"):
-            last = line.strip()
-            break
-    if not last:
-        raise PluginError(f"插件 {plugin_id} 没有返回 JSON（退出码 {cp.returncode}）："
-                          f"{(cp.stderr or cp.stdout or '')[-200:]}")
-    try:
-        resp = json.loads(last)
-    except Exception:                                    # noqa: BLE001
-        raise PluginError(f"插件 {plugin_id} 的 stdout 不是合法 JSON：{last[:160]}") from None
+    resp = _worker_for(meta).call(req)
 
     if not resp.get("ok"):
         raise PluginError(f"插件 {plugin_id} 报错：{resp.get('error') or '(没给原因)'}")

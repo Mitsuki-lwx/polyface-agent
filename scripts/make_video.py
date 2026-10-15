@@ -379,6 +379,9 @@ def main(argv: list[str] | None = None) -> int:
     (out.with_suffix(".plan.json")).write_text(
         json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    # 收工：把常驻的配音插件进程关掉，免得留孤儿（Kokoro 那个进程不小）
+    tp.shutdown()
+
     print(f"\n成片：{out}  {real:.2f}s")
     print(f"记录：{out.with_suffix('.plan.json')}")
     if abs(real - total) > 0.35:

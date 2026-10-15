@@ -202,6 +202,64 @@ def test_network_flag_is_surfaced(plugdir):
     assert "服务商" in items["cloud"]["note"]
 
 
+# ---------------- 常驻进程（一问一答型的老插件必须照常能用）----------------
+
+def test_oneshot_plugin_is_respawned(plugdir, tmp_path):
+    """**回完就退出的插件照样能用** —— 加载器发现 EOF 就重开。
+
+    这条是"常驻加速"能落地的关键：契约没变，老插件一行都不用改。
+    """
+    _plugin(plugdir, "one-shot", {"id": "one-shot", "name": "一问一答", "kind": "tts",
+                                  "run": {"command": ["{python}", "run.py"]}}, "run.py",
+            "import json,sys,wave\n"
+            "req=json.loads(sys.stdin.readline())\n"
+            "with wave.open(req['out'],'wb') as w:\n"
+            "    w.setnchannels(1);w.setsampwidth(2);w.setframerate(22050)\n"
+            "    w.writeframes(b'\\x00\\x00'*22050)\n"
+            "print(json.dumps({'ok':True,'seconds':1.0}))\n")
+    for i in range(3):
+        d = tp.synthesize("one-shot", f"第{i}次", tmp_path / f"o{i}.wav")
+        assert d == pytest.approx(1.0), f"第 {i+1} 次失败 —— 重开逻辑没生效"
+    tp.shutdown()
+
+
+def test_serve_plugin_is_reused(plugdir, tmp_path):
+    """**常驻插件只起一次进程** —— 靠数"进程启动了几次"来证明。
+
+    这正是 Kokoro 的加速来源：模型加载一次 ~25s，之后每次只要 ~1s。
+    """
+    _plugin(plugdir, "serve", {"id": "serve", "name": "常驻", "kind": "tts",
+                               "run": {"command": ["{python}", "run.py"]}}, "run.py",
+            "import json,sys,wave\n"
+            "for line in sys.stdin:\n"
+            "    req=json.loads(line)\n"
+            "    with wave.open(req['out'],'wb') as w:\n"
+            "        w.setnchannels(1);w.setsampwidth(2);w.setframerate(22050)\n"
+            "        w.writeframes(b'\\x00\\x00'*22050)\n"
+            "    print(json.dumps({'ok':True,'seconds':1.0}), flush=True)\n")
+    ws = tp._worker_for(tp.load_plugins()[0][0])
+    for i in range(4):
+        assert tp.synthesize("serve", f"第{i}次", tmp_path / f"s{i}.wav") == pytest.approx(1.0)
+        assert ws.alive(), f"第 {i+1} 次之后进程不该退"
+    tp.shutdown()
+
+
+def test_shutdown_kills_workers(plugdir, tmp_path):
+    """收工要把常驻进程关掉，不然留孤儿。"""
+    _plugin(plugdir, "serve2", {"id": "serve2", "name": "常驻", "kind": "tts",
+                                "run": {"command": ["{python}", "run.py"]}}, "run.py",
+            "import json,sys,wave\n"
+            "for line in sys.stdin:\n"
+            "    req=json.loads(line)\n"
+            "    open(req['out'],'wb').write(b'\\x00'*4096)\n"
+            "    print(json.dumps({'ok':True,'seconds':1.0}), flush=True)\n")
+    tp.synthesize("serve2", "x", tmp_path / "a.wav")
+    ws = tp._worker_for(tp.load_plugins()[0][0])
+    assert ws.alive()
+    tp.shutdown()
+    assert not ws.alive(), "shutdown 之后进程应当已经关掉"
+
+
 # ---------------- 内置的那两个（真的在仓库里）----------------
 
 def test_builtin_plugins_are_present_and_local(monkeypatch):

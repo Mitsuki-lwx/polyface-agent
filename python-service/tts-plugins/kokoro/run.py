@@ -88,56 +88,75 @@ def _find_voice(root: Path, voice: str) -> tuple[str, str, str, Path]:
         f"没有这个音色：{voice}（本地 {root} 里找不到 {voice}.pt）")
 
 
-def main() -> int:
-    req = json.loads(sys.stdin.read() or "{}")
+def _synthesize(req: dict, cache: dict) -> float:
+    """合一段。**模型与音色都缓存** —— 同一个音色第二次不用再载（省 ~25s）。"""
     voice = (req.get("voice") or "zf_001").strip()
     text = (req.get("text") or "").strip()
     out = Path(req["out"])
     speed = float((req.get("params") or {}).get("speed") or 1.0)
+    if not text:
+        raise ValueError("没有文本")
 
-    try:
-        if not text:
-            raise ValueError("没有文本")
-        root = _models_root()
-        _offline(root)
+    import numpy as np
+    from kokoro import KPipeline, KModel
 
-        import numpy as np
-        from kokoro import KPipeline, KModel
+    root = _models_root()
+    _offline(root)
+    repo, sub, lang, vp = _find_voice(root, voice)
 
-        repo, sub, lang, vp = _find_voice(root, voice)
-
+    pipe = cache.get(("pipe", lang))
+    if pipe is None:
         # config 与权重都给本地路径 —— 加上 _offline 补丁，一个字节都不出网
         kmodel = KModel(repo_id=repo, config=str(root / sub / "config.json"))
         pipe = KPipeline(lang_code=lang, repo_id=repo, model=kmodel)
-
+        cache[("pipe", lang)] = pipe
+    if voice not in pipe.voices:
         # 音色也预读进去（KPipeline.load_voice 同样会走 hf_hub_download）
         import torch
         pipe.voices[voice] = torch.load(str(vp), map_location="cpu", weights_only=True)
 
-        chunks = []
-        for _, _, audio in pipe(text, voice=voice, speed=speed):
-            chunks.append(audio)
-        if not chunks:
-            raise RuntimeError("Kokoro 没有产出音频")
-        audio = np.concatenate(chunks)
+    chunks = [audio for _, _, audio in pipe(text, voice=voice, speed=speed)]
+    if not chunks:
+        raise RuntimeError("Kokoro 没有产出音频")
+    audio = np.concatenate(chunks)
 
-        out.parent.mkdir(parents=True, exist_ok=True)
-        # 用标准库写 WAV，**不引 soundfile** —— 少一个依赖就少一处会缺的东西
-        # （实测：kokoro 的依赖里并没有 soundfile，装了才发现的）
-        pcm = np.clip(np.asarray(audio, dtype="float32"), -1.0, 1.0)
-        pcm = (pcm * 32767.0).astype("<i2").tobytes()
-        with wave.open(str(out), "wb") as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(24000)                     # Kokoro 的采样率是 24k
-            w.writeframes(pcm)
-        with wave.open(str(out), "rb") as w:
-            seconds = round(w.getnframes() / w.getframerate(), 3)
-        print(json.dumps({"ok": True, "seconds": seconds}, ensure_ascii=False))
-        return 0
-    except Exception as e:                             # noqa: BLE001
-        print(json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}, ensure_ascii=False))
-        return 1
+    out.parent.mkdir(parents=True, exist_ok=True)
+    # 用标准库写 WAV，**不引 soundfile** —— 少一个依赖就少一处会缺的东西
+    # （实测：kokoro 的依赖里并没有 soundfile，装了才发现的）
+    pcm = np.clip(np.asarray(audio, dtype="float32"), -1.0, 1.0)
+    pcm = (pcm * 32767.0).astype("<i2").tobytes()
+    with wave.open(str(out), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000)   # Kokoro 是 24k
+        w.writeframes(pcm)
+    with wave.open(str(out), "rb") as w:
+        return round(w.getnframes() / w.getframerate(), 3)
+
+
+def main() -> int:
+    """**常驻模式**：读一行请求、答一行、直到 stdin 关掉。
+
+    为什么要这样：模型加载一次要 ~25 秒。一问一答就退出的话，10 个分镜白等 4 分钟；
+    常驻之后只在第一次付这个代价。加载器不用改契约 —— 它把进程热着；
+    回完就退出的插件（一问一答型）照样能用，加载器会发现 EOF 并重开。
+    """
+    cache: dict = {}
+    for line in sys.stdin:
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            req = json.loads(line)
+        except Exception as e:                             # noqa: BLE001
+            print(json.dumps({"ok": False, "error": f"请求不是合法 JSON：{e}"},
+                             ensure_ascii=False), flush=True)
+            continue
+        try:
+            print(json.dumps({"ok": True, "seconds": _synthesize(req, cache)},
+                             ensure_ascii=False), flush=True)
+        except Exception as e:                             # noqa: BLE001
+            print(json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"},
+                             ensure_ascii=False), flush=True)
+    return 0
 
 
 if __name__ == "__main__":
