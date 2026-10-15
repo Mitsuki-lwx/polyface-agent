@@ -150,10 +150,14 @@ def _clamp_transition(transition: float, durations: list[float]) -> float:
 
 def title_card(img: str | Path, out: str | Path, seconds: float, title: str, *,
                size: tuple[int, int] = DEFAULT_SIZE, fps: int = DEFAULT_FPS,
-               font_file: str | None = None, title_ratio: float = 0.085,
-               bg: str = "0x0E0E14", zoom: float = 1.03, crf: int = 20,
+               font_file: str | None = None, title_ratio: float = 0.128,
+               bg: str = "0x090909", zoom: float = 1.03, crf: int = 20,
                on_progress=None, on_raw=None) -> None:
     """**深色底 + 居中大标题**（用户给的参考片就是这种调性）。
+
+    默认值都**取自参考片实测**（`素材/dl.mp4`，1280×720）：四角底色 (9,9,9) → 近纯黑、
+    大标题 92px/720 = 画面高的 12.8%。**不是拍脑袋定的** —— 手搓的那版底色是深蓝
+    `0x0E0E14`、标题小了一圈（8.5%），跟参考片不是一回事，是量了才发现。
 
     做法：先渲一张卡片 PNG，再交给 `ken_burns` 缓动 —— 复用现有那条路，
     不为了"换个背景"再写一套运动逻辑。

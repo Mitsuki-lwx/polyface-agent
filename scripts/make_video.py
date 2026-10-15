@@ -43,10 +43,18 @@ from roughcut import setup_output_encoding  # noqa: E402
 
 EXIT_OK, EXIT_ERR = 0, 1
 
+# 下面这几个值是**从用户的参考片里量出来的**，不是拍脑袋定的
+# （`素材/dl.mp4`，1280×720，卡片式）：
+#   底色         四角实测 (9,9,9) / (5,3,4)  → 近纯黑，不是深蓝
+#   大标题高度   92px / 720 = 12.8% 画面高
+#   底部字幕     y=601/720 → 距底 16%
+#   转场         scene 检测 0 个 → 参考片**没有硬切**，卡片是慢速切换的
+#
 # libass 的脚本单位基准（PlayResY 默认值）—— MarginV 按它换算，不是像素
 PLAYRES_Y = 288
-# 字幕距底边占画面高度的比例
-SUBTITLE_BOTTOM_RATIO = 0.09
+# 字幕距底边占画面高度的比例。参考片实测在 5%~16% 之间浮动（不同帧不一样），
+# 取中间值 —— 取 16% 会偏高（贴近参考片里最靠下的那几帧才对）。
+SUBTITLE_BOTTOM_RATIO = 0.08
 
 _STAGE_DEPS: dict[str, tuple[str, ...]] = {
     "配音": (),                       # 只取决于文本
@@ -105,8 +113,8 @@ def build_parser(base: rc.RoughcutParams) -> argparse.ArgumentParser:
                    help="对齐策略：配音优先（默认，脚本不动）/ 卡点优先（改时长）")
     p.add_argument("--template", default="photo", choices=("photo", "dark-title"),
                    help="成片模板：photo=真照片+缓动（默认）/ dark-title=深色底+居中大标题")
-    p.add_argument("--title-ratio", dest="title_ratio", type=float, default=0.085,
-                   help="dark-title 的大标题占画面高度的比例")
+    p.add_argument("--title-ratio", dest="title_ratio", type=float, default=0.128,
+                   help="dark-title 的大标题占画面高度的比例（默认取自参考片实测）")
     p.add_argument("--transition", type=float, default=0.4)
     p.add_argument("--zoom", type=float, default=1.08, help="缓动强度，1.0 = 静止")
     p.add_argument("--width", type=int, default=V.DEFAULT_SIZE[0])

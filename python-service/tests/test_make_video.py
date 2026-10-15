@@ -482,9 +482,26 @@ def test_subtitle_margin_is_in_script_units_not_pixels():
     """
     assert MV.PLAYRES_Y == 288
     margin = round(MV.PLAYRES_Y * MV.SUBTITLE_BOTTOM_RATIO)
-    assert margin == 26, "距底 9% 应当换算成 MarginV=26"
-    # 反推：26 脚本单位在 1280 高的画面里约等于 115px —— 与实测的 96~185 区间一致
+    assert margin == round(288 * 0.08) == 23, "距底 8% 换算成 MarginV=23"
+    # 反推：23 脚本单位在 1280 高的画面里约等于 102px —— 与实测的 96~185 区间一致
     assert 96 <= margin * 1280 / MV.PLAYRES_Y <= 185
+
+
+def test_template_constants_come_from_the_reference():
+    """模板的默认值**取自参考片实测**（`素材/dl.mp4`），不是拍脑袋定的。
+
+    手搓的那版底色是深蓝 `0x0E0E14`、标题只有 8.5% —— 跟参考片不是一回事，
+    **是量了才发现**。这条测试把"量的结果"钉住，免得以后被随手改回去。
+
+    实测（参考片 1280×720）：四角底色 (9,9,9)、大标题 92px = 12.8% 画面高、
+    底部字幕底边在距底 5%~16% 之间浮动。
+    """
+    assert MV.PLAYRES_Y == 288
+    assert MV.SUBTITLE_BOTTOM_RATIO == pytest.approx(0.08), "参考片中位"
+    import inspect
+    sig = inspect.signature(MV.V.title_card)
+    assert sig.parameters["title_ratio"].default == pytest.approx(0.128), "参考片实测 12.8%"
+    assert sig.parameters["bg"].default == "0x090909", "参考片四角是 (9,9,9)，近纯黑"
 
 
 def test_list_plugins_shows_every_option(tmp_path, capsys):
