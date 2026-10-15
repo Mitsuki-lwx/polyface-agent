@@ -29,7 +29,9 @@ public class Store {
     public record MaterialRow(long id, String rawText, String sourceKind, String title,
                               String coreMessage, String tone, String audience,
                               String factsJson, String createdAt,
-                              boolean factsConfirmed, String factsConfirmedAt) {
+                              boolean factsConfirmed, String factsConfirmedAt,
+                              /** 素材拆分：从哪个父素材拆出来的；普通素材为 null */
+                              Long parentId, String angle, String format) {
     }
 
     public record DraftRow(long id, long materialId, String platformCode, String platformName,
@@ -125,7 +127,9 @@ public class Store {
                 "CREATE TABLE IF NOT EXISTS material ("
                         + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
                         + "raw_text TEXT NOT NULL, source_kind TEXT, title TEXT,"
-                        + "core_message TEXT, tone TEXT, audience TEXT, facts_json TEXT, created_at TEXT)",
+                        + "core_message TEXT, tone TEXT, audience TEXT, facts_json TEXT, created_at TEXT,"
+                        // 素材拆分（docs/spec_split.md）：从哪个父素材拆的 + 这一条的选题角度/形态
+                        + "parent_id INTEGER, angle TEXT, format TEXT)",
                 "CREATE TABLE IF NOT EXISTS draft ("
                         + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
                         + "material_id INTEGER NOT NULL, platform_code TEXT NOT NULL, platform_name TEXT,"
@@ -194,6 +198,7 @@ public class Store {
             ensureDraftTemplateColumns(c);
             ensureTemplateStatusColumns(c);
             ensureFactsAndEditColumns(c);
+            ensureMaterialSplitColumns(c);
             ensureJobResultColumn(c);
         }
         log.info("SQLite schema ready");
@@ -272,6 +277,31 @@ public class Store {
 
     // ---------------- 迁移（事实确认与稿件编辑闭环）----------------
     /** 增量加列：material.facts_confirmed / facts_confirmed_at、draft.edited_at。幂等。 */
+    /**
+     * 老库补列：`material.parent_id` / `angle` / `format`（素材拆分，`docs/spec_split.md`）。
+     * 照 `ensureFactsAndEditColumns` 的样子写 —— 这个仓库的规矩是**老库自动升级**。
+     */
+    private void ensureMaterialSplitColumns(Connection c) throws java.sql.SQLException {
+        try (Statement st = c.createStatement(); ResultSet rs = st.executeQuery("PRAGMA table_info(material)")) {
+            java.util.Set<String> cols = new java.util.LinkedHashSet<>();
+            while (rs.next()) {
+                cols.add(rs.getString("name"));
+            }
+            for (String col : new String[]{"parent_id INTEGER", "angle TEXT", "format TEXT"}) {
+                String name = col.split(" ")[0];
+                if (!cols.contains(name)) {
+                    st.execute("ALTER TABLE material ADD COLUMN " + col);
+                    log.info("migrated: material.{} added", name);
+                }
+            }
+        }
+    }
+
+    private static Long readLongOrNull(ResultSet rs, String col) throws java.sql.SQLException {
+        long v = rs.getLong(col);
+        return rs.wasNull() ? null : v;
+    }
+
     private void ensureFactsAndEditColumns(Connection c) throws java.sql.SQLException {
         addColumnIfMissing(c, "material", "facts_confirmed", "INTEGER DEFAULT 0");
         addColumnIfMissing(c, "material", "facts_confirmed_at", "TEXT");
@@ -321,8 +351,9 @@ public class Store {
     }
 
     public Optional<MaterialRow> getMaterial(long id) {
-        String sql = "SELECT id, raw_text, source_kind, title, core_message, tone, audience, facts_json, created_at, facts_confirmed, facts_confirmed_at "
-                + "FROM material WHERE id=?";
+        // 用 `*` 而不是显式列名：显式列名每加一列都要记得改（实测漏过 ——
+        // 加了 parent_id/angle/format 之后这里报 "getMaterial failed"）
+        String sql = "SELECT * FROM material WHERE id=?";
         try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setLong(1, id);
             try (ResultSet rs = ps.executeQuery()) {
@@ -337,8 +368,7 @@ public class Store {
     }
 
     public List<MaterialRow> listMaterials() {
-        String sql = "SELECT id, raw_text, source_kind, title, core_message, tone, audience, facts_json, created_at, facts_confirmed, facts_confirmed_at "
-                + "FROM material ORDER BY id DESC";
+        String sql = "SELECT * FROM material ORDER BY id DESC";   // 同上：别用显式列名
         List<MaterialRow> out = new ArrayList<>();
         try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql); ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
@@ -355,7 +385,49 @@ public class Store {
                 rs.getLong("id"), rs.getString("raw_text"), rs.getString("source_kind"),
                 rs.getString("title"), rs.getString("core_message"), rs.getString("tone"),
                 rs.getString("audience"), rs.getString("facts_json"), rs.getString("created_at"),
-                rs.getInt("facts_confirmed") == 1, rs.getString("facts_confirmed_at"));
+                rs.getInt("facts_confirmed") == 1, rs.getString("facts_confirmed_at"),
+                readLongOrNull(rs, "parent_id"), rs.getString("angle"), rs.getString("format"));
+    }
+
+    /**
+     * 建一个**子素材**（素材拆分用，`docs/spec_split.md`）。
+     *
+     * <p>子素材是一等素材 —— 进同一张表、能再走一遍完整管线；
+     * `parentId`/`angle`/`format` 只是**多出来的血缘信息**，不影响它作为素材的用法。
+     */
+    public long insertChildMaterial(String rawText, String title, String coreMessage,
+                                    String tone, String audience, String factsJson,
+                                    long parentId, String angle, String format) {
+        String sql = "INSERT INTO material(raw_text, source_kind, title, core_message, tone, "
+                + "audience, facts_json, created_at, parent_id, angle, format) VALUES(?,?,?,?,?,?,?,?,?,?,?)";
+        try (Connection c = open();
+             PreparedStatement ps = c.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+            ps.setString(1, rawText); ps.setString(2, "split"); ps.setString(3, title);
+            ps.setString(4, coreMessage); ps.setString(5, tone); ps.setString(6, audience);
+            ps.setString(7, factsJson); ps.setString(8, LocalDateTime.now().toString());
+            ps.setLong(9, parentId); ps.setString(10, angle); ps.setString(11, format);
+            ps.executeUpdate();
+            try (ResultSet rs = ps.getGeneratedKeys()) {
+                return rs.next() ? rs.getLong(1) : -1L;
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("insertChildMaterial failed", e);
+        }
+    }
+
+    /** 父素材能反查"我拆出了哪些"。 */
+    public List<MaterialRow> childrenOf(long parentId) {
+        String sql = "SELECT * FROM material WHERE parent_id=? ORDER BY id";
+        List<MaterialRow> out = new ArrayList<>();
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setLong(1, parentId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) { out.add(mapMaterial(rs)); }
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("childrenOf failed", e);
+        }
+        return out;
     }
 
     /** 保存（并可选确认）事实清单。

@@ -89,6 +89,15 @@ public class PythonClient {
         return get("/platforms");
     }
 
+    /**
+     * 素材拆分（`docs/spec_split.md`）：一个素材 → 多个素材源。
+     *
+     * <p>走**长超时**客户端（`genClient`）：这是一次真 LLM 调用，短任务的 60s 不够。
+     */
+    public JsonNode splitMaterial(JsonNode body) {
+        return post(genClient, "/split", body);
+    }
+
     /** 配音插件清单（`docs/spec_tts_plugin.md`）：所有可用方案 + 是否联网。 */
     public JsonNode ttsPlugins() {
         return get("/tts/plugins");

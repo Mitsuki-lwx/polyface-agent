@@ -197,3 +197,31 @@ def test_formats_prompt_says_what_each_format_means(fake_llm, monkeypatch):
     sp.split_material(MAT, RAW, formats=["口播脚本"])
     assert "口播脚本 → 口语、短句、有停顿提示" in seen["p"]
     assert "金句卡片 → 只有一句话" in seen["p"]
+
+
+# ---------------- 端点（T4）----------------
+
+def test_endpoint_returns_items(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    monkeypatch.setattr(sp.llm, 'chat_json', lambda *a, **kw: {
+        'items': [_item('钱的视角', [1])]})
+    c = TestClient(app)
+    r = c.post('/split', json={'raw_text': RAW,
+                               'structured': MAT.model_dump(),
+                               'angles': ['钱的视角']})
+    assert r.status_code == 200
+    items = r.json()['items']
+    assert len(items) == 1
+    assert items[0]['angle'] == '钱的视角'
+    assert [f['text'] for f in items[0]['facts']] == ['2023年3月裸辞']
+
+
+def test_endpoint_rejects_bad_request(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    c = TestClient(app)
+    # 两维都没给 → 400 + 可读理由
+    r = c.post('/split', json={'raw_text': RAW, 'structured': MAT.model_dump()})
+    assert r.status_code == 400
+    assert '角度或形态' in r.json()['detail']

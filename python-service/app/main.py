@@ -118,6 +118,31 @@ def platforms() -> dict:
     return {"platforms": dna.list_platforms()}
 
 
+@app.post("/split")
+def do_split(req: dict) -> dict:
+    """素材拆分（`docs/spec_split.md`）：一个素材 → 多个素材源。
+
+    请求：`{"raw_text", "structured": {…}, "angles": [...], "formats": [...]}`
+    —— `angles` 与 `formats` 至少要给一个（选题与形态是两个维度，
+    黑客松原句写的是 "channels **and formats**"）。
+
+    返回 `{"items": [{angle, format, title, core_message, facts:[…]}]}`。
+
+    **事实不许凭空造**：模型只返回父素材事实的**序号**，这里按序号取回原文 ——
+    越界序号会被 `split_material` 当场拦下（不是靠"叮嘱模型别编"）。
+    """
+    from .pipeline import split as sp
+    from .schemas import StructuredMaterial
+    try:
+        mat = StructuredMaterial.model_validate(req.get("structured") or {})
+        items = sp.split_material(mat, str(req.get("raw_text") or ""),
+                                  angles=req.get("angles") or [],
+                                  formats=req.get("formats") or [])
+    except sp.SplitError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+    return {"items": items}
+
+
 @app.get("/tts/plugins")
 def tts_plugins() -> dict:
     """配音插件清单（`docs/spec_tts_plugin.md`）。
