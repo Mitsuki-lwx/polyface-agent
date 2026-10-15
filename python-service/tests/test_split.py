@@ -38,13 +38,13 @@ def _item(angle, ids, title="标题", core="核心"):
 
 def test_rejects_empty_angles(fake_llm):
     fake_llm({"items": []})
-    with pytest.raises(sp.SplitError, match="至少要给一个角度"):
+    with pytest.raises(sp.SplitError, match="至少要给角度或形态"):
         sp.split_material(MAT, RAW, [])
 
 
 def test_rejects_too_many_angles(fake_llm):
     fake_llm({"items": []})
-    with pytest.raises(sp.SplitError, match=f"最多拆 {sp.MAX_ANGLES} 条"):
+    with pytest.raises(sp.SplitError, match=f"最多 {sp.MAX_ANGLES} 个角度"):
         sp.split_material(MAT, RAW, [f"角度{i}" for i in range(sp.MAX_ANGLES + 1)])
 
 
@@ -62,7 +62,7 @@ def test_missing_angle_names_the_angle(fake_llm):
     with pytest.raises(sp.SplitError) as e:
         sp.split_material(MAT, RAW, ["钱的视角", "心理的视角", "方法的视角"])
     msg = str(e.value)
-    assert "第 2 个角度" in msg and "心理的视角" in msg, f"要点名：{msg}"
+    assert "第 2 个目标" in msg and "心理的视角" in msg, f"要点名：{msg}"
 
 
 def test_angle_matching_tolerates_rewording(fake_llm):
@@ -145,3 +145,55 @@ def test_prompt_carries_the_fact_numbers(fake_llm, monkeypatch):
     assert "1. [data] 2023年3月裸辞" in p
     assert "3. [data] 单价从800涨到3000" in p
     assert "只能引用这些的序号" in p
+
+
+# ---------------- 形态这一维（黑客松原句：channels **and formats**）----------------
+
+def test_formats_only(fake_llm):
+    """**只给形态** → 同一内容出多种形态（不按选题拆）。"""
+    fake_llm({"items": [{"angle": "", "format": "口播脚本", "title": "口播", "core_message": "c",
+                         "fact_ids": [1]},
+                        {"angle": "", "format": "金句卡片", "title": "金句", "core_message": "c",
+                         "fact_ids": []}]})
+    out = sp.split_material(MAT, RAW, formats=["口播脚本", "金句卡片"])
+    assert [(x["angle"], x["format"]) for x in out] == [("", "口播脚本"), ("", "金句卡片")]
+    assert [f["text"] for f in out[0]["facts"]] == ["2023年3月裸辞"]
+
+
+def test_angle_x_format_is_a_matrix(fake_llm):
+    """**两维都给** → 选题 × 形态 的矩阵，每条都带齐两维。"""
+    fake_llm({"items": [
+        {"angle": "钱的视角", "format": "口播脚本", "title": "a", "core_message": "c", "fact_ids": [1]},
+        {"angle": "钱的视角", "format": "金句卡片", "title": "b", "core_message": "c", "fact_ids": []},
+        {"angle": "心理的视角", "format": "口播脚本", "title": "c", "core_message": "c", "fact_ids": [2]},
+        {"angle": "心理的视角", "format": "金句卡片", "title": "d", "core_message": "c", "fact_ids": []},
+    ]})
+    out = sp.split_material(MAT, RAW, angles=["钱的视角", "心理的视角"],
+                            formats=["口播脚本", "金句卡片"])
+    assert len(out) == 4
+    assert [(x["angle"], x["format"]) for x in out] == [
+        ("钱的视角", "口播脚本"), ("钱的视角", "金句卡片"),
+        ("心理的视角", "口播脚本"), ("心理的视角", "金句卡片")]
+
+
+def test_matrix_has_a_cap(fake_llm):
+    """两维相乘会爆量 —— 要有上限，且**明确报出乘出来多少**。"""
+    fake_llm({"items": []})
+    with pytest.raises(sp.SplitError, match=f"超过上限 {sp.MAX_ITEMS}"):
+        sp.split_material(MAT, RAW, angles=[f"角度{i}" for i in range(sp.MAX_ANGLES)],
+                          formats=["a", "b", "c"])
+
+
+def test_formats_prompt_says_what_each_format_means(fake_llm, monkeypatch):
+    """提示词要说清每个形态**具体长什么样** —— 不然四条都是同一段话换开头。"""
+    seen = {}
+
+    def spy(prompt, **kw):
+        seen["p"] = prompt
+        return {"items": [{"angle": "", "format": "口播脚本", "title": "t", "core_message": "c",
+                           "fact_ids": []}]}
+
+    monkeypatch.setattr(sp.llm, "chat_json", spy)
+    sp.split_material(MAT, RAW, formats=["口播脚本"])
+    assert "口播脚本 → 口语、短句、有停顿提示" in seen["p"]
+    assert "金句卡片 → 只有一句话" in seen["p"]

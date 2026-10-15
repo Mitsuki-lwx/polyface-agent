@@ -94,4 +94,21 @@
 - **跨素材合并**（几条素材合成一条）—— 那是另一个方向
 - **拆出来的东西自动排队发**（沿用 ADR-010：不自动发布）
 - **递归拆**（子素材再拆）—— 技术上可以，但先看一层够不够用
-- **按形态拆**（长文版/口播版/金句卡片）—— 用户明确先做"按选题"
+
+### ⚠️ 更正：**按形态拆**本来是 in scope，我之前放错了
+
+黑客松原句是：
+
+> Content repurposing across platforms: Automate adapting content for different
+> **channels and formats**. No one lives on one platform, and content shouldn't, too.
+
+**channels = 平台，formats = 形态** —— 原句里"形态"是**明写着的**，
+我却把它写进了 Out of Scope ✗。所以：
+
+| | 状态 |
+|---|---|
+| **按平台适配**（channels） | ✓ 已做（实测 5 平台，261~1415 字） |
+| **按形态适配**（formats） | ✗ **本版要补** —— 同一份内容 → 长文版 / 口播脚本 / 图文 / 金句卡片 |
+
+形态与选题是**两个维度**（同一选题可以有多种形态；不同选题也可以同一种形态），
+所以拆分的输入要能表达这两维 —— 见 `docs/tasks_split.md` T2b。
