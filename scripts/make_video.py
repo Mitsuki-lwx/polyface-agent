@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -97,6 +98,10 @@ def build_parser(base: rc.RoughcutParams) -> argparse.ArgumentParser:
     p.add_argument("--level", default="normal", choices=("quiet", "normal", "verbose"))
     p.add_argument("--strategy", default="voice_first", choices=("voice_first", "beat_first"),
                    help="对齐策略：配音优先（默认，脚本不动）/ 卡点优先（改时长）")
+    p.add_argument("--template", default="photo", choices=("photo", "dark-title"),
+                   help="成片模板：photo=真照片+缓动（默认）/ dark-title=深色底+居中大标题")
+    p.add_argument("--title-ratio", dest="title_ratio", type=float, default=0.085,
+                   help="dark-title 的大标题占画面高度的比例")
     p.add_argument("--transition", type=float, default=0.4)
     p.add_argument("--zoom", type=float, default=1.08, help="缓动强度，1.0 = 静止")
     p.add_argument("--width", type=int, default=V.DEFAULT_SIZE[0])
@@ -294,17 +299,24 @@ def main(argv: list[str] | None = None) -> int:
     for i, (sc, sd) in enumerate(zip(scenes, seg_durs), 1):
         seg = work / f"scene-{i:03d}.mp4"
         # **分镜级落盘**：跑完一个分镜就记一个，中断后只补没做完的
+        # 模板：photo=真照片+缓动 / dark-title=深色底+居中大标题（用户给的参考片那种调性）
+        title = _title_of(sc) if args.template == "dark-title" else ""
         sstage = f"画面-{i}"
         book = ck.DoneBook(work, params, Path(sc["image"]), {sstage: ()},
                            extra={"seconds": round(sd, 3), "zoom": args.zoom,
+                                  "title": title, "template": args.template,
                                   "size": list(size), "fps": args.fps})
         _u = book.get(sstage)
         if _u is not None and seg.is_file():
             print(f"[续跑] 跳过 画面:{i}（已完成）")
         else:
             with log.stage(f"画面:{i}") as r:
-                V.ken_burns(sc["image"], seg, sd, zoom=args.zoom, size=size, fps=args.fps,
-                            on_progress=r.progress)
+                if args.template == "dark-title":
+                    V.title_card(work, seg, sd, title, size=size, fps=args.fps,
+                                 title_ratio=args.title_ratio, on_progress=r.progress)
+                else:
+                    V.ken_burns(sc["image"], seg, sd, zoom=args.zoom, size=size, fps=args.fps,
+                                on_progress=r.progress)
                 r.done(f"{sd:.2f}s")
             book.put(sstage, out=str(seg))
         segs.append(seg)
@@ -313,6 +325,9 @@ def main(argv: list[str] | None = None) -> int:
     cursor, sub_segments = 0.0, []
     for sc, d in zip(scenes, durations):
         text = _subtitle_lines(str(sc.get("subtitle") or ""))
+        if args.template == "dark-title":
+            # 大标题已经占了第一行 → 底部只留其余几行（参考片就是"大标题 + 底部一行"）
+            text = "\n".join(text.split("\n")[1:]).strip()
         if text:
             sub_segments.append({"start": round(cursor, 3),
                                  "end": round(cursor + d - 0.05, 3), "text": text})
@@ -389,15 +404,25 @@ def main(argv: list[str] | None = None) -> int:
     return EXIT_OK
 
 
+def _title_of(sc: dict) -> str:
+    """dark-title 模板的大标题 = 字幕的**第一行**（剪辑单本来就是按行写的）。"""
+    lines = _subtitle_lines(str(sc.get("subtitle") or sc.get("script") or "")).split("\n")
+    return lines[0].strip() if lines else ""
+
+
 def _subtitle_lines(text: str) -> str:
     """剪辑单里的字幕用 ` / ` 当**分行**的意思（模型就是这么写的），不是字面斜杠。
 
-    实测踩过：不转换的话成片里字幕会显示成「不满足就痛苦 / 满足了就无聊 / …」——
-    一眼就能看出不对，但只有真的看了片子才发现。
+    实测踩过两次：
+    1. 不转换的话成片里字幕显示成「不满足就痛苦 / 满足了就无聊 / …」；
+    2. 只处理带空格的 ` / ` 还不够 —— 模型有时写成 `？/ 叔本华`（**没空格**）。
+
+    所以用"**两侧都是非 ASCII**"来判：既盖住没空格的情况，又不会误伤 `2023/2024`。
     """
-    t = text.strip()
+    t = str(text).strip()
     for sep in (" / ", "／", " | "):
         t = t.replace(sep, "\n")
+    t = re.sub(r"(?<=[^\x00-\x7f])\s*/\s*(?=[^\x00-\x7f])", "\n", t)
     return t.strip()
 
 

@@ -418,6 +418,59 @@ def test_subtitle_slash_becomes_newline():
     assert MV._subtitle_lines(" 两边有空格 / 要去掉 ") == "两边有空格\n要去掉"
 
 
+def test_subtitle_slash_without_spaces_too():
+    """**没空格的 `/` 也要分行** —— 模型有时写成 `这个人是谁？/ 叔本华`。
+
+    但 `2023/2024` 不能被误伤 —— 所以判据是"两侧都是非 ASCII"。
+    """
+    assert MV._subtitle_lines("这个人是谁？/ 叔本华 / 悲观主义哲学家") == \
+        "这个人是谁？\n叔本华\n悲观主义哲学家"
+    assert MV._subtitle_lines("2023/2024 的对比") == "2023/2024 的对比"
+    assert MV._subtitle_lines("A/B 测试") == "A/B 测试"
+
+
+def test_title_of_takes_the_first_line():
+    assert MV._title_of({"subtitle": "你不是不努力 / 是掉进了叔本华的钟摆"}) == "你不是不努力"
+    assert MV._title_of({"subtitle": "", "script": "只有台词"}) == "只有台词"
+
+
+def test_em_width_counts_cjk_wider():
+    assert MV.V._em_width("四个汉字") == pytest.approx(4.0)
+    assert MV.V._em_width("abcd") == pytest.approx(2.2)
+    assert MV.V._em_width("汉字\n更长的一整行文字") == pytest.approx(8.0)   # 取最长那行
+
+
+def _motion(a, b) -> float:
+    """两帧的平均绝对差（16×16 灰度）。**别用 md5** —— 编码噪声会让它误判（实测过）。"""
+    import subprocess
+
+    def g(p):
+        return subprocess.run(["ffmpeg", "-v", "error", "-i", str(p),
+                               "-vf", "scale=16:16,format=gray", "-f", "rawvideo", "-"],
+                              capture_output=True).stdout
+    x, y = g(a), g(b)
+    return sum(abs(i - j) for i, j in zip(x, y)) / max(1, len(x))
+
+
+@pytest.mark.skipif(not rc.has_ffmpeg(), reason="没有 ffmpeg")
+def test_title_card_fits_and_has_motion(tmp_path):
+    """深色标题卡：时长对、**文字不出画**、且画面在动（模板也要有运动）。"""
+    out = tmp_path / "card.mp4"
+    MV.V.title_card(tmp_path, out, 2.0, "你不是不努力\n是掉进了叔本华的钟摆",
+                    size=(360, 640), fps=15)
+    assert rc.probe(out, require_audio=False)["duration"] == pytest.approx(2.0, abs=0.2)
+    # 字号必须按**宽度**收过 —— 8 个汉字 × 54px 会撑出 360px 的画宽（实测被切掉）
+    fs_h = int(640 * 0.085)
+    fs_w = int((360 * 0.86) / MV.V._em_width("你不是不努力\n是掉进了叔本华的钟摆"))
+    assert fs_w < fs_h, "这个用例就该触发宽度收窄，否则测不到自适应"
+    MV.V.frame_at(out, tmp_path / "f0.png", 0.0)
+    MV.V.frame_at(out, tmp_path / "f1.png", 1.8)
+    # 卡片动得比照片含蓄（zoom 1.03 vs 1.08 —— 文字放大太多会晕），
+    # 所以阈值比照片那条低。静止基线实测 0.03，这里 0.28 —— 分离度仍然清楚。
+    assert _motion(tmp_path / "f0.png", tmp_path / "f1.png") > 0.1, \
+        "模板也要有运动（静止就退化成 docs/49 §5.1 打击的形态）"
+
+
 def test_list_plugins_shows_every_option(tmp_path, capsys):
     """`--list-plugins` 要**把所有方案摆出来**（含 network 标记与 note）。"""
     plan = _plan(tmp_path, 1)

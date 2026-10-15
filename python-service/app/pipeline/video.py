@@ -148,6 +148,89 @@ def _clamp_transition(transition: float, durations: list[float]) -> float:
     return max(0.05, min(float(transition), min(durations) / 2 - 0.01))
 
 
+def title_card(img: str | Path, out: str | Path, seconds: float, title: str, *,
+               size: tuple[int, int] = DEFAULT_SIZE, fps: int = DEFAULT_FPS,
+               font_file: str | None = None, title_ratio: float = 0.085,
+               bg: str = "0x0E0E14", zoom: float = 1.03, crf: int = 20,
+               on_progress=None, on_raw=None) -> None:
+    """**深色底 + 居中大标题**（用户给的参考片就是这种调性）。
+
+    做法：先渲一张卡片 PNG，再交给 `ken_burns` 缓动 —— 复用现有那条路，
+    不为了"换个背景"再写一套运动逻辑。
+
+    文字走 `textfile=` 而不是把内容拼进滤镜串：`drawtext` 的转义规则很坑
+    （冒号、引号、百分号都要小心），写文件一劳永逸。
+    """
+    rc.require_ffmpeg()
+    src = Path(img)                                  # 复用签名：这里当"临时目录"用
+    work = src if src.is_dir() else src.parent
+    work.mkdir(parents=True, exist_ok=True)
+    w, h = size
+    font = font_file or _cjk_font()
+    if not font:
+        raise VideoError("找不到中文字体文件（试过 msyh.ttc / Deng.ttf / simhei.ttf）")
+
+    txt = work / f"_card-{abs(hash((title, seconds, size))) % 10**8}.txt"
+    txt.write_text((title or " ").replace("\n", "\n"), encoding="utf-8", newline="\n")
+    card = work / f"_card-{abs(hash((title, seconds, size))) % 10**8}.png"
+
+    # 大标题字号：**按宽度自适应**，不能只看高度。
+    # 实测踩过：8 个汉字 × 54px = 432px > 360px 画宽，两侧直接被切掉。
+    fs_h = int(h * title_ratio)
+    fs_w = int((w * 0.86) / max(1.0, _em_width(title)))
+    fs = max(20, min(fs_h, fs_w))
+    line = int(fs * 1.25)
+    vf = (f"drawtext=fontfile='{_esc_path(font)}':textfile='{_esc_path(str(txt))}':"
+          f"fontcolor=0xFFFFFF:fontsize={fs}:line_spacing={int(fs * 0.25)}:"
+          f"x=(w-text_w)/2:y=(h-text_h)/2")
+    code, err = rc._run_ffmpeg([rc._ffmpeg_bin("ffmpeg"), "-y", "-v", "error",
+                                "-f", "lavfi", "-i", f"color=c={bg}:s={w}x{h}",
+                                "-vf", vf, "-frames:v", "1", str(card)], on_raw=on_raw)
+    if code != 0:
+        raise VideoError(f"渲染标题卡失败：{err.strip()[:300]}")
+
+    ken_burns(card, out, seconds, zoom=zoom, size=size, fps=fps, crf=crf,
+              on_progress=on_progress, on_raw=on_raw)
+    try:
+        txt.unlink()
+        card.unlink()
+    except OSError:
+        pass
+
+
+def _em_width(text: str) -> float:
+    """最长一行大约多少个**字宽**（汉字算 1、ASCII 算 0.55）。
+
+    只是估个量级，够用 —— 目的是别让字撑出画面，不是做精确排版。
+    """
+    best = 0.0
+    for line in (text or " ").split("\n"):
+        w = sum(1.0 if ord(ch) > 0x2E80 else 0.55 for ch in line)
+        best = max(best, w)
+    return best
+
+
+def _esc_path(p: str) -> str:
+    """滤镜串里的路径：Windows 盘符的 `:` 必须转义成 `\\:`（**一层**）。
+
+    实测：一层可用、两层反而报 `No option name near '/Windows/...'` —— 试出来的，
+    不是猜的。
+    """
+    return str(p).replace("\\", "/").replace(":", "\\:")
+
+
+_CJK_FONTS = ("C:/Windows/Fonts/Deng.ttf", "C:/Windows/Fonts/msyh.ttc",
+              "C:/Windows/Fonts/simhei.ttf", "/System/Library/Fonts/PingFang.ttc",
+              "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc")
+
+
+def _cjk_font() -> str | None:
+    for p in _CJK_FONTS:
+        if Path(p).is_file():
+            return p
+    return None
+
+
 def expected_total(durations: list[float], transition: float) -> float:
     """转场拼接后的理论时长。**与 `xfade_chain` 用同一个式子** —— 两边各算一遍必然分叉。"""
     if not durations:
