@@ -23,6 +23,7 @@ import com.polyface.backend.asset.AssetService;
 import com.polyface.backend.job.GenerateRunner;
 import com.polyface.backend.job.JobProgress;
 import com.polyface.backend.job.RoughcutRunner;
+import com.polyface.backend.job.SceneSplitRunner;
 import com.polyface.backend.job.SplitRunner;
 import com.polyface.backend.media.MediaDir;
 import com.polyface.backend.store.Store;
@@ -47,6 +48,8 @@ public class JobController {
     public static final String KIND_MAKE_VIDEO = "make_video";
     /** 素材拆分：一个素材 → 多个素材（docs/spec_split.md）。 */
     public static final String KIND_SPLIT = "split";
+    /** 按场景切段（docs/spec_scene_split.md T7）：两段式 —— 先方案（dry-run），再按勾选切。 */
+    public static final String KIND_SCENE_SPLIT = "scene_split";
 
     private final Store store;
     private final RoughcutRunner roughcut;
@@ -54,16 +57,19 @@ public class JobController {
     private final SplitRunner split;
     private final AssetService assets;
     private final MediaDir mediaDir;
+    private final SceneSplitRunner sceneSplit;
     private final ObjectMapper mapper = new ObjectMapper();
 
     public JobController(Store store, RoughcutRunner roughcut, GenerateRunner generate,
-                         AssetService assets, MediaDir mediaDir, SplitRunner split) {
+                         AssetService assets, MediaDir mediaDir, SplitRunner split,
+                         SceneSplitRunner sceneSplit) {
         this.store = store;
         this.roughcut = roughcut;
         this.generate = generate;
         this.assets = assets;
         this.mediaDir = mediaDir;
         this.split = split;
+        this.sceneSplit = sceneSplit;
     }
 
     /** 发起请求体。粗剪用 `asset_id`；生成用 `material_id` + `platforms`。 */
@@ -75,7 +81,10 @@ public class JobController {
                             // 素材拆分（docs/spec_split.md）：角度 / 形态，至少要给一个
                             List<String> angles, List<String> formats,
                             // 配音方案（docs/spec_tts_plugin.md）：插件 id + 音色 id
-                            String plugin, String voice) {
+                            String plugin, String voice,
+                            // 按场景切段（docs/spec_scene_split.md T7）：
+                            // 方案阶段不填；切段阶段指向方案任务 + 勾选的段号
+                            Long plan_job_id, List<Integer> pick) {
     }
 
     // ---------------- 发起 ----------------
@@ -92,6 +101,7 @@ public class JobController {
             case KIND_RENDER -> startRender(body);
             case KIND_MAKE_VIDEO -> startMakeVideo(body);
             case KIND_SPLIT -> startSplit(body);
+            case KIND_SCENE_SPLIT -> startSceneSplit(body);
             default -> throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "暂不支持的任务类型：" + kind);
         };
@@ -167,6 +177,45 @@ public class JobController {
             }
         }
         return out;
+    }
+
+    /**
+     * 按场景切段（`docs/spec_scene_split.md` T7）—— **两段式**。
+     *
+     * <p>方案阶段：只给 `asset_id` + `params` → 出方案（切点 + 缩略图），不切视频。
+     * 切段阶段：再带 `plan_job_id` + `pick` → 切勾选的段并登记成素材。
+     *
+     * <p>`pick` 为空**当场拒绝**（400）：「没勾就全切」是隐式行为 —— 用户少勾了几个
+     * 却多出几条素材，比报错更糟（同 spec 关键决定的人工确认语义）。
+     */
+    private long startSceneSplit(StartBody body) {
+        if (body.asset_id() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "缺少 asset_id");
+        }
+        Store.AssetRow row = assets.get(body.asset_id())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "资产不存在"));
+        if (!"video".equals(row.kind())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "只有视频能切场景，当前资产是 " + row.kind());
+        }
+        Path file = mediaDir.resolveSafe(row.relPath());
+        if (!java.nio.file.Files.isRegularFile(file)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "资产文件不在磁盘上：" + row.relPath());
+        }
+        if (body.plan_job_id() == null) {
+            Map<String, Object> params = body.params() == null ? Map.of() : body.params();
+            return sceneSplit.submitPlan(row.id(), file.toString(), params);
+        }
+        List<Integer> pick = body.pick() == null ? List.of() : body.pick();
+        if (pick.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "没有勾选任何段（请至少勾选一段；不替你决定全切）");
+        }
+        try {
+            return sceneSplit.submitCut(row.id(), file.toString(), body.plan_job_id(), pick);
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
     }
 
     /**
@@ -370,6 +419,7 @@ public class JobController {
         boolean accepted = switch (j.kind()) {
             case KIND_GENERATE -> generate.resume(id);
             case KIND_SPLIT -> split.resume(id);
+            case KIND_SCENE_SPLIT -> sceneSplit.resume(id);
             default -> roughcut.resume(id);
         };
         if (!accepted) {
@@ -414,6 +464,7 @@ public class JobController {
         boolean killed = switch (j.kind()) {
             case KIND_GENERATE -> generate.cancel(id);
             case KIND_SPLIT -> split.cancel(id);
+            case KIND_SCENE_SPLIT -> sceneSplit.cancel(id);
             default -> roughcut.cancel(id);
         };
         // 已中断的任务**没有进程可杀**，但它确实需要能被"放弃" ——
@@ -462,6 +513,11 @@ public class JobController {
                     .ifPresent(m -> n.put("input_name", m.title() == null ? m.coreMessage() : m.title()));
         }
         n.put("created_at", j.createdAt());
+        if (KIND_SCENE_SPLIT.equals(j.kind()) && j.inputAssetId() != null) {
+            // 与粗剪一样：界面上要能看到"这个任务是对哪个视频跑的"
+            n.put("input_asset_id", j.inputAssetId());
+            assets.get(j.inputAssetId()).ifPresent(a -> n.put("input_name", a.name()));
+        }
         if (j.startedAt() != null) {
             n.put("started_at", j.startedAt());
         }
@@ -506,11 +562,25 @@ public class JobController {
                 putUrl(outs, "dedup_url", dedup.toString());
             }
         }
+        // 切场景的**方案文件**：界面据此渲染缩略图网格（与 dedup_url 同一套 putUrl 机制，
+        // 路径天然在 mediaDir 之内 —— workdir 就在 media 根下）
+        if (KIND_SCENE_SPLIT.equals(j.kind()) && j.workdir() != null && !j.workdir().isBlank()) {
+            Path plan = Path.of(j.workdir()).resolve("work/scene-plan.json");
+            if (java.nio.file.Files.isRegularFile(plan)) {
+                putUrl(outs, "plan_url", plan.toString());
+            }
+        }
         return n;
     }
 
     private java.util.Optional<JobProgress> progressOf(Store.JobRow j) {
-        return KIND_GENERATE.equals(j.kind()) ? generate.progress(j) : roughcut.progress(j);
+        if (KIND_GENERATE.equals(j.kind())) {
+            return generate.progress(j);
+        }
+        if (KIND_SCENE_SPLIT.equals(j.kind())) {
+            return sceneSplit.progress(j);          // 事件格式与粗剪相同
+        }
+        return roughcut.progress(j);
     }
 
     private void putUrl(ObjectNode outs, String key, String absPath) {

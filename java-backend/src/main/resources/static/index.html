@@ -232,6 +232,29 @@
     </div>
 
     <div class="card" style="margin-top:14px">
+      <h2>🎞 按场景切段 <span style="font-weight:400;color:var(--sub);font-size:11px" id="sceneMeta"></span></h2>
+      <div style="font-size:12px;color:var(--sub);margin-bottom:8px">
+        在素材库里点视频行的「✂️ 切场景」发起。两步走：① 出方案（缩略图网格）→ 人工勾选 → ② 切选中的段，自动入素材库。
+      </div>
+      <div id="sceneForm" style="display:none;border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:10px">
+        <div id="sceneFormTitle" style="font-size:12px;font-weight:600;margin-bottom:8px"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+          <label style="font-size:11px;color:var(--sub)">阈值（越大越不敏感）<br>
+            <input data-scene-p="threshold" value="27.0" style="width:80px"></label>
+          <label style="font-size:11px;color:var(--sub)">最短段长(秒)<br>
+            <input data-scene-p="min_sec" value="3.0" style="width:80px"></label>
+          <label style="font-size:11px;color:var(--sub);display:flex;align-items:center;gap:4px">
+            <input type="checkbox" data-scene-p="no_snap"> 吸附语音边界（关掉更快，但可能把话切断）</label>
+          <button id="scenePlanBtn" class="sm">① 出方案</button>
+          <button id="sceneFormCancel" class="ghost sm">取消</button>
+          <span class="status-line" id="sceneFormStatus"></span>
+        </div>
+      </div>
+      <div id="scenePlan"></div>
+      <div id="sceneActive"></div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
       <h2>🎞 时间线 <span style="font-weight:400;color:var(--sub);font-size:11px" id="tlMeta"></span></h2>
       <div style="font-size:12px;color:var(--sub);margin-bottom:8px">
         <b>改数据就是改剪辑</b>：调保留区间的起止、删段、合并，然后重渲染出新片。
@@ -430,6 +453,7 @@ async function init(){
   bindAssetHandlers();
   loadAssets();
   bindRoughcutHandlers();
+  bindSceneHandlers();
   bindTimelineHandlers();
   bindVideoHandlers();
   bindSplitHandlers();
@@ -971,10 +995,13 @@ async function loadAssets(){
         <a class="ghost sm" href="${esc(a.url)}" target="_blank" rel="noopener"
            style="font-size:11px;padding:2px 8px;border:1px solid var(--line);border-radius:6px;text-decoration:none">查看</a>
         ${a.kind === "video" ? `<button class="ghost sm" data-cut="${a.id}" style="font-size:11px">✂️ 粗剪</button>` : ""}
+        ${a.kind === "video" ? `<button class="ghost sm" data-scene="${a.id}" style="font-size:11px">✂️ 切场景</button>` : ""}
         <button class="ghost sm" data-del="${a.id}" style="font-size:11px">删除</button>
       </div>`;
     const cutBtn = d.querySelector("[data-cut]");
     if(cutBtn) cutBtn.onclick = ()=> openRoughcutForm(a);
+    const sceneBtn = d.querySelector("[data-scene]");
+    if(sceneBtn) sceneBtn.onclick = ()=> openSceneForm(a);
     d.querySelector("[data-del]").onclick = async ()=>{
       if(!confirm(`删除素材「${a.name || a.id}」？\n\n若没有其它稿件在用它，文件也会被删掉。`)) return;
       try{
@@ -1203,6 +1230,169 @@ function bindRoughcutHandlers(){
   if(!$("rcStart")) return;
   $("rcStart").onclick = startRoughcut;
   $("rcFormCancel").onclick = closeRoughcutForm;
+}
+
+// ============ 按场景切段（docs/spec_scene_split.md T7）============
+// 两段式：① 方案（dry-run，出缩略图网格）→ 人工勾选 → ② 切选中的段。
+// 勾选是**人工确认**语义：不勾就切 = 隐式全切，后端会直接拒绝（400）。
+let sceneAsset = null;        // 当前在面板里选中的视频
+let scenePlanJobId = null;    // 方案任务的 id —— 切段时要带上（plan_job_id）
+let scenePollTimer = null;    // 轮询句柄：任务结束必须停
+
+function openSceneForm(asset){
+  sceneAsset = asset;
+  scenePlanJobId = null;
+  $("sceneForm").style.display = "";
+  $("scenePlan").innerHTML = "";
+  $("sceneActive").innerHTML = "";
+  $("sceneFormTitle").textContent = `切场景：${asset.name || asset.id}`;
+  $("sceneFormStatus").textContent = "";
+}
+
+function closeSceneForm(){
+  $("sceneForm").style.display = "none";
+  sceneAsset = null;
+}
+
+async function startScenePlan(){
+  if(!sceneAsset) return;
+  const params = {};
+  document.querySelectorAll("#sceneForm [data-scene-p]").forEach(el=>{
+    const k = el.dataset.sceneP;
+    if(el.type === "checkbox"){ if(el.checked) params[k] = true; return; }
+    const v = el.value.trim();
+    if(v !== "") params[k] = Number(v);
+  });
+  $("sceneFormStatus").textContent = "正在出方案…（要看完整条视频，可能要一会儿）";
+  $("scenePlanBtn").disabled = true;
+  try{
+    const r = await j("POST", "/api/jobs",
+      {kind:"scene_split", asset_id: sceneAsset.id, params});
+    scenePlanJobId = r.job_id;
+    $("sceneFormStatus").textContent = `方案任务 #${r.job_id} 进行中…`;
+    pollSceneJob(r.job_id);
+  }catch(e){
+    $("sceneFormStatus").textContent = "发起失败：" + e.message;
+    $("scenePlanBtn").disabled = false;
+  }
+}
+
+/** 方案任务成功后渲染缩略图网格。plan_url 是媒体文件（json），直接 fetch 来读。 */
+async function renderScenePlan(job){
+  const planUrl = (job.outputs || {}).plan_url;
+  if(!planUrl){ $("sceneActive").innerHTML = `<div class="meta">方案完成但没有 plan_url</div>`; return; }
+  let plan;
+  try{
+    const r = await fetch(planUrl);
+    if(!r.ok) throw new Error("HTTP " + r.status);
+    plan = await r.json();
+  }catch(e){
+    $("sceneActive").innerHTML = `<div class="meta">方案读取失败：${esc(e.message)}</div>`; return;
+  }
+  const segs = plan.segments || [];
+  if(!segs.length){ $("sceneActive").innerHTML = `<div class="meta">只检出一个场景 —— 没有可切的段</div>`; return; }
+  const fmt = s => s.toFixed(2).replace(/\.0+$/, "").replace(/(\.\d)0$/, "$1");
+  // 缩略图 URL：thumb 是服务器绝对路径，但它的位置可从 plan_url 推出 ——
+  // plan_url = /media/<rel>/work/scene-plan.json，thumb 在同一个 work/thumbs/ 里。
+  const workBase = planUrl.replace(/work\/scene-plan\.json$/, "");
+  $("sceneActive").innerHTML = `<div style="border:1px solid var(--line);border-radius:8px;padding:10px">
+    <div style="font-size:12px;margin-bottom:8px">共 <b>${segs.length}</b> 段
+      （检测器：${esc(plan.detector || "")}，总长 ${fmt(plan.total_sec)}s）
+      —— 勾选要切的段：</div>
+    <div id="sceneGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px">
+      ${segs.map(s=>{
+        const thumbUrl = s.thumb ? workBase + "work/thumbs/"
+          + esc(String(s.thumb).replace(/\\/g, "/").split("/").pop()) : "";
+        return `
+        <label style="border:1px solid var(--line);border-radius:8px;padding:6px;cursor:pointer;display:block">
+          <input type="checkbox" data-seg="${s.index}" checked style="vertical-align:middle">
+          <b>第${s.index}段</b>
+          ${thumbUrl ? `<div><img src="${thumbUrl}" alt="" loading="lazy"
+             style="width:100%;border-radius:6px;margin:4px 0;background:#f3f4f6"
+             onerror="this.remove()"></div>` : ""}
+          <div style="font-size:11px;color:var(--sub)">${fmt(s.start)}–${fmt(s.end)}s · ${fmt(s.duration)}s</div>
+        </label>`;}).join("")}
+    </div>
+    <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+      <button id="sceneCutBtn" class="sm">② 切选中的 <span id="scenePickN">${segs.length}</span> 段</button>
+      <span class="status-line" id="sceneCutStatus"></span>
+    </div>
+  </div>`;
+  document.querySelectorAll("#sceneGrid [data-seg]").forEach(cb=>{
+    cb.onchange = ()=>{
+      const n = document.querySelectorAll("#sceneGrid [data-seg]:checked").length;
+      $("scenePickN").textContent = n;
+      $("sceneCutBtn").disabled = n === 0;
+    };
+  });
+  $("sceneCutBtn").onclick = ()=> startSceneCut(plan, job);
+}
+
+async function startSceneCut(plan, job){
+  const pick = [...document.querySelectorAll("#sceneGrid [data-seg]:checked")]
+    .map(el=>Number(el.dataset.seg));
+  const st = $("sceneCutStatus");
+  if(!pick.length){ st.textContent = "先勾选至少一段"; return; }
+  st.textContent = "正在切…";
+  $("sceneCutBtn").disabled = true;
+  try{
+    const r = await j("POST", "/api/jobs",
+      {kind:"scene_split", asset_id: sceneAsset ? sceneAsset.id : job.input_asset_id,
+       plan_job_id: job.id, pick});
+    st.textContent = `切段任务 #${r.job_id} 进行中…`;
+    pollSceneJob(r.job_id, {afterCut:true});
+  }catch(e){ st.textContent = "发起失败：" + e.message; $("sceneCutBtn").disabled = false; }
+}
+
+function pollSceneJob(id, opt){
+  if(scenePollTimer){ clearInterval(scenePollTimer); scenePollTimer = null; }
+  const tick = async ()=>{
+    let job;
+    try{ job = await j("GET", `/api/jobs/${id}`); }
+    catch(e){ stopScenePolling(); $("sceneActive").innerHTML = `<div class="meta">任务查询失败：${esc(e.message)}</div>`; return; }
+    const p = job.progress || {};
+    const label = {queued:"排队中", running:"进行中", succeeded:"✅ 完成", failed:"❌ 失败",
+                   canceled:"已取消", interrupted:"⏸ 已中断 · 可继续"}[job.status] || job.status;
+    const err = job.error ? `<div style="color:#b03a2e;margin-top:6px;white-space:pre-wrap">${esc(job.error)}</div>` : "";
+    const bar = (job.status === "running" || job.status === "queued")
+      ? `<div style="height:6px;background:#eee;border-radius:3px;overflow:hidden;margin:6px 0">
+           <div style="height:100%;width:${typeof p.pct === "number" ? Math.max(2,p.pct) : 8}%;
+                       background:var(--brand);transition:width .3s"></div></div>` : "";
+    $("sceneActive").innerHTML = `<div style="border:1px solid var(--line);border-radius:8px;padding:10px">
+      <b>任务 #${job.id}</b> · ${esc(label)}
+      <div style="font-size:12px;color:var(--sub);margin-top:4px">
+        ${p.stage ? "当前阶段：" + esc(p.stage) : ""}${typeof p.pct === "number" ? ` (${p.pct}%)` : ""}
+        ${p.last_message ? " · " + esc(p.last_message) : ""}
+      </div>${bar}${err}</div>`;
+    if(["succeeded","failed","canceled","interrupted"].includes(job.status)){
+      stopScenePolling();
+      loadJobs();
+      if(job.status === "succeeded"){
+        if(opt && opt.afterCut){
+          const n = ((job.result || {}).registered || []).length;
+          $("sceneActive").insertAdjacentHTML("beforeend",
+            `<div style="color:#1e8449;font-size:12px;margin-top:6px">
+               ✂️ 切出 ${n} 段，已入素材库</div>`);
+          $("sceneForm").style.display = "none";
+          loadAssets();                 // 新素材出现在素材库
+        }else{
+          await renderScenePlan(job);   // 方案阶段：渲染缩略图网格
+        }
+      }
+    }
+  };
+  await tick();
+  scenePollTimer = setInterval(tick, 1000);
+}
+
+function stopScenePolling(){
+  if(scenePollTimer){ clearInterval(scenePollTimer); scenePollTimer = null; }
+}
+
+function bindSceneHandlers(){
+  if(!$("scenePlanBtn")) return;
+  $("scenePlanBtn").onclick = startScenePlan;
+  $("sceneFormCancel").onclick = closeSceneForm;
 }
 
 // ============ 时间线：把「剪」变成「改数据」（docs/spec_timeline.md）============
