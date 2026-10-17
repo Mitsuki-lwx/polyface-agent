@@ -172,3 +172,38 @@ BGM 场景的不确定性比纯口播大（VAD 边界有偏差、循环接缝有
 要支持带 BGM 的素材，只剩**人声分离**这一条 —— 而当前 spec 明确排除了它（拖 torch）。
 轻量替代是 **ONNX 路线**（`onnxruntime` 约 50MB + 一个 MDX/Demucat ONNX 模型），
 比 torch 轻得多，但仍是**新依赖 + 新模型**。这需要用户重新拍板。
+
+---
+
+## 岔路的验证结果：**ONNX 人声分离可行**（2026-10-17 实测）
+
+### 三条路线实测对比
+
+| 路线 | 体积 | 速度 | 结论 |
+|---|---|---|---|
+| `audio-separator`（UVR 官方封装） | **+509MB** | — | ✗ 它在 `separator.py:22` **模块顶层 `import torch`**，装它必拖 torch |
+| Demucs（torch） | ~2GB | 约 1x 实时 | ✗ 更重 |
+| **onnxruntime + MDX-Net ONNX** | **43.9MB + 63MB 模型 ≈ 107MB** | **0.26x 实时**（64.76s 素材约 17s） | ✓ **选它** |
+
+### 已验证的事实
+
+- `pip install onnxruntime` → **43.9MB**，**无 torch** ✓
+- 模型 `UVR-MDX-NET-Inst_3.onnx`（63MB，开源，GitHub 发布）
+  - GitHub 发布资源**直连下不动**（HEAD 200 / GET 挂）✗
+  - **走 `gh-proxy.com` 代理 8 秒下完** ✓
+- 模型 I/O：`[batch, 4, 3072, 256] → 同形`（标准 MDX-Net 复数频谱块）✓
+- 推理：一个 256 帧块 **1.55s**，对应音频 ≈5.94s（hop=1024 @44.1k）
+  → 64.76s 素材约 **17s** ✓
+
+### 下一步（未做）
+
+1. 写 STFT/分块封装（MDX 参数：n_fft=6144、hop=1024、dim_f=3072、dim_t=256，带重叠）
+2. **验证"分离出的人声上 VAD 能否找出停顿"** ← **整条路线的成败点**
+3. 分离结果落盘复用（调参不重跑）
+4. 模型获取做成"首次使用时自动拉取 + 代理兜底"，或让用户手动放
+
+### 本机网络备忘（实测）
+
+- ✓ 通：`github.com`、`pypi.org`、`mirrors.aliyun.com`、`gh-proxy.com` / `ghfast.top` / `ghproxy.net`
+- ✗ 不通：`huggingface.co`（超时）
+- ✗ 不稳：GitHub **发布资源**直连（HEAD 通、GET 挂）
