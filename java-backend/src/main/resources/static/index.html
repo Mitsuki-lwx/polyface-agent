@@ -1344,7 +1344,7 @@ async function startSceneCut(plan, job){
   }catch(e){ st.textContent = "发起失败：" + e.message; $("sceneCutBtn").disabled = false; }
 }
 
-function pollSceneJob(id, opt){
+async function pollSceneJob(id, opt){
   if(scenePollTimer){ clearInterval(scenePollTimer); scenePollTimer = null; }
   const tick = async ()=>{
     let job;
@@ -1367,6 +1367,15 @@ function pollSceneJob(id, opt){
     if(["succeeded","failed","canceled","interrupted"].includes(job.status)){
       stopScenePolling();
       loadJobs();
+      // **状态文字必须在结束时更新**（实测踩到）：只写"进行中"的话，
+      // 任务早就成功了界面还停在"进行中…"，用户会一直等下去。
+      if(job.status === "succeeded"){
+        $("sceneFormStatus").textContent = opt && opt.afterCut ? "✅ 切段完成" : "✅ 方案已出（勾选后切）";
+      } else {
+        $("sceneFormStatus").textContent = err ? "❌ " + (job.error || job.status)
+                                              : "❌ " + (job.error || job.status);
+      }
+      $("scenePlanBtn").disabled = false;
       if(job.status === "succeeded"){
         if(opt && opt.afterCut){
           const n = ((job.result || {}).registered || []).length;
