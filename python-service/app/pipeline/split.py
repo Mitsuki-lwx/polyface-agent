@@ -25,6 +25,30 @@ MAX_ANGLES = 8          # 再多一次调用容易拆出重复的
 MAX_ITEMS = 12          # 选题 × 形态 的矩阵上限 —— 别让它爆量
 
 
+#: "角度太空"的判据。命中这些词/太短的角度，拆出来必然雷同。
+#:
+#: 为什么要有这条：用户很自然会输入「随便拆」「你看着办」——
+#: 那不是角度，是**把决定权推给模型**。而 spec 的关键决定二是"不让模型自己决定拆几条"，
+#: 同理也不该让它自己决定"从哪些角度拆" —— 那正是雷同的来源。
+VAGUE_HINTS = ("随便", "看着办", "你决定", "任意", "都行", "都可以", "帮我拆", "拆一下",
+               "拆分", "自己看着", "看情况", "来个", "弄几个")
+
+#: 角度短于这个长度基本没有信息量（"钱的视角" 5 字是正常下限）
+MIN_ANGLE_CHARS = 4
+
+
+def vague_angles(angles: list[str]) -> list[str]:
+    """挑出**太空**的角度（返回原样，方便直接回给用户）。纯函数，无副作用。"""
+    out = []
+    for a in angles or []:
+        t = (a or "").strip()
+        if not t:
+            continue
+        if len(t) < MIN_ANGLE_CHARS or any(h in t for h in VAGUE_HINTS):
+            out.append(t)
+    return out
+
+
 class SplitError(ValueError):
     """拆分不合法。**要说清是哪一条角度**，不是一句"拆分失败"。"""
 
@@ -106,6 +130,14 @@ def split_material(mat: StructuredMaterial, raw_text: str,
     if not angles and not formats:
         raise SplitError("至少要给角度或形态之一"
                          "（模型不替你决定拆几条 —— 见 spec 关键决定二）")
+    # **角度全是空的 → 明确拒绝**（spec §3 第 4 条）：
+    # 与其拆出一堆雷同的东西让用户自己发现，不如当场说清"这不算角度"。
+    # 只**部分**空则放行 —— 模型对具体的那几个角度仍然能拆好。
+    vague = vague_angles(angles)
+    if angles and len(vague) == len(angles):
+        raise SplitError(
+            f"这些角度太空，拆出来会雷同：{('、'.join(vague))}。"
+            f"换成能区分开的角度再试，例如「从钱的视角」「从时间的视角」「从审美的视角」")
     if len(angles) > MAX_ANGLES:
         raise SplitError(f"一次最多 {MAX_ANGLES} 个角度，收到 {len(angles)} 个"
                          f"（再多容易拆出重复的，建议分批）")

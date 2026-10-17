@@ -71,6 +71,17 @@ public class SplitRunner {
     // ---------------- 提交 ----------------
 
     public long submit(long materialId, List<String> angles, List<String> formats) {
+        return submit(materialId, angles, formats, null);
+    }
+
+    /**
+     * 发起拆分。`temperature` 为 null 时用 Python 侧的默认值（0.6）。
+     *
+     * <p>为什么要暴露它：角度**多样性**靠它调 —— 太低会拆出雷同的几条，
+     * 太高会跑偏到素材支撑不了的地方。默认值只负责"第一次跑不用查文档"。
+     */
+    public long submit(long materialId, List<String> angles, List<String> formats,
+                       Double temperature) {
         Path dir = jobsDir.resolve("job-" + System.nanoTime());
         try {
             Files.createDirectories(dir);
@@ -79,6 +90,9 @@ public class SplitRunner {
         }
         ObjectNode params = mapper.createObjectNode();
         params.put("material_id", materialId);
+        if (temperature != null) {
+            params.put("temperature", temperature);
+        }
         ArrayNode a = params.putArray("angles");
         angles.forEach(a::add);
         ArrayNode f = params.putArray("formats");
@@ -86,7 +100,7 @@ public class SplitRunner {
         long jobId = store.insertJob("split", params.toString(), null,
                 String.valueOf(materialId), dir.toString(), dir.resolve("events.jsonl").toString());
         store.pruneJobs(keepJobs);
-        pool.submit(() -> execute(jobId, materialId, angles, formats, dir));
+        pool.submit(() -> execute(jobId, materialId, angles, formats, dir, temperature));
         return jobId;
     }
 
@@ -110,8 +124,12 @@ public class SplitRunner {
         long materialId;
         List<String> angles;
         List<String> formats;
+        Double parsedTemp = null;
         try {
             JsonNode p = mapper.readTree(j.paramsJson() == null ? "{}" : j.paramsJson());
+            if (p.hasNonNull("temperature")) {
+                parsedTemp = p.path("temperature").asDouble();
+            }
             materialId = p.path("material_id").asLong();
             angles = new java.util.ArrayList<>();
             p.path("angles").forEach(n -> angles.add(n.asText()));
@@ -124,9 +142,11 @@ public class SplitRunner {
         if (materialId <= 0) {
             return false;
         }
+        // lambda 要求 effectively final —— 解析出来的温度要拷一份
+        final Double temperature = parsedTemp;
         store.markJobRunning(jobId);
         Path dir = Path.of(j.workdir());
-        pool.submit(() -> execute(jobId, materialId, angles, formats, dir));
+        pool.submit(() -> execute(jobId, materialId, angles, formats, dir, temperature));
         return true;
     }
 
@@ -135,6 +155,12 @@ public class SplitRunner {
     /** 公开：测试要同步调它（不然只能轮询，测试会飘）。 */
     public void execute(long jobId, long materialId, List<String> angles, List<String> formats,
                  Path dir) {
+        execute(jobId, materialId, angles, formats, dir, null);
+    }
+
+    /** 带温度的版本（`execute` 的旧签名保留，测试在用）。 */
+    public void execute(long jobId, long materialId, List<String> angles, List<String> formats,
+                        Path dir, Double temperature) {
         store.markJobRunning(jobId);
         Path events = dir.resolve("events.jsonl");
         Path record = dir.resolve("split.json");
@@ -180,6 +206,9 @@ public class SplitRunner {
             angles.forEach(a::add);
             ArrayNode f = body.putArray("formats");
             formats.forEach(f::add);
+            if (temperature != null) {
+                body.put("temperature", temperature);   // 角度多样性靠它调
+            }
 
             appendEvent(events, "拆分", "start",
                     Map.of("angles", angles.size(), "formats", formats.size(),

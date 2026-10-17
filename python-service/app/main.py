@@ -135,9 +135,12 @@ def do_split(req: dict) -> dict:
     from .schemas import StructuredMaterial
     try:
         mat = StructuredMaterial.model_validate(req.get("structured") or {})
+        # `temperature` 可选：拆分的"角度多样性"靠它调（spec §3 第 4 条要求它可调）
+        temp = req.get("temperature")
         items = sp.split_material(mat, str(req.get("raw_text") or ""),
                                   angles=req.get("angles") or [],
-                                  formats=req.get("formats") or [])
+                                  formats=req.get("formats") or [],
+                                  **({"temperature": float(temp)} if temp is not None else {}))
     except sp.SplitError as e:
         raise HTTPException(status_code=400, detail=str(e)) from None
     return {"items": items}

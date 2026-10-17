@@ -45,13 +45,13 @@ def test_rejects_empty_angles(fake_llm):
 def test_rejects_too_many_angles(fake_llm):
     fake_llm({"items": []})
     with pytest.raises(sp.SplitError, match=f"最多 {sp.MAX_ANGLES} 个角度"):
-        sp.split_material(MAT, RAW, [f"角度{i}" for i in range(sp.MAX_ANGLES + 1)])
+        sp.split_material(MAT, RAW, [f"视角{i}号的看法" for i in range(sp.MAX_ANGLES + 1)])
 
 
 def test_rejects_empty_model_output(fake_llm):
     fake_llm({"items": []})
     with pytest.raises(sp.SplitError, match="没有返回任何"):
-        sp.split_material(MAT, RAW, ["钱"])
+        sp.split_material(MAT, RAW, ["从钱的视角"])
 
 
 # ---------------- 条数对不上：要说清是哪个角度 ----------------
@@ -180,7 +180,7 @@ def test_matrix_has_a_cap(fake_llm):
     """两维相乘会爆量 —— 要有上限，且**明确报出乘出来多少**。"""
     fake_llm({"items": []})
     with pytest.raises(sp.SplitError, match=f"超过上限 {sp.MAX_ITEMS}"):
-        sp.split_material(MAT, RAW, angles=[f"角度{i}" for i in range(sp.MAX_ANGLES)],
+        sp.split_material(MAT, RAW, angles=[f"视角{i}号的看法" for i in range(sp.MAX_ANGLES)],
                           formats=["a", "b", "c"])
 
 
@@ -225,3 +225,63 @@ def test_endpoint_rejects_bad_request(monkeypatch):
     r = c.post('/split', json={'raw_text': RAW, 'structured': MAT.model_dump()})
     assert r.status_code == 400
     assert '角度或形态' in r.json()['detail']
+
+
+# ---------------- 角度太空（行为边界）----------------
+
+def test_vague_angles_detects_pushback_phrases():
+    """「随便拆」「你看着办」不是角度，是**把决定权推给模型** —— 拆出来必然雷同。"""
+    assert sp.vague_angles(["随便拆"]) == ["随便拆"]
+    assert sp.vague_angles(["你看着办", "帮我拆一下"]) == ["你看着办", "帮我拆一下"]
+
+
+def test_vague_angles_detects_too_short():
+    assert sp.vague_angles(["钱"]) == ["钱"]          # 1 字没有信息量
+    assert sp.vague_angles(["钱的视角"]) == []        # 5 字是正常下限
+
+
+def test_vague_angles_keeps_good_ones():
+    assert sp.vague_angles(["从钱的视角", "从时间的视角"]) == []
+    # 部分空：只挑出空的那个，正常的留着
+    assert sp.vague_angles(["从钱的视角", "随便"]) == ["随便"]
+
+
+def test_all_vague_angles_are_rejected_before_calling_the_model(monkeypatch):
+    """全是空角度 → **当场拒绝，不调模型**（不花冤枉钱，也不产出雷同结果）。"""
+    called = []
+    monkeypatch.setattr(sp.llm, "chat_json", lambda *a, **k: called.append(1) or {"items": []})
+    with pytest.raises(sp.SplitError, match="太空"):
+        sp.split_material(MAT, RAW, angles=["随便拆"], formats=[])
+    assert called == [], "应该在调模型之前就拒绝"
+
+
+def test_partially_vague_angles_still_proceed(monkeypatch):
+    """部分空 → 放行（模型对具体的那几个角度仍然能拆好）。"""
+    monkeypatch.setattr(sp.llm, "chat_json", lambda *a, **k: {
+        "items": [_item("从钱的视角", [1]), _item("随便", [1])]})
+    out = sp.split_material(MAT, RAW, angles=["从钱的视角", "随便"], formats=[])
+    assert len(out) == 2
+
+
+def test_missing_target_names_the_angle(monkeypatch):
+    """**说清是哪个角度没拆出来**，不是一句"少了一条"（checklist 第 3 条）。
+
+    这条分支代码里早有，但之前从没触发过 —— 下面这次故意让模型漏掉第 2 个目标。
+    """
+    monkeypatch.setattr(sp.llm, "chat_json",
+                        lambda *a, **k: {"items": [_item("从钱的视角", [1])]})
+    with pytest.raises(sp.SplitError, match="第 2 个目标「从时间的视角」"):
+        sp.split_material(MAT, RAW, angles=["从钱的视角", "从时间的视角"], formats=[])
+
+
+def test_temperature_is_forwarded_to_the_model(monkeypatch):
+    """温度**真的传到了模型**（不然"改温度 → 多样性变"这条无从谈起）。"""
+    seen = {}
+
+    def fake(prompt, **kw):
+        seen.update(kw)
+        return {"items": [_item("从钱的视角", [1])]}
+
+    monkeypatch.setattr(sp.llm, "chat_json", fake)
+    sp.split_material(MAT, RAW, angles=["从钱的视角"], formats=[], temperature=0.95)
+    assert seen.get("temperature") == 0.95

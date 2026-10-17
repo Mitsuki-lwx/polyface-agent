@@ -80,6 +80,8 @@ public class JobController {
                             List<Long> images, Long bgm_asset_id, String platform,
                             // 素材拆分（docs/spec_split.md）：角度 / 形态，至少要给一个
                             List<String> angles, List<String> formats,
+                            // 拆分的角度多样性（不传则用 Python 侧默认 0.6）
+                            Double temperature,
                             // 配音方案（docs/spec_tts_plugin.md）：插件 id + 音色 id
                             String plugin, String voice,
                             // 按场景切段（docs/spec_scene_split.md T7）：
@@ -163,7 +165,7 @@ public class JobController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "至少要给角度或形态之一（不替你决定拆几条 —— 见 spec 关键决定二）");
         }
-        return split.submit(body.material_id(), angles, formats);
+        return split.submit(body.material_id(), angles, formats, body.temperature());
     }
 
     private static List<String> clean(List<String> in) {
