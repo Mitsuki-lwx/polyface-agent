@@ -116,6 +116,25 @@
       </div>
       <div id="analyzeResult"></div>
 
+      <details class="tmpl-box" style="margin-top:12px" id="splitBox">
+        <summary>🧩 素材拆分（一个素材 → 多个素材源）</summary>
+        <div style="font-size:12px;color:var(--sub);margin:8px 0">
+          把一份素材拆成<b>几条各自能独立发布的选题</b>（或同一内容的多种形态）。
+          拆出来的每条都是<b>真正的素材</b> —— 能再走一遍生成，出多平台稿、出成片。
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <input id="spMaterial" placeholder="素材 id" style="width:110px">
+          <button class="ghost sm" id="spLoad">看它拆出过什么</button>
+        </div>
+        <textarea id="spAngles" placeholder="角度（一行一个）：&#10;从钱的视角&#10;从时间的视角&#10;从心理的视角" style="margin-top:8px;min-height:64px"></textarea>
+        <textarea id="spFormats" placeholder="形态（一行一个，可留空）：&#10;口播脚本&#10;金句卡片&#10;图文" style="margin-top:6px;min-height:56px"></textarea>
+        <div style="margin-top:8px">
+          <button id="spStart" class="sm">拆分</button>
+          <span class="status-line" id="spStatus"></span>
+        </div>
+        <div id="spResult" style="margin-top:8px"></div>
+      </details>
+
       <details class="tmpl-box" style="margin-top:12px">
         <summary>🎬 从音视频导入（本地转文字）</summary>
         <div class="inner">
@@ -413,6 +432,7 @@ async function init(){
   bindRoughcutHandlers();
   bindTimelineHandlers();
   bindVideoHandlers();
+  bindSplitHandlers();
   loadJobs();
   loadTimelines();
   refreshRetro();
@@ -1291,6 +1311,64 @@ function bindTimelineHandlers(){
   $("tlClose").onclick = ()=>{ $("tlPanel").style.display = "none"; tlState = null; };
 }
 
+// ============ 素材拆分（docs/spec_split.md）============
+// 拆出来的每条都是**真正的素材** —— 能再走一遍生成。所以结果里直接给"去生成"的入口。
+
+function spLines(id){
+  return $(id).value.split("\n").map(x=>x.trim()).filter(Boolean);
+}
+
+async function spLoadChildren(){
+  const mid = Number($("spMaterial").value || currentMaterialId || 0);
+  if(!mid){ $("spStatus").textContent = "先填素材 id"; return; }
+  $("spStatus").textContent = "查询中…";
+  try{
+    const kids = await j("GET", `/api/materials/${mid}/children`);
+    if(!kids.length){ $("spStatus").textContent = "这个素材还没拆过"; $("spResult").innerHTML = ""; return; }
+    $("spStatus").textContent = `拆出过 ${kids.length} 条`;
+    $("spResult").innerHTML = kids.map(k=>`
+      <div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
+        <b>#${k.id}</b> ${esc(k.title || "")}
+        <div style="font-size:11.5px;color:var(--sub);margin-top:2px">
+          ${k.angle ? "角度：" + esc(k.angle) : ""}${k.angle && k.format ? " · " : ""}${k.format ? "形态：" + esc(k.format) : ""}
+        </div>
+      </div>`).join("");
+  }catch(e){ $("spStatus").textContent = "查询失败：" + e.message; }
+}
+
+async function spStart(){
+  const mid = Number($("spMaterial").value || currentMaterialId || 0);
+  const angles = spLines("spAngles"), formats = spLines("spFormats");
+  if(!mid){ $("spStatus").textContent = "先填素材 id"; return; }
+  if(!angles.length && !formats.length){
+    $("spStatus").textContent = "❌ 角度和形态至少给一个"; return;
+  }
+  $("spStatus").textContent = `正在拆（${angles.length} 个角度 × ${formats.length || 1} 个形态）…`;
+  $("spResult").innerHTML = "";
+  try{
+    const r = await j("POST", `/api/materials/${mid}/split`, {angles, formats});
+    $("spStatus").textContent = `拆出 ${r.count} 条（都是素材，可以直接去生成）`;
+    $("spResult").innerHTML = r.items.map(x=>`
+      <div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
+        <b>#${x.id}</b> ${esc(x.title || x.core_message || "")}
+        <div style="font-size:11.5px;color:var(--sub);margin-top:2px">
+          ${x.angle ? "角度：" + esc(x.angle) : ""}${x.angle && x.format ? " · " : ""}${x.format ? "形态：" + esc(x.format) : ""}
+          · 事实 ${x.fact_count} 条
+        </div>
+        ${(x.facts || []).length ? `<div style="font-size:11px;color:var(--sub);margin-top:3px">
+          事实出处：${x.facts.map(f=>`第${f.from_fact}条`).join("、")}
+          （原文：${x.facts.map(f=>esc(f.text)).join(" / ")}）</div>` : ""}
+      </div>`).join("");
+    loadMaterials();      // 素材库多出了几条
+  }catch(e){ $("spStatus").textContent = "❌ " + e.message; }
+}
+
+function bindSplitHandlers(){
+  if(!$("spStart")) return;
+  $("spStart").onclick = spStart;
+  $("spLoad").onclick = spLoadChildren;
+}
+
 // ============ B1 图文成片（docs/spec_b1.md）============
 // 分镜结构来自**成稿的剪辑单**；图与 BGM 都从素材库里选（不内置、不生成）。
 // 缺图要在**发起前**就指出来是第几个 —— 不要等合成跑完才报错。
@@ -1349,7 +1427,7 @@ function mvFillVoices(){
   if(item && item.network){
     notes.push("<b style='color:#b03a2e'>⚠️ 这个插件会联网 —— 会把内容发给第三方（改变了数据边界）</b>");
   }
-  notes.push("插件是**你自己装的**，它能执行任意代码；程序不为它的质量与合法性背书。");
+  notes.push("插件是<b>你自己装的</b>，它能执行任意代码；程序不为它的质量与合法性背书。");
   $("mvVoiceNote").innerHTML = notes.join("<br>");
 }
 

@@ -190,6 +190,9 @@ public class MaterialController {
             one.put("title", title);
             one.put("core_message", core);
             one.put("fact_count", item.path("facts").size());
+            // **事实出处**：每一条来自父素材的第几条 —— 拆分记录要能逐条复核
+            // （记录本身也存在子素材的 facts_json 里，`from_fact` 字段，可随时反查）
+            one.set("facts", item.path("facts"));
         }
         out.put("count", items.size());
         log.info("素材 {} 拆出 {} 条子素材", id, items.size());

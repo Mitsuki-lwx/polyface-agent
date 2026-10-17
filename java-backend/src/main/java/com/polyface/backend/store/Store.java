@@ -399,13 +399,18 @@ public class Store {
                                     String tone, String audience, String factsJson,
                                     long parentId, String angle, String format) {
         String sql = "INSERT INTO material(raw_text, source_kind, title, core_message, tone, "
-                + "audience, facts_json, created_at, parent_id, angle, format) VALUES(?,?,?,?,?,?,?,?,?,?,?)";
+                + "audience, facts_json, created_at, parent_id, angle, format, "
+                // **子素材的事实是"已确认"的**：它们逐条来自父素材已确认的事实（拆分时校验过）。
+                // 不标的话，生成时会拿全文**重新理解一遍** —— 那会把"这个角度精选的那几条"丢掉，
+                // 等于拆分的意义没了（实测踩到：子素材只留了 3 条事实，出的稿却引用了父素材的 6 条）。
+                + "facts_confirmed, facts_confirmed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?)";
         try (Connection c = open();
              PreparedStatement ps = c.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
             ps.setString(1, rawText); ps.setString(2, "split"); ps.setString(3, title);
             ps.setString(4, coreMessage); ps.setString(5, tone); ps.setString(6, audience);
             ps.setString(7, factsJson); ps.setString(8, LocalDateTime.now().toString());
             ps.setLong(9, parentId); ps.setString(10, angle); ps.setString(11, format);
+            ps.setString(12, LocalDateTime.now().toString());
             ps.executeUpdate();
             try (ResultSet rs = ps.getGeneratedKeys()) {
                 return rs.next() ? rs.getLong(1) : -1L;

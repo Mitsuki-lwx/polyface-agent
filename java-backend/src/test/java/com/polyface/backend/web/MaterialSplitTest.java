@@ -114,6 +114,21 @@ class MaterialSplitTest {
     }
 
     @Test
+    void childFactsAreMarkedConfirmed() throws Exception {
+        when(python.splitMaterial(any())).thenReturn(fakeResp());
+        mockMvc.perform(post("/api/materials/" + parentId + "/split")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(req("[\"钱的视角\",\"时间的视角\"]", "[]"))).andExpect(status().isOk());
+
+        // **不标已确认的话，生成时会拿全文重新理解一遍** —— 这个角度精选的那几条就被丢了。
+        // 实测踩到过：子素材只留 3 条事实，出的稿却引用了父素材的 6 条。
+        for (var k : store.childrenOf(parentId)) {
+            assertThat(k.factsConfirmed()).as("子素材 #" + k.id() + " 的事实应视为已确认").isTrue();
+            assertThat(k.factsConfirmedAt()).isNotNull();
+        }
+    }
+
+    @Test
     void rejectsWhenNeitherAnglesNorFormats() throws Exception {
         mockMvc.perform(post("/api/materials/" + parentId + "/split")
                         .contentType(MediaType.APPLICATION_JSON).content(req("[]", "[]")))
