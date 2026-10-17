@@ -78,6 +78,11 @@ class RoughcutParams:
     # 用 0.72 去筛，模型就永远看不到它（而那正是模型这一层存在的理由）。
     dedup_review_gate: float = 0.30
     dedup_min_restart_chars: int = 4    # 半句重起：短句至少这么多字才算
+    # 找停顿的判据（docs/spec_bgm.md）
+    # **默认走 VAD**：判据是"有没有人声"，不是"音量低不低" ——
+    # 所以带 BGM 也能找出停顿（实测带 BGM 8/9 段，而音量门限是 0 段）。
+    bgm_aware: bool = True
+    vad_threshold: float = 0.4          # Silero VAD 的语音门限（越低越灵敏）
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> "RoughcutParams":
@@ -111,6 +116,7 @@ class RoughcutParams:
         return (f"停顿阈值 {self.pause_sec}s · 门限 {self.noise_db}dB · 余量 {self.keep_margin_sec}s · "
                 f"字幕 {'开' if self.burn_subs else '关'}"
                 + (f"（{self.font} {self.font_size}号 距底{self.margin_v}px）" if self.burn_subs else "")
+                + (" · 找停顿：VAD" if self.bgm_aware else " · 找停顿：音量门限")
                 + (" · 去冗余：" + "、".join(
                     [n for n, on in (("口头语", self.dedup_filler), ("重复句", self.dedup_repeat),
                                      ("半句重起", self.dedup_restart),

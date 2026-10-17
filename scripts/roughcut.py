@@ -103,6 +103,10 @@ def build_parser(base: rc.RoughcutParams) -> argparse.ArgumentParser:
                    help=f"ASR 模型尺寸（默认 {base.asr_model}）")
 
     g = p.add_argument_group("去冗余（docs/spec_disfluency.md）—— 四类各有独立开关")
+    g.add_argument("--no-bgm-aware", action="store_true", default=S, dest="no_bgm_aware",
+                   help="找停顿改回音量门限（带 BGM 时会一段都找不到）")
+    g.add_argument("--vad-threshold", type=float, default=S, dest="vad_threshold",
+                   help=f"VAD 语音门限，越低越灵敏（默认 {base.vad_threshold}）")
     g.add_argument("--no-dedup", action="store_true", default=S, dest="no_dedup",
                    help="关掉去冗余（只剪停顿，行为与以前完全一致）")
     g.add_argument("--no-dedup-filler", action="store_true", default=S, dest="no_dedup_filler",
@@ -202,6 +206,37 @@ _STAGE_DEPS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _find_pauses(src, work, params, log) -> tuple[list, str]:
+    """找停顿：**VAD 优先，音量门限兜底**（`docs/spec_bgm.md`）。
+
+    为什么默认走 VAD：`silencedetect` 的判据是"音量低不低"，而带 BGM 的素材
+    **全程都不低** —— 实测门限降到 -50dB 仍然是 0 段。VAD 的判据是"有没有人声"，
+    与 BGM 无关：同一条素材实测 **8/9 段**（音量门限 0 段）。
+
+    VAD 不可用（缺 faster-whisper / 模型加载失败）时退回音量门限，**并把用了哪条路报出来**
+    —— 两条路的剪点可能不同，用户有权知道。
+    """
+    if not params.bgm_aware:
+        return rc.detect_pauses(src, params.noise_db, params.pause_sec, on_raw=log.raw), "音量门限"
+    try:
+        from app.pipeline import bgm as _bgm
+        wav = work / "original.wav"
+        if not wav.is_file():
+            work.mkdir(parents=True, exist_ok=True)
+            rc.extract_wav(src, wav, on_raw=log.raw)
+        info = rc.probe(src)
+        res = _bgm.pauses_vad(wav, float(info["duration"]),
+                              min_pause_sec=params.pause_sec,
+                              threshold=params.vad_threshold)
+        if res.source != "vad":
+            print(f"  ⚠️ VAD 不可用（{res.note}）→ 退回音量门限")
+            return rc.detect_pauses(src, params.noise_db, params.pause_sec, on_raw=log.raw), "音量门限"
+        return res.pauses, "vad"
+    except Exception as e:                                   # noqa: BLE001
+        print(f"  ⚠️ VAD 路径失败（{str(e)[:120]}）→ 退回音量门限")
+        return rc.detect_pauses(src, params.noise_db, params.pause_sec, on_raw=log.raw), "音量门限"
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
@@ -233,6 +268,8 @@ def main(argv: list[str] | None = None) -> int:
         outline=given.get("outline"), margin_v=given.get("margin_v"),
         asr_model=given.get("asr_model"),
         burn_subs=False if given.get("no_burn") else None,
+        bgm_aware=False if given.get("no_bgm_aware") else None,
+        vad_threshold=given.get("vad_threshold"),
         dedup_enabled=False if given.get("no_dedup") else None,
         dedup_filler=False if given.get("no_dedup_filler") else None,
         dedup_repeat=False if given.get("no_dedup_repeat") else None,
@@ -319,8 +356,10 @@ def main(argv: list[str] | None = None) -> int:
     else:
         while True:
             with log.stage("找停顿") as r:
-                pauses = rc.detect_pauses(src, params.noise_db, params.pause_sec, on_raw=log.raw)
-                r.done(f"{len(pauses)} 段静音")
+                pauses, pause_source = _find_pauses(src, work, params, log)
+                r.done(f"{len(pauses)} 段停顿（{pause_source}）")
+                if pause_source != "vad":
+                    print(f"  （找停顿走的是 {pause_source} —— 不是 VAD）")
             pause_cuts = rc.plan_cuts(pauses, params.keep_margin_sec, info["duration"])
             # **合并**：停顿剪点和冗余剪点会挨着（先停一下再重说一句），
             # 不合并的话中间会留一小截画面。回退一步，宁少剪（spec 关键决定四）。

@@ -134,3 +134,64 @@ def test_summarize_reports_before_after_and_params():
 
 def test_describe_hides_style_when_burning_disabled():
     assert "字幕 关" in rc.RoughcutParams(burn_subs=False).describe()
+
+
+# ---------------- 找停顿：VAD 优先、音量门限兜底（docs/spec_bgm.md）----------------
+
+def _load_cli():
+    import importlib.util
+    from pathlib import Path
+    import sys
+    spec = importlib.util.spec_from_file_location(
+        "roughcut_cli_vad", Path(__file__).resolve().parents[2] / "scripts" / "roughcut.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["roughcut_cli_vad"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_pauses_use_vad_by_default(monkeypatch, tmp_path):
+    """**默认走 VAD** —— 判据是"有没有人声"，所以带 BGM 也能找出停顿。
+
+    实测对照（带 BGM 的同一条素材）：VAD 8 段 / 音量门限 **0 段**。
+    """
+    cli = _load_cli()
+    from app.pipeline import bgm as bgm_mod
+    monkeypatch.setattr(bgm_mod, "pauses_vad",
+                        lambda *a, **k: bgm_mod.PauseResult([(1.0, 2.0), (5.0, 6.0)], "vad", "stub"))
+    monkeypatch.setattr(cli.rc, "probe", lambda p, **k: {"duration": 30.0})
+    monkeypatch.setattr(cli.rc, "extract_wav", lambda *a, **k: None)
+    monkeypatch.setattr(cli.rc, "detect_pauses",
+                        lambda *a, **k: pytest.fail("默认不该走音量门限"))
+    params = cli.rc.RoughcutParams()
+    assert params.bgm_aware is True
+    pauses, source = cli._find_pauses(tmp_path / "v.mp4", tmp_path, params, _NullLog())
+    assert source == "vad" and len(pauses) == 2
+
+
+def test_pauses_fall_back_to_volume_when_vad_unavailable(monkeypatch, tmp_path):
+    """VAD 不可用 → 退回音量门限，**并把用了哪条路报出来**（不静默降级）。"""
+    cli = _load_cli()
+    from app.pipeline import bgm as bgm_mod
+    monkeypatch.setattr(bgm_mod, "pauses_vad",
+                        lambda *a, **k: bgm_mod.PauseResult([], "unavailable", "没有 VAD"))
+    monkeypatch.setattr(cli.rc, "probe", lambda p, **k: {"duration": 30.0})
+    monkeypatch.setattr(cli.rc, "extract_wav", lambda *a, **k: None)
+    monkeypatch.setattr(cli.rc, "detect_pauses", lambda *a, **k: [(3.0, 4.0)])
+    pauses, source = cli._find_pauses(tmp_path / "v.mp4", tmp_path,
+                                      cli.rc.RoughcutParams(), _NullLog())
+    assert source == "音量门限" and pauses == [(3.0, 4.0)]
+
+
+def test_no_bgm_aware_forces_the_old_path(monkeypatch, tmp_path):
+    """`bgm_aware=False` → 回到旧行为（可对照）。"""
+    cli = _load_cli()
+    monkeypatch.setattr(cli.rc, "detect_pauses", lambda *a, **k: [(7.0, 8.0)])
+    pauses, source = cli._find_pauses(tmp_path / "v.mp4", tmp_path,
+                                      cli.rc.RoughcutParams(bgm_aware=False), _NullLog())
+    assert source == "音量门限" and pauses == [(7.0, 8.0)]
+
+
+class _NullLog:
+    def raw(self, *a, **k):
+        pass
