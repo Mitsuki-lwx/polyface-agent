@@ -403,9 +403,11 @@ all live there) and restart the Python service.
 - [x] **M10 Rough cut** (pause removal / automatic subtitles → **timeline JSON** + first-cut MP4) — **implemented**; plus disfluency removal () and scene splitting ()
 - [x] **Rough cut** (pause removal + local ASR subtitles + burn-in) — **implemented** (`docs/spec_roughcut.md`)
 - [x] **B1 image+text to video** — **implemented** (`docs/spec_b1.md`)
-- [~] **B2 smart-cutting existing footage** — **main body implemented via rough cut**; gaps: shot breakdown,
-      beat-synced cutting, disfluency removal (`docs/spec_disfluency.md`). See `docs/08` **ADR-022**,
-      which corrects the previously-stale "not yet implemented" wording in `docs/05` FR-52/53.
+- [x] **B2 smart-cutting existing footage** — **all three gaps closed**:
+      shot breakdown (`docs/spec_scene_split.md`, needs `scenedetect`),
+      beat-synced cutting (already existed in `pipeline/beats.py`), and
+      disfluency removal (`docs/spec_disfluency.md`). See `docs/08` **ADR-022 / ADR-023**.
+      BGM-aware pause detection is on by default (VAD-based — see `docs/spec_bgm.md`).
       (ADR-019 has paused the "validation first" ordering in favour of running it in parallel with M6.)
 
 > An honest note on M5: the orchestration logic in `scripts/*.bat` is implemented per `docs/23`, but
