@@ -1345,22 +1345,49 @@ async function spStart(){
   }
   $("spStatus").textContent = `正在拆（${angles.length} 个角度 × ${formats.length || 1} 个形态）…`;
   $("spResult").innerHTML = "";
+  let job;
   try{
-    const r = await j("POST", `/api/materials/${mid}/split`, {angles, formats});
-    $("spStatus").textContent = `拆出 ${r.count} 条（都是素材，可以直接去生成）`;
-    $("spResult").innerHTML = r.items.map(x=>`
-      <div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
-        <b>#${x.id}</b> ${esc(x.title || x.core_message || "")}
-        <div style="font-size:11.5px;color:var(--sub);margin-top:2px">
-          ${x.angle ? "角度：" + esc(x.angle) : ""}${x.angle && x.format ? " · " : ""}${x.format ? "形态：" + esc(x.format) : ""}
-          · 事实 ${x.fact_count} 条
-        </div>
-        ${(x.facts || []).length ? `<div style="font-size:11px;color:var(--sub);margin-top:3px">
-          事实出处：${x.facts.map(f=>`第${f.from_fact}条`).join("、")}
-          （原文：${x.facts.map(f=>esc(f.text)).join(" / ")}）</div>` : ""}
-      </div>`).join("");
-    loadMaterials();      // 素材库多出了几条
-  }catch(e){ $("spStatus").textContent = "❌ " + e.message; }
+    job = await j("POST", "/api/jobs", {kind:"split", material_id: mid, angles, formats});
+  }catch(e){ $("spStatus").textContent = "❌ " + e.message; return; }
+  // 任务 id 单独存 —— **不能靠 job.job_id**：下面每轮都会用详情响应覆盖 job，
+  // 而详情里那个字段叫 `id` 不叫 `job_id`（实测就这么踩了：第二轮请求打到 /api/jobs/undefined）
+  const jid = job.job_id;
+  if(!jid){ $("spStatus").textContent = "❌ 发起任务没拿到 id：" + JSON.stringify(job); return; }
+  // 拆分是一次 LLM 调用，长素材要 1~3 分钟 —— 走任务，界面能看着它跑
+  const t0 = Date.now();
+  while(true){
+    await new Promise(r=>setTimeout(r, 1500));
+    try{ job = await j("GET", `/api/jobs/${jid}`); }
+    catch(e){ $("spStatus").textContent = "❌ 查询任务失败：" + e.message; return; }
+    const secs = Math.round((Date.now()-t0)/1000);
+    if(job.status === "running" || job.status === "queued"){
+      $("spStatus").textContent = `正在拆… 已 ${secs}s（可以走开，跑完会显示）`;
+      continue;
+    }
+    break;
+  }
+  if(job.status === "interrupted"){
+    $("spStatus").textContent = "任务被中断了 —— 再点一次「拆分」会接着跑（不会重复建）";
+    return;
+  }
+  if(job.status !== "succeeded"){
+    $("spStatus").textContent = "❌ " + (job.error || job.status);
+    return;
+  }
+  const r = job.result || {};
+  $("spStatus").textContent = `拆出 ${r.count} 条（都是素材，可以直接去生成）`;
+  $("spResult").innerHTML = (r.items||[]).map(x=>`
+    <div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
+      <b>#${x.id}</b> ${esc(x.title || x.core_message || "")}
+      <div style="font-size:11.5px;color:var(--sub);margin-top:2px">
+        ${x.angle ? "角度：" + esc(x.angle) : ""}${x.angle && x.format ? " · " : ""}${x.format ? "形态：" + esc(x.format) : ""}
+        · 事实 ${x.fact_count} 条
+      </div>
+      ${(x.facts || []).length ? `<div style="font-size:11px;color:var(--sub);margin-top:3px">
+        事实出处：${x.facts.map(f=>`第${f.from_fact}条`).join("、")}
+        （原文：${x.facts.map(f=>esc(f.text)).join(" / ")}）</div>` : ""}
+    </div>`).join("");
+  loadMaterials();      // 素材库多出了几条
 }
 
 function bindSplitHandlers(){

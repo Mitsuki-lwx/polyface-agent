@@ -120,84 +120,15 @@ public class MaterialController {
     }
 
     /**
-     * 把一个素材拆成**多个素材**（不是多条稿子）。
+     * 把一个素材拆成**多个素材**（`docs/spec_split.md`）—— 走任务。
      *
-     * <p>拆出来的每条都**落成真正的素材**（进同一张 material 表）——
-     * 这样它能再走一遍完整管线（→ 多平台稿 → 成片）。这正是"一次创作多次使用"成立的前提。
+     * <p>以前这里是同步调用。挪进任务后**只有一个入口**：`POST /api/jobs {kind:"split"}`。
+     * 刻意不在这里再留一个转发端点 —— 两份校验逻辑迟早会不一致，
+     * 而"至少给一个角度或形态"这条校验正是用户最容易撞上的那个。
      *
-     * <p>**同步**（不是任务）：一次 LLM 调用，走的是长超时客户端。
-     * 这与 `docs/tasks_split.md` T4 写的"任务化"不同 —— 先做能跑通的最小版本，
-     * 真嫌慢再挪到任务里（那时进度/续跑都已经有了）。
+     * <p>拆出来的每条都落成**真正的素材**（进同一张 material 表），
+     * 所以它能再走一遍完整管线（→ 多平台稿 → 成片）。
      */
-    @PostMapping(value = "/api/materials/{id}/split", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ObjectNode split(@PathVariable long id, @RequestBody SplitRequest req) {
-        Store.MaterialRow m = store.getMaterial(id)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "素材不存在"));
-        List<String> angles = req == null || req.angles() == null ? List.of() : req.angles();
-        List<String> formats = req == null || req.formats() == null ? List.of() : req.formats();
-        if (angles.isEmpty() && formats.isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "至少要给角度或形态之一（不替你决定拆几条 —— 见 spec 关键决定二）");
-        }
-
-        // 事实清单要原样带上：拆分的**底线**是子素材的事实只能来自这里
-        ObjectNode body = mapper.createObjectNode();
-        body.put("raw_text", m.rawText());
-        ObjectNode st = body.putObject("structured");
-        st.put("core_message", m.coreMessage() == null ? "" : m.coreMessage());
-        st.put("tone", m.tone() == null ? "" : m.tone());
-        st.put("audience", m.audience() == null ? "" : m.audience());
-        ArrayNode facts = st.putArray("facts");
-        try {
-            for (JsonNode f : mapper.readTree(m.factsJson() == null ? "[]" : m.factsJson())) {
-                facts.add(f);
-            }
-        } catch (Exception e) {                              // noqa: BLE001
-            // 父素材的事实解析不了 → 明确拒绝，而不是让子素材"没有事实"（那就失去底线了）
-            throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "这个素材的事实清单读不出来，先修好它再拆：" + e.getMessage());
-        }
-        ArrayNode a = body.putArray("angles");
-        angles.forEach(a::add);
-        ArrayNode f = body.putArray("formats");
-        formats.forEach(f::add);
-
-        JsonNode resp;
-        try {
-            resp = python.splitMaterial(body);
-        } catch (Exception e) {                              // noqa: BLE001
-            throw new GlobalExceptionHandler.LlmUnavailableException(
-                    "拆分失败：" + e.getMessage());
-        }
-
-        ObjectNode out = mapper.createObjectNode();
-        out.put("parent_id", id);
-        ArrayNode items = out.putArray("items");
-        for (JsonNode item : resp.path("items")) {
-            String title = item.path("title").asText("");
-            String core = item.path("core_message").asText("");
-            String angle = item.path("angle").asText("");
-            String format = item.path("format").asText("");
-            String childFacts = item.path("facts").toString();
-            // **落成真正的素材** —— 不是一条稿子
-            long childId = store.insertChildMaterial(
-                    m.rawText(), title.isBlank() ? core : title, core,
-                    m.tone(), m.audience(), childFacts, id, angle, format);
-            ObjectNode one = items.addObject();
-            one.put("id", childId);
-            one.put("angle", angle);
-            one.put("format", format);
-            one.put("title", title);
-            one.put("core_message", core);
-            one.put("fact_count", item.path("facts").size());
-            // **事实出处**：每一条来自父素材的第几条 —— 拆分记录要能逐条复核
-            // （记录本身也存在子素材的 facts_json 里，`from_fact` 字段，可随时反查）
-            one.set("facts", item.path("facts"));
-        }
-        out.put("count", items.size());
-        log.info("素材 {} 拆出 {} 条子素材", id, items.size());
-        return out;
-    }
 
     /** 父素材反查"我拆出了哪些"。 */
     @GetMapping(value = "/api/materials/{id}/children", produces = MediaType.APPLICATION_JSON_VALUE)

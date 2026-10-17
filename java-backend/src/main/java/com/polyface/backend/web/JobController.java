@@ -23,6 +23,7 @@ import com.polyface.backend.asset.AssetService;
 import com.polyface.backend.job.GenerateRunner;
 import com.polyface.backend.job.JobProgress;
 import com.polyface.backend.job.RoughcutRunner;
+import com.polyface.backend.job.SplitRunner;
 import com.polyface.backend.media.MediaDir;
 import com.polyface.backend.store.Store;
 
@@ -44,21 +45,25 @@ public class JobController {
     public static final String KIND_RENDER = "render_timeline";
     /** 图文成片（`docs/spec_b1.md`）—— 输入是成稿的**剪辑单** + 用户选的图/BGM。 */
     public static final String KIND_MAKE_VIDEO = "make_video";
+    /** 素材拆分：一个素材 → 多个素材（docs/spec_split.md）。 */
+    public static final String KIND_SPLIT = "split";
 
     private final Store store;
     private final RoughcutRunner roughcut;
     private final GenerateRunner generate;
+    private final SplitRunner split;
     private final AssetService assets;
     private final MediaDir mediaDir;
     private final ObjectMapper mapper = new ObjectMapper();
 
     public JobController(Store store, RoughcutRunner roughcut, GenerateRunner generate,
-                         AssetService assets, MediaDir mediaDir) {
+                         AssetService assets, MediaDir mediaDir, SplitRunner split) {
         this.store = store;
         this.roughcut = roughcut;
         this.generate = generate;
         this.assets = assets;
         this.mediaDir = mediaDir;
+        this.split = split;
     }
 
     /** 发起请求体。粗剪用 `asset_id`；生成用 `material_id` + `platforms`。 */
@@ -67,6 +72,8 @@ public class JobController {
                             Map<String, Object> params,
                             // 图文成片（docs/spec_b1.md）：每个分镜一张图 + 一首 BGM，都是素材库里的资产
                             List<Long> images, Long bgm_asset_id, String platform,
+                            // 素材拆分（docs/spec_split.md）：角度 / 形态，至少要给一个
+                            List<String> angles, List<String> formats,
                             // 配音方案（docs/spec_tts_plugin.md）：插件 id + 音色 id
                             String plugin, String voice) {
     }
@@ -84,6 +91,7 @@ public class JobController {
             case KIND_GENERATE -> startGenerate(body);
             case KIND_RENDER -> startRender(body);
             case KIND_MAKE_VIDEO -> startMakeVideo(body);
+            case KIND_SPLIT -> startSplit(body);
             default -> throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "暂不支持的任务类型：" + kind);
         };
@@ -122,6 +130,43 @@ public class JobController {
                 ? List.of("xhs") : body.platforms();
         return generate.submit(body.material_id(), platforms, body.template_id(),
                 body.template(), body.tone_override());
+    }
+
+    /**
+     * 素材拆分（`docs/spec_split.md`）：一个素材 → 多个**素材**。
+     *
+     * <p>走任务而不是同步调用：一次 LLM 调用在长素材上要 1~3 分钟，
+     * 同步时界面只能干等、进程被打断就什么都不知道了。
+     *
+     * <p>校验放在**提交时**（素材在不在、两维是不是都没给）—— 这类错误要当场说清，
+     * 不该变成一条失败的任务让用户去任务列表里找。
+     */
+    private long startSplit(StartBody body) {
+        if (body.material_id() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "缺少 material_id");
+        }
+        store.getMaterial(body.material_id())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "素材不存在"));
+        List<String> angles = clean(body.angles());
+        List<String> formats = clean(body.formats());
+        if (angles.isEmpty() && formats.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "至少要给角度或形态之一（不替你决定拆几条 —— 见 spec 关键决定二）");
+        }
+        return split.submit(body.material_id(), angles, formats);
+    }
+
+    private static List<String> clean(List<String> in) {
+        if (in == null) {
+            return List.of();
+        }
+        List<String> out = new java.util.ArrayList<>();
+        for (String s : in) {
+            if (s != null && !s.isBlank()) {
+                out.add(s.trim());
+            }
+        }
+        return out;
     }
 
     /**
@@ -322,8 +367,11 @@ public class JobController {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "只有「已中断」的任务能继续，当前状态：" + j.status());
         }
-        boolean accepted = KIND_GENERATE.equals(j.kind())
-                ? generate.resume(id) : roughcut.resume(id);
+        boolean accepted = switch (j.kind()) {
+            case KIND_GENERATE -> generate.resume(id);
+            case KIND_SPLIT -> split.resume(id);
+            default -> roughcut.resume(id);
+        };
         if (!accepted) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "任务状态已变化（可能已被取消或已开始跑），请刷新后重试");
@@ -361,7 +409,13 @@ public class JobController {
     public ObjectNode cancel(@PathVariable long id) {
         Store.JobRow j = store.getJob(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "任务不存在"));
-        boolean killed = KIND_GENERATE.equals(j.kind()) ? generate.cancel(id) : roughcut.cancel(id);
+        // 按种类分派（以前是个三元表达式：只有 generate 和"其它"两条路，
+        // 加了 split 之后会静默掉进 roughcut —— 取消一个不存在的子进程，然后什么也不发生）
+        boolean killed = switch (j.kind()) {
+            case KIND_GENERATE -> generate.cancel(id);
+            case KIND_SPLIT -> split.cancel(id);
+            default -> roughcut.cancel(id);
+        };
         // 已中断的任务**没有进程可杀**，但它确实需要能被"放弃" ——
         // 否则它会永远躺在"可继续"里，用户既跑不掉也清不掉（见 docs/tasks_resume.md T8）。
         boolean abandoned = !killed && Store.JOB_INTERRUPTED.equals(j.status());

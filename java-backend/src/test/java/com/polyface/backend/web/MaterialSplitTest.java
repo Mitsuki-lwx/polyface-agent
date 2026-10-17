@@ -9,6 +9,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -48,8 +49,14 @@ class MaterialSplitTest {
     @org.springframework.boot.test.mock.mockito.MockBean
     private PythonClient python;
 
+    @Autowired
+    private com.polyface.backend.job.SplitRunner splitRunner;
+
     private final ObjectMapper mapper = new ObjectMapper();
     private long parentId;
+
+    /** 取消场景用：mock 回调里要能拿到"当前任务 id"。 */
+    private volatile long cancelJobId = -1;
 
     @BeforeEach
     void setUp() {
@@ -59,8 +66,25 @@ class MaterialSplitTest {
                         + "{\"text\":\"存款8万够撑14个月\",\"type\":\"data\"}]");
     }
 
-    private String req(String anglesJson, String formatsJson) {
-        return "{\"angles\":" + anglesJson + ",\"formats\":" + formatsJson + "}";
+    /** 同步跑一次拆分任务 —— 走的是**真正的任务代码路径**，不是绕过它。 */
+    private void runSplit(long materialId, String anglesJson, String formatsJson)
+            throws Exception {
+        List<String> angles = parseList(anglesJson);
+        List<String> formats = parseList(formatsJson);
+        var dir = java.nio.file.Files.createTempDirectory("split-test");
+        long jobId = store.insertJob("split", "{}", null, String.valueOf(materialId),
+                dir.toString(), dir.resolve("events.jsonl").toString());
+        splitRunner.execute(jobId, materialId, angles, formats, dir);
+        var j = store.getJob(jobId).orElseThrow();
+        assertThat(j.status()).as("任务应成功：" + j.error()).isEqualTo("succeeded");
+    }
+
+    private static List<String> parseList(String json) throws Exception {
+        List<String> out = new java.util.ArrayList<>();
+        for (var n : new ObjectMapper().readTree(json)) {
+            out.add(n.asText());
+        }
+        return out;
     }
 
     /** 假的拆分响应：两条，事实按序号从父素材取（与真实契约一致）。 */
@@ -80,12 +104,7 @@ class MaterialSplitTest {
     void childrenAreRealMaterialsWithLineage() throws Exception {
         when(python.splitMaterial(any())).thenReturn(fakeResp());
 
-        mockMvc.perform(post("/api/materials/" + parentId + "/split")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(req("[\"钱的视角\",\"时间的视角\"]", "[]")))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.count").value(2))
-                .andExpect(jsonPath("$.items[0].title").value("存款8万的意义"));
+        runSplit(parentId, "[\"钱的视角\",\"时间的视角\"]", "[]");
 
         // **关键**：落成了真正的素材，不是稿子
         var kids = store.childrenOf(parentId);
@@ -103,9 +122,7 @@ class MaterialSplitTest {
     @Test
     void parentCanListItsChildren() throws Exception {
         when(python.splitMaterial(any())).thenReturn(fakeResp());
-        mockMvc.perform(post("/api/materials/" + parentId + "/split")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(req("[\"钱的视角\",\"时间的视角\"]", "[]"))).andExpect(status().isOk());
+        runSplit(parentId, "[\"钱的视角\",\"时间的视角\"]", "[]");
 
         String body = mockMvc.perform(get("/api/materials/" + parentId + "/children"))
                 .andExpect(status().isOk())
@@ -116,9 +133,7 @@ class MaterialSplitTest {
     @Test
     void childFactsAreMarkedConfirmed() throws Exception {
         when(python.splitMaterial(any())).thenReturn(fakeResp());
-        mockMvc.perform(post("/api/materials/" + parentId + "/split")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(req("[\"钱的视角\",\"时间的视角\"]", "[]"))).andExpect(status().isOk());
+        runSplit(parentId, "[\"钱的视角\",\"时间的视角\"]", "[]");
 
         // **不标已确认的话，生成时会拿全文重新理解一遍** —— 这个角度精选的那几条就被丢了。
         // 实测踩到过：子素材只留 3 条事实，出的稿却引用了父素材的 6 条。
@@ -129,9 +144,47 @@ class MaterialSplitTest {
     }
 
     @Test
+    void resumeDoesNotCreateDuplicateChildren() throws Exception {
+        when(python.splitMaterial(any())).thenReturn(fakeResp());
+        var dir = java.nio.file.Files.createTempDirectory("split-resume");
+        long jobId = store.insertJob("split", "{}", null, String.valueOf(parentId),
+                dir.toString(), dir.resolve("events.jsonl").toString());
+        var angles = List.of("钱的视角", "时间的视角");
+        splitRunner.execute(jobId, parentId, angles, List.of(), dir);
+        assertThat(store.childrenOf(parentId)).hasSize(2);
+
+        // 同一个任务再跑一次（模拟"被打断后点继续"）—— **绝不能多出一批重复素材**
+        splitRunner.execute(jobId, parentId, angles, List.of(), dir);
+        assertThat(store.childrenOf(parentId))
+                .as("续跑又建了一遍子素材 —— 这比没跑完更糟").hasSize(2);
+        // 而且**没有再调一次模型**（记录已存在就复用）
+        org.mockito.Mockito.verify(python, org.mockito.Mockito.times(1)).splitMaterial(any());
+    }
+
+    @Test
+    void cancelDuringCallDiscardsResult() throws Exception {
+        // 调用**中途**取消：在途 HTTP 拦不住，但结果必须丢掉 ——
+        // 不然用户取消了却多出一批素材，比取消不了还糟。
+        when(python.splitMaterial(any())).thenAnswer(inv -> {
+            splitRunner.cancel(cancelJobId);      // 模拟"调用进行中，用户点了取消"
+            return fakeResp();
+        });
+        var dir = java.nio.file.Files.createTempDirectory("split-cancel");
+        long jobId = store.insertJob("split", "{}", null, String.valueOf(parentId),
+                dir.toString(), dir.resolve("events.jsonl").toString());
+        cancelJobId = jobId;
+        splitRunner.execute(jobId, parentId, List.of("钱的视角"), List.of(), dir);
+        assertThat(store.getJob(jobId).orElseThrow().status()).isEqualTo("canceled");
+        assertThat(store.childrenOf(parentId)).as("取消后不该建出任何子素材").isEmpty();
+    }
+
+    @Test
     void rejectsWhenNeitherAnglesNorFormats() throws Exception {
-        mockMvc.perform(post("/api/materials/" + parentId + "/split")
-                        .contentType(MediaType.APPLICATION_JSON).content(req("[]", "[]")))
+        // 校验在**提交时**（不该变成一条失败的任务让用户去任务列表里找）
+        mockMvc.perform(post("/api/jobs")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"split\",\"material_id\":" + parentId
+                                + ",\"angles\":[],\"formats\":[]}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.detail").value(
                         org.hamcrest.Matchers.containsString("角度或形态")));
@@ -141,9 +194,7 @@ class MaterialSplitTest {
     void parentMaterialIsNotTouched() throws Exception {
         when(python.splitMaterial(any())).thenReturn(fakeResp());
         var before = store.getMaterial(parentId).orElseThrow();
-        mockMvc.perform(post("/api/materials/" + parentId + "/split")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(req("[\"钱的视角\",\"时间的视角\"]", "[]"))).andExpect(status().isOk());
+        runSplit(parentId, "[\"钱的视角\",\"时间的视角\"]", "[]");
         var after = store.getMaterial(parentId).orElseThrow();
         assertThat(after.factsJson()).isEqualTo(before.factsJson());
         assertThat(after.coreMessage()).isEqualTo(before.coreMessage());
@@ -152,8 +203,10 @@ class MaterialSplitTest {
 
     @Test
     void rejectsUnknownMaterial() throws Exception {
-        mockMvc.perform(post("/api/materials/987654/split")
-                        .contentType(MediaType.APPLICATION_JSON).content(req("[\"x\"]", "[]")))
+        mockMvc.perform(post("/api/jobs")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"split\",\"material_id\":987654,"
+                                + "\"angles\":[\"x\"],\"formats\":[]}"))
                 .andExpect(status().isNotFound());
     }
 
@@ -166,10 +219,7 @@ class MaterialSplitTest {
         a.putArray("facts");
         when(python.splitMaterial(any())).thenReturn(resp);
 
-        mockMvc.perform(post("/api/materials/" + parentId + "/split")
-                        .contentType(MediaType.APPLICATION_JSON).content(req("[]", "[\"金句卡片\"]")))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.items[0].format").value("金句卡片"));
+        runSplit(parentId, "[]", "[\"金句卡片\"]");
 
         assertThat(store.childrenOf(parentId).get(0).format()).isEqualTo("金句卡片");
     }
