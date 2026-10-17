@@ -306,9 +306,10 @@ the material body text is sent to the **LLM provider you configured yourself** �
 **Yes, locally.** Three things already produce real video files on your machine:
 **rough cut** (pause removal + locally-transcribed burned-in subtitles — `docs/spec_roughcut.md`),
 **B1 image+text to video** (`docs/spec_b1.md`), and **timeline render**.
-Still missing from the **B2** scope: shot breakdown, beat-synced cutting, and
-disfluency removal (mis-speaks / repeated sentences / filler words — `docs/spec_disfluency.md`).
-See `docs/08` **ADR-022** (which corrects the previously-stale "not yet implemented" claim).
+**B2 is now complete** — all three gaps closed: shot breakdown (`docs/spec_scene_split.md`),
+beat-synced cutting (`pipeline/beats.py`), and disfluency removal (`docs/spec_disfluency.md`).
+BGM-aware pause detection is **on by default** (VAD-based, `docs/spec_bgm.md`).
+See `docs/08` **ADR-022 / ADR-023**.
 
 **Q: What do I need for scene-based splitting?**
 `scenedetect` (PySceneDetect) — `python -m pip install scenedetect` (it pulls in
