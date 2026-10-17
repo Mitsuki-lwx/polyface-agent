@@ -395,12 +395,12 @@ all live there) and restart the Python service.
   - [x] M6-2 Editor process orchestration and workbench embedding (`docs/67`–`docs/70`; integration shape in ADR-020)
   - [ ] M6-2b Desktop shell and bundled distribution (a real window / Tauri / shipping Node+gimpish or installing it optionally)
   - [ ] M6-3 Video editing adapter (ffmpeg first; **OpenCut cannot currently be driven headlessly** — waiting on its headless/Editor API)
-- [ ] **M7 Unified asset library** (`docs/72`–`docs/75`; model in ADR-021) — the foundation for multimodality and editing:
+- [x] **M7 Unified asset library** (`docs/72`–`docs/75`; model in ADR-021) — the foundation for multimodality and editing:
   - [x] M7-1 Asset table + content addressing + upload/list/filter/search/delete + automatic registration from covers and ingestion
   - [ ] M7-2 Timeline as a first-class asset (lands with M10)
-- [ ] **M8 Task-based orchestration** (job/task + async + progress + resume) — **a hard prerequisite for finished cuts**
+- [x] **M8 Task-based orchestration** (job/task + async + progress + resume) — **implemented**
 - [ ] **M9 Harness** (evaluation set / prompt versioning / token cost budget) — see `docs/71` §5
-- [ ] **M10 Rough cut** (pause removal / automatic subtitles / shot breakdown → **timeline JSON** + first-cut MP4)
+- [x] **M10 Rough cut** (pause removal / automatic subtitles → **timeline JSON** + first-cut MP4) — **implemented**; plus disfluency removal () and scene splitting ()
 - [x] **Rough cut** (pause removal + local ASR subtitles + burn-in) — **implemented** (`docs/spec_roughcut.md`)
 - [x] **B1 image+text to video** — **implemented** (`docs/spec_b1.md`)
 - [~] **B2 smart-cutting existing footage** — **main body implemented via rough cut**; gaps: shot breakdown,
