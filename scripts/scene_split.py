@@ -42,6 +42,29 @@ def probe_duration(path: Path) -> float:
         raise RuntimeError(f"拿不到时长（ffprobe 输出：{out.stdout.strip() or out.stderr.strip()[:200]}）")
 
 
+def out_extension(src: Path) -> str:
+    """切出来的段用什么扩展名 —— **跟着源视频的编码走**。
+
+    实测踩到（2026-10-17，影视飓风的真实素材）：源是 **ProRes** 的 .mov，
+    切成 `.mp4` 时 ffmpeg 直接报
+        Could not find tag for codec prores in stream #0, codec not currently supported in container
+    —— MP4 容器装不下 ProRes。而影视飓风素材库里大量是 ProRes 灰片，
+    把 `.mp4` 写死等于这类素材一进来就切不动。
+
+    规则：源编码是 ProRes/DNxHD 这类"必须 .mov"的，就用 .mov；其余走 .mp4。
+    """
+    try:
+        out = subprocess.run([_ffmpeg_bin("ffprobe"), "-v", "error", "-select_streams", "v:0",
+                              "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(src)],
+                             capture_output=True, text=True)
+        codec = (out.stdout or "").strip().lower()
+    except Exception:                                        # noqa: BLE001
+        codec = ""
+    if codec in ("prores", "dnxhd", "dnxhr", "cfhd"):
+        return ".mov"
+    return src.suffix.lower() if src.suffix.lower() in (".mov", ".mkv") else ".mp4"
+
+
 def cut_segment(src: Path, dst: Path, start: float, end: float) -> None:
     """切一段。**流复制**（`-c copy`）：不重编码、快、源文件不动。
 
@@ -227,10 +250,14 @@ def main(argv: list[str] | None = None) -> int:
         # ⑦ 切（源文件不动）
         outdir.mkdir(parents=True, exist_ok=True)
         with log.stage("切段") as r:
+            ext = out_extension(src)
+            if ext != ".mp4":
+                print(f"  （源编码需要 {ext} 容器 —— mp4 装不下 ProRes 这类）")
             for i, s in enumerate(chosen):
-                f = outdir / f"scene-{s['index']:03d}.mp4"
+                f = outdir / f"scene-{s['index']:03d}{ext}"
                 cut_segment(src, f, s["start"], s["end"])
                 s["file"] = str(f)
+                s["file_name"] = f.name
                 r.progress((i + 1) / max(1, len(chosen)) * 100)
                 print(f"  ✓ {f.name}  {s['duration']:.2f}s")
             r.done(f"{len(chosen)} 段")

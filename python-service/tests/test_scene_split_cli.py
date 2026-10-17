@@ -143,3 +143,60 @@ def test_thumbs_are_produced_unless_disabled(video, tmp_path):
           "-o", str(tmp_path / "o2"), "--workdir", str(w2)])
     plan2 = json.loads((w2 / "scene-plan.json").read_text(encoding="utf-8"))
     assert all("thumb" not in s for s in plan2["segments"])
+
+
+# ---------------------------------------------------------------- ProRes（真素材回归）
+
+
+def _make_prores(path, secs=2.0):
+    """造一段 ProRes 的 .mov —— 影视飓风素材库里大量是这个编码。"""
+    subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i", f"color=c=red:s=320x240:r=25:d={secs}",
+                    "-c:v", "prores_ks", "-pix_fmt", "yuv422p10le", str(path)],
+                   check=True, capture_output=True)
+    return path
+
+
+def test_prores_source_gets_a_mov_container(tmp_path):
+    """**实测回归**：源是 ProRes 时不能切成 .mp4。
+
+    MP4 容器装不下 ProRes，ffmpeg 会直接报
+        Could not find tag for codec prores in stream #0, codec not currently supported in container
+    而影视飓风的素材大量是 ProRes 灰片 —— 写死 .mp4 等于这类素材一进来就切不动。
+    """
+    src = _make_prores(tmp_path / "p.mov")
+    assert SS.out_extension(src) == ".mov"
+
+
+def test_h264_source_still_uses_mp4(tmp_path):
+    p = tmp_path / "h.mp4"
+    subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i", "color=c=blue:s=320x240:r=25:d=1",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(p)],
+                   check=True, capture_output=True)
+    assert SS.out_extension(p) == ".mp4"
+
+
+def test_prores_cut_actually_works(tmp_path):
+    """真的切一刀 —— 证明修好了，不只是扩展名算对了。"""
+    src = _make_prores(tmp_path / "p2.mov", secs=4.0)
+    out = tmp_path / f"seg{SS.out_extension(src)}"
+    SS.cut_segment(src, out, 0.0, 2.0)
+    assert out.is_file() and out.stat().st_size > 0
+    codec = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                            "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(out)],
+                           capture_output=True, text=True).stdout.strip()
+    assert codec == "prores", f"编码被改掉了：{codec}"
+
+
+def test_plan_records_the_real_file_name(tmp_path):
+    """方案里要带**真实文件名**（含扩展名）—— Java 侧据此登记素材，不要靠猜。"""
+    src = _make_prores(tmp_path / "p3.mov", secs=3.0)
+    outdir, w = tmp_path / "o", tmp_path / "w"
+    r = _run([str(src), "--yes", "--no-snap", "--no-thumb", "--min-sec", "0.5",
+              "-o", str(outdir), "--workdir", str(w)])
+    assert r.returncode == 0, r.stderr
+    plan = json.loads((w / "scene-plan.json").read_text(encoding="utf-8"))
+    f = plan["segments"][0]
+    assert f["file_name"].endswith(".mov"), f
+    assert Path(f["file"]).is_file()
