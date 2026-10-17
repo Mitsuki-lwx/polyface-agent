@@ -179,6 +179,29 @@ class ScenePlan:
         }
 
 
+def plan_from_cuts(cuts: list[float], total_sec: float, *,
+                   segments: list[dict] | None = None,
+                   threshold: float = DEFAULT_THRESHOLD, min_sec: float = DEFAULT_MIN_SEC,
+                   max_snap_sec: float = DEFAULT_MAX_SNAP_SEC) -> "ScenePlan":
+    """**用已有的切点**走完吸附 + 合并（跳过检测）。
+
+    给"检测结果落盘复用"用：检测要解码整条视频，而吸附/合并只依赖切点与语音边界 ——
+    调下游参数时没必要重解一遍。
+    """
+    al = align_to_speech(cuts, speech_bounds_from_segments(segments or []),
+                         max_shift_sec=max_snap_sec)
+    segs = plan_scenes(al.cuts, total_sec, min_sec=min_sec)
+    detector = ""
+    try:
+        import scenedetect
+        detector = f"PySceneDetect {scenedetect.__version__} ContentDetector"
+    except Exception:                                        # noqa: BLE001
+        pass
+    return ScenePlan(total_sec=total_sec, segments=segs, raw_cuts=list(cuts),
+                     snapped=al.snapped, speech_aligned=al.speech_aligned,
+                     threshold=threshold, min_sec=min_sec, detector=detector)
+
+
 def plan(path: str | Path, total_sec: float, *, segments: list[dict] | None = None,
          threshold: float = DEFAULT_THRESHOLD, min_sec: float = DEFAULT_MIN_SEC,
          max_snap_sec: float = DEFAULT_MAX_SNAP_SEC, on_progress=None) -> ScenePlan:

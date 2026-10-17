@@ -200,3 +200,56 @@ def test_plan_records_the_real_file_name(tmp_path):
     f = plan["segments"][0]
     assert f["file_name"].endswith(".mov"), f
     assert Path(f["file"]).is_file()
+
+
+# ---------------------------------------------------------------- 检测结果复用
+
+
+def test_second_run_reuses_detection(video, tmp_path):
+    """**改下游参数重跑不该重新解码视频**（checklist §4）。
+
+    做法：跑第二次时把检测函数换成"一调用就炸" —— 如果它没被调用，说明确实复用了。
+    4K 长片上这一步是分钟级，值得省。
+    """
+    outdir, w = tmp_path / "o", tmp_path / "w"
+    base = [str(video), "--dry-run", "--no-snap", "--min-sec", "1",
+            "-o", str(outdir), "--workdir", str(w)]
+    assert _run(base).returncode == 0
+    plan1 = json.loads((w / "scene-plan.json").read_text(encoding="utf-8"))
+    assert plan1["raw_cuts"], "第一次应该真的检测出切点"
+
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ss_cache", SCRIPTS / "scene_split.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["ss_cache"] = mod
+    spec.loader.exec_module(mod)
+    mod.sc._real = mod.sc.detect_scene_cuts
+    mod.sc.detect_scene_cuts = lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("第二次不该重新检测"))
+    try:
+        pauses, source = mod._load_cached_cuts(w, type("A", (), {"threshold": 27.0})()), None
+        assert pauses == plan1["raw_cuts"]
+    finally:
+        mod.sc.detect_scene_cuts = mod.sc._real
+
+
+def test_cache_is_invalidated_when_threshold_changes(video, tmp_path):
+    """**检测参数变了必须重检** —— 否则改阈值没反应，那才是 bug。"""
+    w = tmp_path / "w"
+    _run([str(video), "--dry-run", "--no-snap", "--min-sec", "1", "--threshold", "27",
+          "-o", str(tmp_path / "o"), "--workdir", str(w)])
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ss_cache2", SCRIPTS / "scene_split.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["ss_cache2"] = mod
+    spec.loader.exec_module(mod)
+    A = type("A", (), {"threshold": 40.0})
+    assert mod._load_cached_cuts(w, A()) is None, "阈值变了就不该复用"
+
+
+def test_plan_from_cuts_skips_detection(video, tmp_path):
+    """`plan_from_cuts` 不碰视频 —— 只做吸附 + 合并。"""
+    from app.pipeline import scenes as sc
+    plan = sc.plan_from_cuts([4.0, 8.0], 12.0, segments=[], min_sec=1.0)
+    assert plan.raw_cuts == [4.0, 8.0]
+    assert plan.segments == [(0.0, 4.0), (4.0, 8.0), (8.0, 12.0)]

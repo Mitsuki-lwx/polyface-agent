@@ -112,6 +112,26 @@ def transcript_segments(src: Path, work: Path) -> list[dict]:
         return []
 
 
+def _load_cached_cuts(work: Path, args) -> list[float] | None:
+    """读上次的检测结果（**只在检测参数一致时**复用）。
+
+    只缓存"检测"这一步：`raw_cuts` 只取决于 `--threshold`，
+    而 `--min-sec` / `--max-snap` / 语音边界都是**下游**的 —— 改了它们，切点重算即可，
+    不必重新解码整条视频（4K 长片这一下是分钟级）。
+    """
+    f = work / "scene-plan.json"
+    if not f.is_file():
+        return None
+    try:
+        d = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if d.get("params", {}).get("threshold") != args.threshold:
+        return None                     # 检测参数变了 → 必须重检
+    cuts = d.get("raw_cuts")
+    return [float(c) for c in cuts] if isinstance(cuts, list) else None
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="按场景切段（一条长录像 → N 条素材）")
     p.add_argument("input", help="输入视频")
@@ -181,10 +201,21 @@ def main(argv: list[str] | None = None) -> int:
                 r.done(f"{len(segs)} 段语音边界" if segs else "没有语音边界（降级）")
 
         # ② 检测 + 吸附 + 合并
-        with log.stage("检测切点") as r:
-            plan = sc.plan(src, total, segments=segs, threshold=args.threshold,
-                           min_sec=args.min_sec, max_snap_sec=args.max_snap)
-            r.done(f"{len(plan.segments)} 段（吸附 {plan.snapped} 处）")
+        # **复用上次的检测结果**：检测要解码整条视频（4K 长片是分钟级），
+        # 而调"最短段长/吸附"这些**下游**参数时，切点其实没变 —— 没必要重解一遍。
+        # 复用条件：缓存里的阈值与吸附参数与本次一致（**只复用检测**，下游重算）。
+        cached = _load_cached_cuts(work, args)
+        if cached is not None:
+            with log.stage("检测切点") as r:
+                plan = sc.plan_from_cuts(cached, total, segments=segs, threshold=args.threshold,
+                                         min_sec=args.min_sec, max_snap_sec=args.max_snap)
+                r.done(f"{len(plan.segments)} 段（复用上次检测的 {len(cached)} 个切点）")
+            print(f"  （复用上次检测结果：{len(cached)} 个切点 —— 没有重新解码视频）")
+        else:
+            with log.stage("检测切点") as r:
+                plan = sc.plan(src, total, segments=segs, threshold=args.threshold,
+                               min_sec=args.min_sec, max_snap_sec=args.max_snap)
+                r.done(f"{len(plan.segments)} 段（吸附 {plan.snapped} 处）")
         d = plan.as_dict()
         if not d["speech_aligned"]:
             print("  ⚠️ 没有语音边界 → 切点未吸附（可能把话切断）")
