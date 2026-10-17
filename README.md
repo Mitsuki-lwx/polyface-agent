@@ -32,6 +32,11 @@ local** — the material body text is sent to the LLM provider *you* configure (
   key — you don't hand your material to a third-party SaaS.
 - ⚠️ **`LLM_MOCK=true` (the default when no key is set) is fully offline** — nothing goes out. But
   the output is a **demo result**, not real generation. The UI's mode badge tells you which you're in.
+- ⚠️ **One exception to "transcription never leaves your machine"**: the disfluency feature
+  (mis-speak / repeated-sentence removal, `docs/spec_disfluency.md`) can optionally send the
+  **transcript text** to your configured LLM for a second opinion on suspected repeats.
+  It is **off by default**, and the rule-based pass always runs locally — with it off, nothing goes out.
+  Same boundary as ADR-017: text, never audio.
 
 ## Quick start
 
@@ -298,11 +303,12 @@ the material body text is sent to the **LLM provider you configured yourself** �
 (the model runs in the cloud). See "Data boundary".
 
 **Q: Will it generate videos for me?**
-**No.** Right now it produces **text drafts + clip sheets** (shot / duration / visual / subtitle
-suggestions) only. Local automatic video assembly (starting with **B1 image+text to video**, then
-**B2 smart-cutting existing footage**) is the **core direction** planned in `docs/05` FR-52/53, but
-it is **deferred** and **not yet implemented** — for the ordering rationale and the decision record,
-see `docs/08` ADR-018 and `docs/49`.
+**Yes, locally.** Three things already produce real video files on your machine:
+**rough cut** (pause removal + locally-transcribed burned-in subtitles — `docs/spec_roughcut.md`),
+**B1 image+text to video** (`docs/spec_b1.md`), and **timeline render**.
+Still missing from the **B2** scope: shot breakdown, beat-synced cutting, and
+disfluency removal (mis-speaks / repeated sentences / filler words — `docs/spec_disfluency.md`).
+See `docs/08` **ADR-022** (which corrects the previously-stale "not yet implemented" claim).
 
 **Q: What do I need installed for video ingestion?**
 `ffmpeg` (on PATH, or point `FFMPEG_PATH` at it). Automatic speech transcription is **optional** and
@@ -390,10 +396,11 @@ all live there) and restart the Python service.
 - [ ] **M8 Task-based orchestration** (job/task + async + progress + resume) — **a hard prerequisite for finished cuts**
 - [ ] **M9 Harness** (evaluation set / prompt versioning / token cost budget) — see `docs/71` §5
 - [ ] **M10 Rough cut** (pause removal / automatic subtitles / shot breakdown → **timeline JSON** + first-cut MP4)
-- [ ] **Local automatic video assembly** (starting with B1 image+text to video, then B2 smart-cutting existing footage) — **not yet implemented**.
-      Positioned as **core direction · currently deferred** (`docs/08` ADR-018): it's on the core path
-      rather than an add-on, but the ordering calls for finishing real-author validation first. See
-      `docs/05` FR-52/53 and `docs/49`.
+- [x] **Rough cut** (pause removal + local ASR subtitles + burn-in) — **implemented** (`docs/spec_roughcut.md`)
+- [x] **B1 image+text to video** — **implemented** (`docs/spec_b1.md`)
+- [~] **B2 smart-cutting existing footage** — **main body implemented via rough cut**; gaps: shot breakdown,
+      beat-synced cutting, disfluency removal (`docs/spec_disfluency.md`). See `docs/08` **ADR-022**,
+      which corrects the previously-stale "not yet implemented" wording in `docs/05` FR-52/53.
       (ADR-019 has paused the "validation first" ordering in favour of running it in parallel with M6.)
 
 > An honest note on M5: the orchestration logic in `scripts/*.bat` is implemented per `docs/23`, but
