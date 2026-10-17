@@ -310,6 +310,11 @@ Still missing from the **B2** scope: shot breakdown, beat-synced cutting, and
 disfluency removal (mis-speaks / repeated sentences / filler words — `docs/spec_disfluency.md`).
 See `docs/08` **ADR-022** (which corrects the previously-stale "not yet implemented" claim).
 
+**Q: What do I need for scene-based splitting?**
+`scenedetect` (PySceneDetect) — `python -m pip install scenedetect` (it pulls in
+`opencv-python`, about 60 MB). It is **optional**: without it, everything else still works and
+the scene-split task fails with an install hint (never a silent empty result). See `docs/08` ADR-023.
+
 **Q: What do I need installed for video ingestion?**
 `ffmpeg` (on PATH, or point `FFMPEG_PATH` at it). Automatic speech transcription is **optional** and
 needs `faster-whisper` installed separately; without it, a video with no subtitle track degrades to a

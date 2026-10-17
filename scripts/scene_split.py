@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python-service"))
 from app.pipeline import asr  # noqa: E402
 from app.pipeline import scenes as sc  # noqa: E402
 from app.pipeline.media import _ffmpeg_bin, has_ffmpeg  # noqa: E402
+from app.pipeline.runlog import RunLog  # noqa: E402
 
 EXIT_OK, EXIT_ERR = 0, 1
 
@@ -104,6 +105,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="不吸附到语音边界（跳过 ASR，快；但可能把话切断）")
     g.add_argument("--no-thumb", action="store_true", default=False, dest="no_thumb",
                    help="不抽缩略图")
+    g = p.add_argument_group("可观测（与粗剪同一套事件格式，工作台据此显示进度）")
+    g.add_argument("--level", choices=("quiet", "normal", "verbose"), default="normal")
+    g.add_argument("--events", default="", help="事件文件路径（jsonl）")
+    g.add_argument("--heartbeat", type=float, default=5.0)
+
     g = p.add_argument_group("行为")
     g.add_argument("--dry-run", action="store_true", default=False, dest="dry_run",
                    help="只出方案，不产出任何视频")
@@ -131,19 +137,31 @@ def main(argv: list[str] | None = None) -> int:
     work = Path(args.workdir) if args.workdir else outdir / "work"
     work.mkdir(parents=True, exist_ok=True)
 
+    # RunLog 的 `sink` 要的是 **Path**（它自己负责开/追加）—— 传文件对象会静默不写
+    # （实测：事件文件一直是空的，因为 `sink.parent` 在 file 对象上不存在）。
+    sink = Path(args.events) if args.events else None
+    log = RunLog(run_id=__import__("uuid").uuid4().hex[:8], sink=sink,
+                 level=args.level, heartbeat_sec=args.heartbeat)
     try:
-        total = probe_duration(src)
+        with log.stage("探测") as r:
+            total = probe_duration(src)
+            r.done(f"{src.name} {total:.2f}s", duration=total)
         print(f"▶ 探测  {src.name}  {total:.2f}s")
 
         # ① 语音边界（可跳过）
-        segs = [] if args.no_snap else transcript_segments(src, work)
         if args.no_snap:
+            segs = []
             print("  （--no-snap：跳过语音吸附，切点可能落在说话中间）")
+        else:
+            with log.stage("语音边界") as r:
+                segs = transcript_segments(src, work)
+                r.done(f"{len(segs)} 段语音边界" if segs else "没有语音边界（降级）")
 
         # ② 检测 + 吸附 + 合并
-        print("▶ 检测画面切点")
-        plan = sc.plan(src, total, segments=segs, threshold=args.threshold,
-                       min_sec=args.min_sec, max_snap_sec=args.max_snap)
+        with log.stage("检测切点") as r:
+            plan = sc.plan(src, total, segments=segs, threshold=args.threshold,
+                           min_sec=args.min_sec, max_snap_sec=args.max_snap)
+            r.done(f"{len(plan.segments)} 段（吸附 {plan.snapped} 处）")
         d = plan.as_dict()
         if not d["speech_aligned"]:
             print("  ⚠️ 没有语音边界 → 切点未吸附（可能把话切断）")
@@ -152,13 +170,14 @@ def main(argv: list[str] | None = None) -> int:
         if not args.no_thumb:
             thumbdir = work / "thumbs"
             thumbdir.mkdir(exist_ok=True)
-            for s in d["segments"]:
-                at = s["start"] + (s["end"] - s["start"]) / 3
-                f = thumbdir / f"scene-{s['index']:03d}.jpg"
-                if not f.is_file():
-                    thumbnail(src, f, at)
-                s["thumb"] = str(f)
-            print(f"  缩略图 {len(d['segments'])} 张 → {thumbdir}")
+            with log.stage("缩略图") as r:
+                for s in d["segments"]:
+                    at = s["start"] + (s["end"] - s["start"]) / 3
+                    f = thumbdir / f"scene-{s['index']:03d}.jpg"
+                    if not f.is_file():
+                        thumbnail(src, f, at)
+                    s["thumb"] = str(f)
+                r.done(f"{len(d['segments'])} 张")
 
         # ④ 方案落盘 —— **必须在缩略图之后**：实测踩到，写在前面时 dry-run 的
         #    plan.json 里没有 thumb 字段（缩略图产出了，但没人知道它在哪）。
@@ -207,11 +226,14 @@ def main(argv: list[str] | None = None) -> int:
 
         # ⑦ 切（源文件不动）
         outdir.mkdir(parents=True, exist_ok=True)
-        for s in chosen:
-            f = outdir / f"scene-{s['index']:03d}.mp4"
-            cut_segment(src, f, s["start"], s["end"])
-            s["file"] = str(f)
-            print(f"  ✓ {f.name}  {s['duration']:.2f}s")
+        with log.stage("切段") as r:
+            for i, s in enumerate(chosen):
+                f = outdir / f"scene-{s['index']:03d}.mp4"
+                cut_segment(src, f, s["start"], s["end"])
+                s["file"] = str(f)
+                r.progress((i + 1) / max(1, len(chosen)) * 100)
+                print(f"  ✓ {f.name}  {s['duration']:.2f}s")
+            r.done(f"{len(chosen)} 段")
 
         d["cut"] = [s["index"] for s in chosen]
         save_plan()
@@ -220,6 +242,8 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as e:                                   # noqa: BLE001
         print(f"[错误] {e}", file=sys.stderr)
         return EXIT_ERR
+    finally:
+        pass
 
 
 if __name__ == "__main__":
