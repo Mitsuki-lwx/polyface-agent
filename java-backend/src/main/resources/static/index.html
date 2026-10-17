@@ -1035,7 +1035,21 @@ async function openRoughcutForm(asset){
     `<label style="font-size:11px;color:var(--sub)">${esc(label)}<br>
        <input data-p="${k}" value="${esc(v ?? "")}" style="width:96px"></label>`).join("")
     + `<label style="font-size:11px;color:var(--sub);display:flex;align-items:center;gap:4px">
-         <input type="checkbox" data-p="burn_subs" ${d.burn_subs === false ? "" : "checked"}> 烧字幕</label>`;
+         <input type="checkbox" data-p="burn_subs" ${d.burn_subs === false ? "" : "checked"}> 烧字幕</label>`
+    // 去冗余（docs/spec_disfluency.md）：四类**各自**可关 ——
+    // 有人不在意口头语，有人只想去重复句，所以不做一个总开关了事。
+    + `<div style="width:100%;margin-top:6px;font-size:11px;color:var(--sub)">
+         去冗余（把说错/重复/口头语也剪掉）</div>`
+    + [["dedup_enabled","总开关"],["dedup_repeat","重复句（说两遍）"],
+       ["dedup_self_correct","自我纠正（说错重说）"],["dedup_restart","半句废弃（起头又重起）"],
+       ["dedup_filler","口头语（嗯/啊/那个）"]].map(([k,label])=>
+        `<label style="font-size:11px;color:var(--sub);display:flex;align-items:center;gap:4px">
+           <input type="checkbox" data-p="${k}" ${d[k] === false ? "" : "checked"}> ${esc(label)}</label>`
+       ).join("")
+    + `<label style="font-size:11px;color:var(--sub);display:flex;align-items:center;gap:4px">
+         <input type="checkbox" data-p="dedup_review" ${d.dedup_review ? "checked" : ""}>
+         让模型复核可疑段<br><span style="font-size:10.5px;color:#b03a2e">
+         ⚠️ 开了会把<b>转写文本</b>发给你配的 LLM（默认关）</span></label>`;
   $("rcFormStatus").textContent = "";
 }
 

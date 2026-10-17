@@ -30,7 +30,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "python-service"))
 
-from app.pipeline import asr, checkpoint as ck, roughcut as rc  # noqa: E402
+from app.pipeline import asr
+from app.pipeline import disfluency as df, checkpoint as ck, roughcut as rc  # noqa: E402
 from app.pipeline import timeline as tlib  # noqa: E402
 from app.pipeline.runlog import RunLog  # noqa: E402
 
@@ -100,6 +101,24 @@ def build_parser(base: rc.RoughcutParams) -> argparse.ArgumentParser:
                    help=f"字幕距画面底部像素（默认 {base.margin_v}）")
     g.add_argument("--asr-model", default=S, dest="asr_model",
                    help=f"ASR 模型尺寸（默认 {base.asr_model}）")
+
+    g = p.add_argument_group("去冗余（docs/spec_disfluency.md）—— 四类各有独立开关")
+    g.add_argument("--no-dedup", action="store_true", default=S, dest="no_dedup",
+                   help="关掉去冗余（只剪停顿，行为与以前完全一致）")
+    g.add_argument("--no-dedup-filler", action="store_true", default=S, dest="no_dedup_filler",
+                   help="不去口头语（嗯/啊/那个…）")
+    g.add_argument("--no-dedup-repeat", action="store_true", default=S, dest="no_dedup_repeat",
+                   help="不去重复句（说两遍）")
+    g.add_argument("--no-dedup-restart", action="store_true", default=S, dest="no_dedup_restart",
+                   help="不去半句废弃（起头又重起）")
+    g.add_argument("--no-dedup-self-correct", action="store_true", default=S,
+                   dest="no_dedup_self_correct", help="不去自我纠正（说错重说）")
+    g.add_argument("--dedup-similarity", type=float, default=S, dest="dedup_similarity",
+                   help=f"多像才算疑似重复（默认 {base.dedup_similarity}）")
+    g.add_argument("--dedup-min-cut", type=float, default=S, dest="dedup_min_cut_sec",
+                   help=f"剪掉不足这么长的片段没有意义（默认 {base.dedup_min_cut_sec}s）")
+    g.add_argument("--dedup-review", action="store_true", default=S, dest="dedup_review",
+                   help="让模型复核可疑段（**开了转写文本会发给你配的 LLM**）")
 
     g = p.add_argument_group("可观测（docs/spec_observability.md）")
     g.add_argument("--level", choices=("quiet", "normal", "verbose"), default=S,
@@ -213,7 +232,15 @@ def main(argv: list[str] | None = None) -> int:
         font_size=given.get("font_size"), text_color=given.get("text_color"),
         outline=given.get("outline"), margin_v=given.get("margin_v"),
         asr_model=given.get("asr_model"),
-        burn_subs=False if given.get("no_burn") else None)
+        burn_subs=False if given.get("no_burn") else None,
+        dedup_enabled=False if given.get("no_dedup") else None,
+        dedup_filler=False if given.get("no_dedup_filler") else None,
+        dedup_repeat=False if given.get("no_dedup_repeat") else None,
+        dedup_restart=False if given.get("no_dedup_restart") else None,
+        dedup_self_correct=False if given.get("no_dedup_self_correct") else None,
+        dedup_similarity=given.get("dedup_similarity"),
+        dedup_min_cut_sec=given.get("dedup_min_cut_sec"),
+        dedup_review=True if given.get("dedup_review") else None)
 
     # 参数来源：命令行 > 配置文件 > 默认
     sources = {f.name: ("命令行" if f.name in given else
@@ -255,6 +282,33 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_ERR
         res.put("探测", info=info)
 
+    # ---------- 去冗余（**必须在剪之前** —— 判定要有原文，见 spec 关键决定一）----------
+    # 代价是两遍 ASR（这一遍在原文上，后面那遍在剪后视频上出字幕）。
+    # 换来的是省掉"时间戳重映射"那块易错逻辑。
+    dedup_cuts: list = []
+    dedup_result: dict = {}
+    if params.dedup_enabled:
+        _du = res.get("去冗余")
+        if _du is not None:
+            dedup_cuts = [tuple(x) for x in _du["cuts"]]
+            dedup_result = _du["result"]
+            print(f"[续跑] 跳过去冗余（已完成：判出 {len(dedup_cuts)} 段）")
+        else:
+            with log.stage("去冗余") as r:
+                orig_wav = work / "original.wav"
+                if not orig_wav.is_file():
+                    rc.extract_wav(src, orig_wav, on_raw=log.raw)
+                try:
+                    segs = asr.transcribe_words(str(orig_wav))
+                except RuntimeError as e:
+                    # 拿不到词级时间戳 → 明确失败，不静默少做一整类判定（checklist §1）
+                    raise rc.AsrMissing(str(e)) from e
+                dedup_result = df.analyze(segs, params)
+                dedup_cuts = df.to_cut_intervals(dedup_result)
+                r.done(f"{len(dedup_cuts)} 段冗余", segments=len(dedup_cuts))
+            res.put("去冗余", cuts=dedup_cuts, result=dedup_result)
+            print(df.format_report(dedup_result))
+
     # ---------- 找停顿 + 预览（两段式）----------
     _pause = res.get("找停顿")
     if _pause is not None:
@@ -267,8 +321,16 @@ def main(argv: list[str] | None = None) -> int:
             with log.stage("找停顿") as r:
                 pauses = rc.detect_pauses(src, params.noise_db, params.pause_sec, on_raw=log.raw)
                 r.done(f"{len(pauses)} 段静音")
-            cuts = rc.plan_cuts(pauses, params.keep_margin_sec, info["duration"])
+            pause_cuts = rc.plan_cuts(pauses, params.keep_margin_sec, info["duration"])
+            # **合并**：停顿剪点和冗余剪点会挨着（先停一下再重说一句），
+            # 不合并的话中间会留一小截画面。回退一步，宁少剪（spec 关键决定四）。
+            dedup_trimmed = rc.shrink_cuts(dedup_cuts, params.keep_margin_sec, info["duration"])
+            cuts = rc.merge_cuts([pause_cuts, dedup_trimmed], min_sec=params.dedup_min_cut_sec,
+                                 total=info["duration"])
             after = info["duration"] - rc.cut_seconds(cuts)
+            if dedup_cuts:
+                print(f"停顿 {len(pause_cuts)} 段 + 冗余 {len(dedup_cuts)} 段 "
+                      f"→ 合并后 {len(cuts)} 段（相邻的会并成一段）")
             print(rc.summarize(cuts, info["duration"], after, params))
 
             if not cuts:

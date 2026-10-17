@@ -15,7 +15,7 @@ import json
 import re
 import subprocess
 import tempfile
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from .media import MediaToolMissing, _ffmpeg_bin, has_ffmpeg  # noqa: F401  (复用既有定位逻辑)
@@ -62,6 +62,19 @@ class RoughcutParams:
     margin_v: int = 40                  # 距画面底部像素
     # ASR
     asr_model: str = "small"
+    # 去冗余（docs/spec_disfluency.md）—— **四类各有独立开关** + 各自的尺度。
+    # 每一类都能单独关掉：有人不在意口头语，有人只想去重复句。
+    dedup_enabled: bool = True          # 总开关（关掉 = 只做停顿，行为与以前完全一致）
+    dedup_filler: bool = True           # 口头语（嗯/啊/那个…）
+    dedup_repeat: bool = True           # 重复句（说两遍）
+    dedup_restart: bool = True          # 半句废弃（起头又重起）
+    dedup_self_correct: bool = True     # 自我纠正（说错重说）
+    dedup_fillers: list = field(default_factory=lambda: list(DEFAULT_FILLERS_FOR_PARAMS))
+    dedup_filler_gap_sec: float = 0.12  # 口头语两侧要有多大的空隙才算"独立说出"
+    dedup_similarity: float = 0.72      # 多像才算"疑似重复"（高于它 → 交模型复核）
+    dedup_min_cut_sec: float = 0.20     # 剪掉不足这么长的片段没有意义（听不出来）
+    dedup_review: bool = False          # 让模型复核可疑段（**默认关**：开了转写文本会出本机）
+    dedup_min_restart_chars: int = 4    # 半句重起：短句至少这么多字才算
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> "RoughcutParams":
@@ -94,10 +107,19 @@ class RoughcutParams:
     def describe(self) -> str:
         return (f"停顿阈值 {self.pause_sec}s · 门限 {self.noise_db}dB · 余量 {self.keep_margin_sec}s · "
                 f"字幕 {'开' if self.burn_subs else '关'}"
-                + (f"（{self.font} {self.font_size}号 距底{self.margin_v}px）" if self.burn_subs else ""))
+                + (f"（{self.font} {self.font_size}号 距底{self.margin_v}px）" if self.burn_subs else "")
+                + (" · 去冗余：" + "、".join(
+                    [n for n, on in (("口头语", self.dedup_filler), ("重复句", self.dedup_repeat),
+                                     ("半句重起", self.dedup_restart),
+                                     ("自我纠正", self.dedup_self_correct)) if on]) or ""
+                   if self.dedup_enabled else " · 去冗余：关")
+                + ("（含模型复核）" if self.dedup_enabled and self.dedup_review else ""))
 
 
 DEFAULT_CONFIG_NAME = "roughcut.json"
+
+# 口头语默认词表来自 disfluency（**只此一份**，避免两处各写一份然后慢慢不一致）
+from .disfluency import DEFAULT_FILLERS as DEFAULT_FILLERS_FOR_PARAMS  # noqa: E402
 
 
 # ---------------------------------------------------------------- 探测（T2）
@@ -228,6 +250,62 @@ def plan_cuts(pauses: list[tuple[float, float]], keep_margin: float,
 
 def cut_seconds(cuts: list[tuple[float, float]]) -> float:
     return round(sum(e - s for s, e in cuts), 3)
+
+
+# ---------------------------------------------------------------- 合并多来源剪点（去冗余 T5）
+
+#: 两个剪点之间小于这么多秒，就当成一个（否则 ffmpeg 会在中间留一段 0.05 秒的画面）。
+MERGE_ADJACENT_SEC = 0.04
+
+
+def merge_cuts(sources: list[list[tuple[float, float]]], *, min_sec: float = 0.0,
+               total: float | None = None) -> list[tuple[float, float]]:
+    """把**多来源**剪点合并成一份：排序 → 合并重叠/相邻 → 丢弃过短的。
+
+    为什么要合并：停顿剪点和去冗余剪点会**挨着**（先停一下再重说一句，两段几乎连在一起）。
+    不合并的话 ffmpeg 会在两段之间留下一小截画面 —— 看起来就像剪漏了。
+
+    `min_sec`：剪掉 0.1 秒没有意义（听不出来），还会多一次编码拼接。低于它的丢掉。
+
+    输出保证：按时间**升序**、两两**不重叠**。
+    """
+    flat: list[tuple[float, float]] = []
+    for group in sources:
+        for s, e in group or []:
+            if e > s:
+                flat.append((float(s), float(e)))
+    if not flat:
+        return []
+    flat.sort()
+    out: list[list[float]] = [list(flat[0])]
+    for s, e in flat[1:]:
+        last = out[-1]
+        if s - last[1] <= MERGE_ADJACENT_SEC:
+            last[1] = max(last[1], e)
+        else:
+            out.append([s, e])
+    merged = [(round(s, 3), round(min(e, total), 3) if total else round(e, 3))
+              for s, e in out if e - s > 0]
+    if min_sec > 0:
+        merged = [(s, e) for s, e in merged if e - s >= min_sec]
+    return merged
+
+
+def shrink_cuts(cuts: list[tuple[float, float]], margin: float,
+                total: float | None = None) -> list[tuple[float, float]]:
+    """剪点两侧各**退回** `margin` 秒 —— 边界回退（spec 关键决定四：宁少剪不多剪）。
+
+    为什么要退：剪点的时间戳来自转写，转写的词边界**本来就有误差**（几十毫秒）。
+    贴着边界剪，很容易把下一个字的起音切掉 —— 听起来像"吞字"。
+    退一点，最多多留 0.2 秒的拖沓；剪错一个字，就得重剪整条片子。
+    """
+    out = []
+    for s, e in cuts:
+        ns, ne = s + margin, e - margin
+        if ne - ns <= 0:
+            continue
+        out.append((round(ns, 3), round(min(ne, total), 3) if total else round(ne, 3)))
+    return out
 
 
 # ---------------------------------------------------------------- 剪（T6）

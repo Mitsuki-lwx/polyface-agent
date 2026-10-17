@@ -217,6 +217,9 @@ def test_roughcut_writes_timeline_whose_segments_roundtrip(tmp_path, monkeypatch
     monkeypatch.setattr(rc, "cut_video", lambda src, dst, cuts, **kw: Path(dst).write_bytes(b"c"))
     monkeypatch.setattr(rc, "extract_wav", lambda src, dst, **kw: Path(dst).write_bytes(b"w"))
     monkeypatch.setattr(asr, "transcribe_segments", lambda path, **kw: list(segs))
+    # 去冗余阶段用的是**词级**入口（它在剪之前跑，读的是原始音频）
+    monkeypatch.setattr(asr, "transcribe_words",
+                        lambda path, **kw: [dict(x, words=[]) for x in segs])
     monkeypatch.setattr(rc, "burn_subtitles",
                         lambda cut, out, srt, params, **kw: Path(out).write_bytes(b"o"))
 

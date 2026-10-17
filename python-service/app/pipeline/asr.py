@@ -62,6 +62,56 @@ def transcribe(wav_path: str, language: str = "zh") -> str:
     return "".join(getattr(s, "text", "") for s in segments).strip()
 
 
+def _load_audio_16k_mono(wav_path: str):
+    """读 16kHz 单声道 wav 成 float32 数组（`transcribe_*` 共用的前置）。"""
+    import wave
+
+    import numpy as np
+
+    with wave.open(str(wav_path), "rb") as w:
+        if w.getnchannels() != 1 or w.getframerate() != 16000:
+            raise RuntimeError(
+                f"转写要求 16kHz 单声道 wav，收到 {w.getframerate()}Hz/{w.getnchannels()}ch")
+        return np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+
+
+def transcribe_words(wav_path: str, language: str = "zh") -> list[dict]:
+    """**词级**时间戳转写：`[{start, end, text, words:[{w, start, end}]}]`。
+
+    去口误/重复句的判定要用它（`docs/spec_disfluency.md`）—— 段级时间戳粒度太粗，
+    而"剪掉一个口头语"必须知道**那个词**在哪儿。
+
+    **拿不到词级时间戳就报错**，不静默返回空：调用方会据此降级到"只做规则层里不依赖
+    词级的判定"，而不是以为"这段音频没有词"。
+    """
+    if not is_available():
+        raise RuntimeError(INSTALL_HINT)
+    audio = _load_audio_16k_mono(wav_path)
+    model = _load_model(model_size())
+    raw, _info = model.transcribe(audio, language=language, vad_filter=True,
+                                  initial_prompt=ZH_SIMPLIFIED_PROMPT,
+                                  word_timestamps=True)
+    out: list[dict] = []
+    for s in raw:
+        text = (s.text or "").strip()
+        if not text:
+            continue
+        words = []
+        for w in (getattr(s, "words", None) or []):
+            word = (getattr(w, "word", "") or "").strip()
+            if not word:
+                continue
+            words.append({"w": word, "start": float(w.start), "end": float(w.end)})
+        out.append({"start": float(s.start), "end": float(s.end), "text": text, "words": words})
+    if not out:
+        return []
+    if not any(seg["words"] for seg in out):
+        raise RuntimeError(
+            "这个 ASR 后端没有返回词级时间戳（word_timestamps），去口误判定需要它。"
+            "请改用支持词级时间戳的后端，或关闭去口误。")
+    return out
+
+
 def transcribe_segments(wav_path: str, language: str = "zh", *,
                         on_progress=None, total_sec: float | None = None) -> list[dict]:
     """带时间戳的转写：返回 `[{start, end, text}]`。粗剪出字幕用（FR-52 的前置）。
@@ -80,16 +130,7 @@ def transcribe_segments(wav_path: str, language: str = "zh", *,
     """
     if not is_available():
         raise RuntimeError(INSTALL_HINT)
-    import wave
-
-    import numpy as np
-
-    with wave.open(str(wav_path), "rb") as w:
-        if w.getnchannels() != 1 or w.getframerate() != 16000:
-            raise RuntimeError(
-                f"转写要求 16kHz 单声道 wav，收到 {w.getframerate()}Hz/{w.getnchannels()}ch")
-        audio = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
-
+    audio = _load_audio_16k_mono(wav_path)
     model = _load_model(model_size())
     raw, _info = model.transcribe(audio, language=language, vad_filter=True,
                                   initial_prompt=ZH_SIMPLIFIED_PROMPT)

@@ -301,3 +301,34 @@ def build_learn_prompt(sample_text: str, source_note: str | None = None) -> str:
         payload["source_note"] = source_note
     return json.dumps(payload, ensure_ascii=False, indent=1)
 
+
+
+def build_disfluency_prompt(pairs: list[dict]) -> str:
+    """去冗余的模型复核（`docs/spec_disfluency.md` 关键决定二/三）。
+
+    **只把规则层拿不准的相邻句对交出去** —— 不是全文。这样模型的输入是受控的小集合：
+    成本可预测，且它不会"整体跑偏"去改写别的地方。
+
+    `pairs`：`[{"index":0, "prev":"...", "cur":"..."}]`
+
+    要求模型只回答"这两句是不是在说同一件事"，**不给时间戳** ——
+    时间戳一律由程序从原句对取（模型看不到音频，给的时间戳不可信）。
+    """
+    payload = {
+        "task": "判断相邻两句是不是「同一件事说了两遍」",
+        "rules": [
+            "只看这两句，不看别的",
+            "「同一件事说两遍」= 后一句在重复前一句的意思（换个说法也算）",
+            "正常的递进、补充、举例**不算**重复（比如「我喜欢读书」→「尤其是历史书」）",
+            "排比、强调**不算**重复",
+            "拿不准就判 false —— 宁可漏，不可错剪（剪错正话的代价远大于多留半句）",
+        ],
+        "pairs": pairs,
+        "output_schema": {
+            "verdicts": [
+                {"index": 0, "same": True, "why": "一句话说清理由（给用户看）"}
+            ]
+        },
+        "output": "严格按 output_schema 返回 JSON，verdicts 要覆盖每一个 pair 的 index",
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=1)

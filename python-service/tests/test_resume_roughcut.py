@@ -55,6 +55,11 @@ def stub_media(monkeypatch):
         calls.append("转写")
         return list(SEGMENTS)
 
+    def fake_asr_words(path, **kw):
+        # 去冗余用的是**词级**入口（判定要知道"那个词"在哪儿）
+        calls.append("去冗余")
+        return [dict(x, words=[]) for x in SEGMENTS]
+
     def fake_burn(cut, out, srt, params, **kw):
         calls.append("烧字幕")
         Path(out).write_bytes(b"out")
@@ -62,6 +67,7 @@ def stub_media(monkeypatch):
     monkeypatch.setattr(rc, "cut_video", fake_cut)
     monkeypatch.setattr(rc, "extract_wav", fake_wav)
     monkeypatch.setattr(asr, "transcribe_segments", fake_asr)
+    monkeypatch.setattr(asr, "transcribe_words", fake_asr_words)
     monkeypatch.setattr(rc, "burn_subtitles", fake_burn)
     return calls
 
@@ -88,7 +94,9 @@ def test_stages_are_persisted(tmp_path, media, stub_media):
     work = tmp_path / "w"
     assert _run(tmp_path, media, work) == 0
 
-    assert set(ck.list_units(work, "stage")) == {"探测", "找停顿", "剪裁", "抽音轨", "转写", "烧字幕"}
+    # 去冗余在**剪之前**（判定要有原文）—— 它是个独立阶段，可单独续跑
+    assert set(ck.list_units(work, "stage")) == {"探测", "去冗余", "找停顿", "剪裁",
+                                                 "抽音轨", "转写", "烧字幕"}
 
 
 def test_resume_skips_everything_when_complete(tmp_path, media, stub_media):
@@ -132,7 +140,8 @@ def test_source_change_invalidates_everything(tmp_path, media, stub_media):
 
     media.write_bytes(b"another-video-of-different-size")   # size 变了
     assert _run(tmp_path, media, work) == 0
-    assert stub_media == ["剪裁", "抽音轨", "转写", "烧字幕"]
+    # 去冗余也要重跑：它读的是**原始素材**的音频（判定必须在剪之前）
+    assert stub_media == ["去冗余", "剪裁", "抽音轨", "转写", "烧字幕"]
 
 
 def test_stage_payload_is_real_json(tmp_path, media, stub_media):
@@ -168,9 +177,11 @@ def test_failed_stage_is_not_persisted(tmp_path, media, monkeypatch):
         raise RuntimeError("转写崩了")
 
     monkeypatch.setattr(asr, "transcribe_segments", boom)
+    monkeypatch.setattr(asr, "transcribe_words",
+                        lambda path, **kw: [dict(x, words=[]) for x in SEGMENTS])
 
     work = tmp_path / "w"
     assert _run(tmp_path, media, work) == 1          # EXIT_ERR
     units = set(ck.list_units(work, "stage"))
     assert "转写" not in units, "失败的阶段不该被记为已完成"
-    assert {"探测", "找停顿", "剪裁", "抽音轨"} <= units
+    assert {"探测", "去冗余", "找停顿", "剪裁", "抽音轨"} <= units

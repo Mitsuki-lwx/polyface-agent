@@ -300,6 +300,30 @@ public class RoughcutRunner {
         if (Boolean.FALSE.equals(params.get("burn_subs"))) {
             cmd.add("--no-burn");
         }
+        // 去冗余（docs/spec_disfluency.md）：四类各有独立开关，UI 只传"关掉哪个"。
+        // 默认**开**（这是新功能的默认行为，写在这里以免漏传）
+        if (Boolean.FALSE.equals(params.get("dedup_enabled"))) {
+            cmd.add("--no-dedup");
+        } else {
+            if (Boolean.FALSE.equals(params.get("dedup_filler"))) {
+                cmd.add("--no-dedup-filler");
+            }
+            if (Boolean.FALSE.equals(params.get("dedup_repeat"))) {
+                cmd.add("--no-dedup-repeat");
+            }
+            if (Boolean.FALSE.equals(params.get("dedup_restart"))) {
+                cmd.add("--no-dedup-restart");
+            }
+            if (Boolean.FALSE.equals(params.get("dedup_self_correct"))) {
+                cmd.add("--no-dedup-self-correct");
+            }
+            putIf(cmd, params, "dedup_similarity", "--dedup-similarity");
+            putIf(cmd, params, "dedup_min_cut_sec", "--dedup-min-cut");
+            // 模型复核：**只有显式打开才传** —— 开了转写文本会出本机（数据边界）
+            if (Boolean.TRUE.equals(params.get("dedup_review"))) {
+                cmd.add("--dedup-review");
+            }
+        }
         return cmd;
     }
 
