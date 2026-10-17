@@ -37,8 +37,19 @@ DEFAULT_FILLER_GAP_SEC = 0.12
 #: 半句重起：短句至少这么多字才算"半句"（太短的多半是正常口语）。
 DEFAULT_MIN_RESTART_CHARS = 4
 
-#: 相似度阈值（T3 用）。高于它 = 疑似重复，交给模型复核。
+#: 相似度阈值（T3 用）。高于它 = **规则层**标为疑似重复。
 DEFAULT_SIMILARITY = 0.72
+
+#: **送模型复核**的门槛，刻意比上面低得多。
+#:
+#: 为什么必须分两个门槛（实测）：完全换措辞的重说，字符/2-gram 相似度可能只有
+#: **0.38** ——「这件事情的核心是执行。」vs「这件事的关键就在于落地。」
+#: 规则永远标不出它，而"模型只复核规则标出的段"就意味着**模型也永远看不到它**。
+#: 可"抓换措辞的重说"正是模型那一层存在的理由。
+#:
+#: 所以：规则门槛（0.72）决定"直接判为疑似"；复核门槛（0.30）决定"值得让模型看一眼"。
+#: 0.30~0.72 这一段由模型裁决 —— 模型说不是，就不剪（宁可漏）。
+DEFAULT_REVIEW_GATE = 0.30
 
 _PUNCT = re.compile(r"[\s，。、！？；：“”‘’（）()\[\]【】,.!?;:\"'`~·—…\-]+")
 
@@ -325,6 +336,32 @@ def rule_findings(segments: list[dict], *, fillers=DEFAULT_FILLERS,
     return sorted(out, key=lambda f: (f.start, f.kind))
 
 
+def review_candidates(segments: list[dict], gate: float = DEFAULT_REVIEW_GATE, *,
+                      skip: set[tuple[int, int]] | None = None) -> list[Finding]:
+    """**送模型复核**的候选：相似度达到 `gate` 的相邻句对（门槛比规则低）。
+
+    返回的 Finding 一律 `confidence="low"`、`source="rule"` —— 它们**不是判定**，
+    只是"值得让模型看一眼"的疑点。模型说是，才变成判定；说不是，就不剪。
+    """
+    skip = skip or set()
+    out: list[Finding] = []
+    for i in range(1, len(segments)):
+        if (i - 1, i) in skip:
+            continue
+        a, b = segments[i - 1].get("text", ""), segments[i].get("text", "")
+        if normalize(a) == normalize(b):
+            continue
+        ratio = similarity(a, b)
+        if ratio < gate:
+            continue
+        out.append(Finding(
+            start=float(segments[i]["start"]), end=float(segments[i]["end"]),
+            kind="repeat", source="rule", confidence="low",
+            evidence=f"相似度 {ratio:.2f}（复核门槛 {gate:.2f}），待模型裁决",
+            extra={"ratio": round(ratio, 3), "original": a.strip()}))
+    return out
+
+
 # ---------------------------------------------------------------- 模型复核（T4）
 
 
@@ -340,6 +377,7 @@ def review_with_llm(segments: list[dict], findings: list[Finding], *,
     """
     low = [f for f in findings if f.confidence == "low" and f.source == "rule"]
     if not enabled or not low:
+        # 没有可疑句对 → **一次都不调**（这是特性：不花冤枉钱）
         return [], False
 
     # 从 finding 反查它对应哪一对相邻句（按 start 对上后一句）
@@ -427,8 +465,17 @@ def analyze(segments: list[dict], params, *, chat=None) -> dict:
         min_restart_chars=getattr(params, "dedup_min_restart_chars", DEFAULT_MIN_RESTART_CHARS),
         similarity=getattr(params, "dedup_similarity", DEFAULT_SIMILARITY))
 
+    # 送模型的是**复核候选**（门槛 0.30），不是"规则已判为 low 的那几条"（门槛 0.72）——
+    # 否则完全换措辞的重说（相似度可能只有 0.38）永远到不了模型面前。
+    taken_pairs = {(i - 1, i) for i in range(1, len(sentences))
+                   if normalize(sentences[i - 1].get("text")) == normalize(sentences[i].get("text"))
+                   and normalize(sentences[i].get("text"))}
+    low_suspects = review_candidates(sentences, getattr(params, "dedup_review_gate",
+                                                        DEFAULT_REVIEW_GATE),
+                                     skip=taken_pairs)
     llm, skipped = review_with_llm(
-        sentences, rule, chat=chat, enabled=bool(getattr(params, "dedup_review", False)))
+        sentences, low_suspects, chat=chat,
+        enabled=bool(getattr(params, "dedup_review", False)))
     # 模型确认过的那些，把规则层对应那条 low 置信的去掉（同一段不要出现两次）
     confirmed = {(round(f.start, 3), round(f.end, 3)) for f in llm}
     all_f = [f for f in rule if (round(f.start, 3), round(f.end, 3)) not in confirmed] + llm
@@ -446,9 +493,19 @@ def analyze(segments: list[dict], params, *, chat=None) -> dict:
         "by_kind": by_kind,
         "total_sec": round(sum(f.end - f.start for f in all_f), 3),
         "llm_skipped": skipped,
+        # **三个不同的东西，别混成一个**：
+        #   enabled = 用户开了这个开关
+        #   called  = 真的调了模型（有可疑句对才会调）
+        #   skipped = 调了但失败/降级
+        # 实测踩到：只报 enabled 会让人以为"模型复核跑过了"，
+        # 而实际上这份素材一个可疑句对都没有，模型**一次都没被调用**。
+        "llm_enabled": bool(getattr(params, "dedup_review", False)),
+        "llm_called": bool(getattr(params, "dedup_review", False)) and bool(low_suspects),
+        "llm_suspect_pairs": len(low_suspects),
         "llm_reviewed": bool(getattr(params, "dedup_review", False)),
         "params_used": {
             "similarity": getattr(params, "dedup_similarity", DEFAULT_SIMILARITY),
+            "review_gate": getattr(params, "dedup_review_gate", DEFAULT_REVIEW_GATE),
             "filler_gap_sec": getattr(params, "dedup_filler_gap_sec", DEFAULT_FILLER_GAP_SEC),
             "min_cut_sec": getattr(params, "dedup_min_cut_sec", 0.2),
             "min_restart_chars": getattr(params, "dedup_min_restart_chars",
@@ -482,8 +539,10 @@ def format_report(result: dict, *, merged_sec: float | None = None,
             lines.append(f"      {ev}")
     counts = "、".join(f"{KIND_LABEL.get(k, k)} {v} 段" for k, v in result["by_kind"].items())
     lines.append(f"合计：{counts or '0 段'}，共 {result['total_sec']}s")
-    if result.get("llm_reviewed") and result.get("llm_skipped"):
+    if result.get("llm_skipped"):
         lines.append("⚠️ 模型复核**没有跑成**（降级到纯规则）—— 换措辞的重说可能漏掉")
+    elif result.get("llm_enabled") and not result.get("llm_called"):
+        lines.append("（模型复核已开启，但这次没有可疑句对 —— 没有调用模型，也就没花钱）")
     if merged_sec is not None and before_sec:
         lines.append(f"剪后时长：{before_sec:.1f}s → {before_sec - merged_sec:.1f}s")
     return "\n".join(lines)

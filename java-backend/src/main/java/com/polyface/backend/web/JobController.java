@@ -498,6 +498,14 @@ public class JobController {
         putUrl(outs, "video_url", j.outputPath());
         putUrl(outs, "srt_url", j.srtPath());
         putUrl(outs, "cuts_url", j.cutsPath());
+        // 去冗余判定结果（`docs/spec_disfluency.md`）：用户选的是"先给方案人工确认"，
+        // 那方案就得在界面上看得见 —— 不能只躺在任务日志里。
+        if (j.workdir() != null && !j.workdir().isBlank()) {
+            Path dedup = Path.of(j.workdir()).resolve("work/done/stage-去冗余.json");
+            if (java.nio.file.Files.isRegularFile(dedup)) {
+                putUrl(outs, "dedup_url", dedup.toString());
+            }
+        }
         return n;
     }
 

@@ -5,9 +5,17 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# `.env` 的位置**不能只认 cwd**（实测踩到）：
+# `env_file=".env"` 是相对**当前工作目录**的，而从仓库根跑 `scripts/roughcut.py`
+# 时那个路径指向仓库根 —— 于是 `LLM_API_KEY` 读不到，模型复核永远报
+# "Missing credentials"，然后**静默降级**成纯规则（用户以为模型看过了）。
+# 改成按**包的位置**解析：`<repo>/python-service/.env`，与从哪个目录启动无关。
+_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(env_file=str(_ENV_FILE), env_file_encoding="utf-8",
+                                      extra="ignore")
 
     # LLM（OpenAI 兼容）
     llm_base_url: str = "https://token.sensenova.cn/v1"

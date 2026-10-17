@@ -74,6 +74,9 @@ class RoughcutParams:
     dedup_similarity: float = 0.72      # 多像才算"疑似重复"（高于它 → 交模型复核）
     dedup_min_cut_sec: float = 0.20     # 剪掉不足这么长的片段没有意义（听不出来）
     dedup_review: bool = False          # 让模型复核可疑段（**默认关**：开了转写文本会出本机）
+    # 送复核的门槛，**刻意比 dedup_similarity 低** —— 完全换措辞的重说相似度可能只有 0.38，
+    # 用 0.72 去筛，模型就永远看不到它（而那正是模型这一层存在的理由）。
+    dedup_review_gate: float = 0.30
     dedup_min_restart_chars: int = 4    # 半句重起：短句至少这么多字才算
 
     @classmethod

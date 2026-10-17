@@ -1100,6 +1100,7 @@ function renderActiveJob(job){
     ${done ? `<div style="font-size:11px;color:var(--sub)">已完成：${esc(done)}</div>` : ""}
     ${err}
     ${links ? `<div style="margin-top:6px;font-size:12px">产物：${links}</div>` : ""}
+    ${outs.dedup_url ? `<div id="rcDedup" style="margin-top:8px;font-size:12px"></div>` : ""}
     ${job.status === "running" || job.status === "queued"
         ? `<div style="margin-top:8px"><button class="ghost sm" id="rcStop" style="font-size:11px">取消任务</button></div>` : ""}
     ${job.status === "interrupted"
@@ -1113,6 +1114,30 @@ function renderActiveJob(job){
     stopPolling();
     loadJobs();
   };
+  // 去冗余理由（"先给方案人工确认" —— 方案要在界面上读得到，不能只躺在日志里）
+  if($("rcDedup") && outs.dedup_url){
+    (async () => {
+      try{
+        const d = await j("GET", outs.dedup_url);
+        const r = d.result || d;
+        const K = {filler:"口头语", repeat:"重复句", restart:"半句废弃", self_correct:"自我纠正"};
+        if(!(r.findings || []).length){
+          $("rcDedup").innerHTML = `<span style="color:var(--sub)">去冗余：没有发现冗余</span>`;
+          return;
+        }
+        $("rcDedup").innerHTML =
+          `<div style="color:var(--sub);margin-bottom:4px">去冗余判定（共 ${r.findings.length} 段 / ${r.total_sec}s）` +
+          (r.llm_skipped ? ` · <span style="color:#b03a2e">⚠️ 模型复核没跑成（降级纯规则）</span>` : "") +
+          (r.llm_enabled && !r.llm_called ? ` · 模型复核已开，但无可疑句对（未调用）` : "") + `</div>` +
+          r.findings.map(f=>`
+            <div style="border-left:2px solid var(--line);padding:2px 0 2px 8px;margin-bottom:4px">
+              <b>${f.start.toFixed(2)}–${f.end.toFixed(2)}s</b> ${esc(K[f.kind] || f.kind)}
+              · ${f.source === "llm" ? "模型" : "规则"}
+              <div style="color:var(--sub);white-space:pre-wrap">${esc(f.evidence)}</div>
+            </div>`).join("");
+      }catch(e){ $("rcDedup").innerHTML = `<span style="color:var(--sub)">去冗余结果读取失败：${esc(e.message)}</span>`; }
+    })();
+  }
   const resume = $("rcResume");
   if(resume) resume.onclick = async ()=>{
     resume.disabled = true; resume.textContent = "正在继续…";
