@@ -22,6 +22,22 @@ import time
 import httpx
 
 from . import observability, usage
+
+
+def _prompt_meta(scene: str, prompt: str) -> str:
+    """算出本次调用用的**提示词版本号**，顺手把模板全文存起来。返回版本号。
+
+    **一处改动覆盖全部调用**（spec 关键决定三）：三个 record_call 点都从这里取，
+    各管线的业务代码一行不用改。取不到就返回空串 —— 版本化是观测，不该阻断调用。
+    """
+    try:
+        from .pipeline import promptstore, prompts
+        fp = prompts.fingerprint_for_scene(scene)
+        if fp:
+            promptstore.save(fp, prompts.template_for_scene(scene))
+        return fp
+    except Exception:                                        # noqa: BLE001
+        return ""
 from .config import get_settings
 from .trace import current_trace_id
 
@@ -203,6 +219,7 @@ def chat(prompt: str, system: str | None = None, *, temperature: float = 0.4,
                 content = resp.choices[0].message.content or ""
                 pt, ct = _extract_usage(resp)
                 usage.record_call(trace_id=tid, scene=scene, platform=platform, model=mdl,
+                                  prompt_fp=_prompt_meta(scene, prompt),
                                   attempt=attempt, ok=True,
                                   duration_ms=int((time.time() - started) * 1000),
                                   prompt_chars=len(prompt), completion_chars=len(content),
@@ -215,6 +232,7 @@ def chat(prompt: str, system: str | None = None, *, temperature: float = 0.4,
             except Exception as exc:  # noqa: BLE001 — 统一分类后处置
                 err = classify(exc)
                 usage.record_call(trace_id=tid, scene=scene, platform=platform, model=mdl,
+                                  prompt_fp=_prompt_meta(scene, prompt),
                                   attempt=attempt, ok=False, error_type=type(err).__name__,
                                   duration_ms=int((time.time() - started) * 1000),
                                   prompt_chars=len(prompt))
@@ -272,6 +290,7 @@ def chat_json(prompt: str, system: str | None = None, *, temperature: float = 0.
             # 进用量日志：否则「这件事多常发生」只能靠翻日志猜（模型未知 ——
             # chat() 只返回正文，不返回它最终用了链上的哪个模型）
             usage.record_call(trace_id=tid, scene=scene, platform=platform,
+                              prompt_fp=_prompt_meta(scene, prompt),
                               model="", attempt=attempt, ok=False,
                               error_type="LLMParseError", prompt_chars=len(prompt),
                               completion_chars=len(raw or ""))

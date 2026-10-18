@@ -332,3 +332,83 @@ def build_disfluency_prompt(pairs: list[dict]) -> str:
         "output": "严格按 output_schema 返回 JSON，verdicts 要覆盖每一个 pair 的 index",
     }
     return json.dumps(payload, ensure_ascii=False, indent=1)
+
+
+# ---------------------------------------------------------------- 提示词版本化（M9）
+#
+# 为什么要有这一块（`docs/spec_promptver.md`）：改了 prompt 之后，历史记录里
+# **看不出哪条是旧 prompt 产的** —— 评测集能说"这次没退步"，但说不出"跟哪一次比"。
+#
+# 版本号 = **提示词构造函数的源码哈希**（用户选"内容哈希"）：
+#   - 手写版本号**会忘** ✗（忘了就白做，而这正是要防的事）
+#   - 整个 prompts.py 的文件哈希**太粗** ✗（改一处把所有提示词都标成新版本）
+#   - 最终拼出来的 prompt 的哈希是**数据哈希** ✗（素材变了就变，跟"提示词改没改"无关）
+#   构造函数源码正好是那个"模板"：含全部静态文案与拼接逻辑，不含素材内容 ✓
+
+#: scene → 构造函数。**穷举现有 scene**（`grep -rho 'scene="[a-z_]*"'` 得到）——
+#: 漏一个就等于那个提示词没有版本。取值是"模块路径.函数名"，惰性导入避免循环依赖。
+SCENE_BUILDERS: dict[str, str] = {
+    "understand": "app.pipeline.prompts.build_understand_prompt",
+    "brief": "app.pipeline.prompts.build_brief_prompt",
+    "draft": "app.pipeline.prompts.build_draft_prompt",
+    "qa": "app.pipeline.prompts.build_qa_prompt",
+    "qa_verify": "app.pipeline.prompts.build_qa_prompt",      # 同一个构造函数
+    "clip": "app.pipeline.prompts.build_clip_prompt",
+    "learn": "app.pipeline.prompts.build_learn_prompt",
+    "split": "app.pipeline.split._prompt",
+    "disfluency": "app.pipeline.prompts.build_disfluency_prompt",
+    "eval_corpus": "app.pipeline.prompts.build_understand_prompt",   # 语料走理解提示词
+}
+
+_FP_CACHE: dict[str, tuple[str, str]] = {}          # name → (fp, source)
+
+
+def _resolve(dotted: str):
+    """按 "模块.函数" 取对象。取不到返回 None（不抛错）。"""
+    try:
+        import importlib
+        mod_path, _, attr = dotted.rpartition(".")
+        return getattr(importlib.import_module(mod_path), attr)
+    except Exception:                                        # noqa: BLE001
+        return None
+
+
+def fingerprint_source(dotted: str) -> tuple[str, str]:
+    """返回 `(哈希, 源码)`。哈希取不到时是空串。
+
+    哈希 = 源码文本的 SHA-256 前 12 位 —— 够短够用，且**跨进程/跨机器一致**
+    （只依赖源码文本，不含时间戳、不含路径）。
+    """
+    if dotted in _FP_CACHE:
+        return _FP_CACHE[dotted]
+    fn = _resolve(dotted)
+    if fn is None:
+        _FP_CACHE[dotted] = ("", "")
+        return _FP_CACHE[dotted]
+    try:
+        import hashlib
+        import inspect
+        src = inspect.getsource(fn)
+        fp = hashlib.sha256(src.encode("utf-8")).hexdigest()[:12]
+    except Exception:                                        # noqa: BLE001
+        # 打包成 pyc / 动态生成时取不到源码 —— 留空并标注，**不抛错**
+        src, fp = "", ""
+    _FP_CACHE[dotted] = (fp, src)
+    return _FP_CACHE[dotted]
+
+
+def fingerprint_for_scene(scene: str) -> str:
+    """`chat_json(scene=…)` 用的版本号。未知 scene → 空串（不抛错）。"""
+    dotted = SCENE_BUILDERS.get((scene or "").strip())
+    return fingerprint_source(dotted)[0] if dotted else ""
+
+
+def template_for_scene(scene: str) -> str:
+    """该 scene 的提示词模板全文（供"哈希 → 全文"反查）。取不到返回空串。"""
+    dotted = SCENE_BUILDERS.get((scene or "").strip())
+    return fingerprint_source(dotted)[1] if dotted else ""
+
+
+def fingerprints() -> dict[str, str]:
+    """所有已注册提示词的 `scene → 哈希`（供 --list 与测试）。"""
+    return {sc: fingerprint_source(d)[0] for sc, d in SCENE_BUILDERS.items()}

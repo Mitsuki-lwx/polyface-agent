@@ -32,6 +32,9 @@ def record_call(*, trace_id: str = "", scene: str = "", model: str = "",
                 attempt: int = 1, ok: bool = True, duration_ms: int = 0,
                 error_type: str | None = None, platform: str | None = None,
                 prompt_chars: int = 0, completion_chars: int = 0,
+                # 提示词版本（M9）：构造函数源码的哈希。空 = 没查到/取不到。
+                # 有它才能回答"这次的效果是哪一版 prompt 产的"（docs/spec_promptver.md）。
+                prompt_fp: str = "",
                 prompt_tokens: int | None = None, completion_tokens: int | None = None,
                 mock: bool = False) -> None:
     """追加一条用量记录。**失败仅告警，绝不影响主流程**。"""
@@ -46,6 +49,7 @@ def record_call(*, trace_id: str = "", scene: str = "", model: str = "",
         "error_type": error_type,
         "duration_ms": int(duration_ms or 0),
         "prompt_chars": int(prompt_chars or 0),
+        "prompt_fp": prompt_fp or "",
         "completion_chars": int(completion_chars or 0),
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
