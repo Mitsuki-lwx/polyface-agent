@@ -205,7 +205,12 @@ def _from_material(mid: int) -> None:
           f"对齐 {rec.get('aligned_ratio_before_offset', 0):.0%} → {rec['aligned_ratio']:.0%}")
     print(f"   时长：记录 {rec['film_sec']:.2f}s / 实际 {dur:.2f}s")
     assert abs(rec["film_sec"] - dur) <= 0.35, "记录与成片时长对不上"
-    assert rec["tts"]["available"], "本机应当有 TTS（Windows 自带）"
+    # **断言真实字段**（2026-10-18 修）：原来断言 `tts["available"]`，而记录的 schema
+    # 后来变成了 `{plugins, skipped, voice, rate, volume}` —— 那个键**根本不存在**，
+    # 于是脚本在**最后一步**KeyError 崩掉（而前面所有真链路都已经跑通了）。
+    # 改成断言"确实有插件可用"—— 这才真的证明 TTS 跑了。
+    assert rec["tts"].get("plugins"), f"本机应当有 TTS（Windows 自带）：{rec['tts']}"
+    assert rec["tts"].get("voice"), f"TTS 没挑到音色：{rec['tts']}"
 
     print("== 6) 切 beat_first 再跑一次 —— 对齐率应当提高 ==")
     st, r = call("POST", "/api/jobs", {"kind": "make_video", "material_id": mid,
