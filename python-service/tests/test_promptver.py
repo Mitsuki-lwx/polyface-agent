@@ -93,3 +93,70 @@ def test_save_failure_does_not_raise(monkeypatch):
 
 def test_load_missing_returns_empty():
     assert promptstore.load("绝对不存在的哈希") == ""
+
+
+# ---------------------------------------------------------------- 值本身（变异暴露的缺口）
+
+
+def test_fingerprint_equals_independently_recomputed_hash():
+    """**验值，不只验形状**。
+
+    变异测试暴露的缺口：原来只断言"非空 / 12 位 / 彼此不同"——
+    把 `prompt_fp` 改成常量 `"constant0000"` **照样全过** ✗（变异②没被抓住）。
+    所以这里**独立重算**一遍：拿构造函数源码自己算 sha256，比对。
+    常量、或者"算错了但形状对"的值，都会在这里露出来。
+    """
+    import hashlib
+    import inspect
+    src = inspect.getsource(prompts.build_draft_prompt)
+    want = hashlib.sha256(src.encode("utf-8")).hexdigest()[:12]
+    assert prompts.fingerprint_for_scene("draft") == want
+
+
+def test_unknown_builder_returns_empty_and_does_not_raise():
+    """取不到源码/没登记 → 空串，**不抛错**（版本化是观测，不该阻断调用）。"""
+    assert prompts.fingerprint_source("根本不存在的模块.函数") == ("", "")
+    assert prompts.fingerprint_source("app.pipeline.prompts.不存在的函数") == ("", "")
+
+
+# ---------------------------------------------------------------- 反查 CLI（T5）
+
+
+def _cli(*args, cwd=None, usage_file=None):
+    """跑反查 CLI。**它是独立进程** —— monkeypatch 传不进去（实测踩到），
+    所以用 `POLYFACE_USAGE_FILE` 环境变量把它的数据目录指到临时目录。"""
+    import os
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[2]
+    env = dict(os.environ)
+    if usage_file is not None:
+        env["POLYFACE_USAGE_FILE"] = str(usage_file)
+    return subprocess.run([sys.executable, str(root / "scripts" / "prompt_versions.py"), *args],
+                          capture_output=True, text=True, cwd=str(cwd or root), env=env)
+
+
+def test_cli_current_lists_every_scene():
+    r = _cli("--current")
+    assert r.returncode == 0, r.stderr
+    for scene in prompts.SCENE_BUILDERS:
+        assert scene in r.stdout, f"--current 没列出 {scene}"
+
+
+def test_cli_show_and_diff(tmp_path):
+    """`--show` 打全文、`--diff` 看出改了什么。"""
+    usage = tmp_path / "llm-usage.jsonl"
+    tdir = tmp_path / "prompt-templates"
+    tdir.mkdir(parents=True, exist_ok=True)
+    (tdir / "aaaa1111.txt").write_text("第一行\n第二行\n第三行", encoding="utf-8")
+    (tdir / "bbbb2222.txt").write_text("第一行\n第二行改过了\n第三行", encoding="utf-8")
+    show = _cli("--show", "aaaa1111", usage_file=usage)
+    assert show.returncode == 0 and "第二行" in show.stdout
+    d = _cli("--diff", "aaaa1111", "bbbb2222", usage_file=usage)
+    assert d.returncode == 0
+    assert "-第二行" in d.stdout and "+第二行改过了" in d.stdout, d.stdout
+
+
+def test_cli_show_missing_version_fails_loudly(tmp_path):
+    """版本不存在时**明确失败**，不是静默打空。"""
+    r = _cli("--show", "绝对不存在", usage_file=tmp_path / "u.jsonl")
+    assert r.returncode == 1 and "没有" in r.stderr
