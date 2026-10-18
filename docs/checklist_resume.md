@@ -196,3 +196,50 @@ result: 三个平台全部 "reused": true，ok_count=3   ← **零次平台调�
   但严格说这个字段是"过期"的。
 - 第一轮暴露的 **Java→Python 240s 客户端超时**（Python 侧还在跑）是**既有问题**，
   这次没修 —— 只是发现续跑能把它救回来。
+
+---
+
+## 实机验证记录：`scripts/e2e_resume.py` 跑通（2026-10-18）
+
+> 这份 checklist 长期 **0 勾** —— 不是功能没做，是**早期交付时没逐条勾**。
+> 脚本是**两步式**，它自己会中途杀掉 Java。
+
+**跑法**（有讲究）：
+```
+# 先删再起（顺序不能反，踩过）
+rm -rf data/e2e-resume
+java -jar … --polyface.data-dir=…/data/e2e-resume
+python -m uvicorn app.main:app --port 8000            # 另开
+python scripts/e2e_resume.py step1     # 建任务 → 中途杀 Java（233s）
+# 手动重启 Java，然后：
+python scripts/e2e_resume.py           # step2
+```
+
+**原始输出（step1）**：
+```
+8080 还在吗：否（已死）              ← 真的杀了
+job 目录：data/e2e-resume/jobs/job-107117412383000
+落盘文件：['xhs']                    ← 被杀前已完成一个平台
+```
+（step1 里有个 `UnicodeDecodeError` —— 读 Java 的 GBK 输出时解码失败 ✗，
+是**脚本的小毛病**，不影响流程 ✓。）
+
+**原始输出（step2）**：
+```
+== 5) 重启后看状态 ==  status=interrupted  can_resume=True
+                      error='服务重启时任务尚未结束（可继续）'
+== 6) 继续 ==          {'resumed': True, 'status': 'interrupted'}
+== 7) 等它跑完 ==      最终 status=succeeded
+   result: xhs(reused=true) / douyin / zhihu —— ok_count=3 fail_count=0
+   落盘（续跑前）：['xhs'] → 落盘（续跑后）：['douyin','xhs','zhihu']
+== 8) 库里 ==          草稿：['xhs','douyin','zhihu']
+✅ 端到端通过
+```
+
+**它证明了什么**（这几条是这份 checklist 的核心）：
+- 进程被打断 → 任务标 **`interrupted` 而不是 `failed`** ✓（"没做完"≠"出错"）
+- **续跑真的复用了已完成的部分**（`reused: true`）✓，不是从头重跑
+- 续跑后**三个平台的稿子都在库里** ✓，没有重复也没有丢失
+- 落盘粒度 = 续跑粒度（`['xhs']` → 三个）✓
+
+**它没证明什么**：UI 上"继续"按钮的交互（脚本走的是 API）—— 那条在本轮别的会话里验过 ✓。
