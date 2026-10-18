@@ -228,6 +228,8 @@ def main(argv: list[str] | None = None) -> int:
         print("  ⚠️ 一个可用的配音插件都没有 → 降级为无声 + 字幕")
     if not tts_ok:
         print(f"  {tts.INSTALL_HINT}")
+    tts_failed: list[dict] = []          # 哪些分镜的配音**失败**了（显式记录，不许静默）
+    padded: set[int] = set()             # 补了静音垫片的那些镜 —— 有音频，但**没有旁白**
     for i, sc in enumerate(scenes, 1):
         wav = work / f"voice-{i:03d}.wav"
         # 逐分镜落盘：中断后重跑不用把已经配好的再合成一遍
@@ -264,11 +266,25 @@ def main(argv: list[str] | None = None) -> int:
                 # **说清是哪个分镜、哪个插件** —— 一句"配音失败"没法排查
                 print(f"  [warn] 第 {i} 个分镜配音失败（插件 {plugin}）：{e}")
                 d, wav = _hint_seconds(sc, 3.0), None
+                # **补一段等长静音**（2026-10-18 修）：不补的话成片比计划短，
+                # 而记录仍按计划写 —— 实测踩到：某一镜 TTS 静默失败，成片少 8s，
+                # 记录里 has_voice 却还是 True、skipped 还是空（见 docs/checklist_b1.md）。
+                # 补静音 = 保住时长（这段没有旁白，但**记录里会明说**）。
+                wav = _write_silence_wav(work / f"voice-{i:03d}.wav", float(d),
+                                         like=voice_parts)
+                padded.add(i)
+                tts_failed.append({"seq": i, "plugin": plugin, "reason": str(e)[:200],
+                                   "padded_sec": round(float(d), 3),
+                                   "padded": wav is not None})
         durations.append(d)
         if wav:
             voice_parts.append(wav)
             book.put(vstage, seconds=round(d, 3), wav=str(wav), plugin=plugin, voice=voice)
-        used.append({"seq": i, "plugin": plugin if wav else None, "voice": voice if wav else None})
+        # `plugin` 为 None = **这一镜没有旁白**（失败且未补，或补了静音）。
+        # 补了静音的那些：文件在、时长保住，但**旁白是没有的** —— 不能算 has_voice ✓。
+        _has_narration = wav is not None and i not in padded
+        used.append({"seq": i, "plugin": plugin if _has_narration else None,
+                     "voice": voice if _has_narration else None})
         print(f"  分镜 {i}: {d:.2f}s" + (f"（{plugin}）" if wav else "（无配音）"))
 
     # ---- 2) 对齐策略 ----
@@ -394,7 +410,11 @@ def main(argv: list[str] | None = None) -> int:
         "tts": {"plugins": [x["id"] for x in cat["items"]],
                 "skipped": cat["skipped"],
                 "voice": voice_used, "preset": args.preset or None,
-                "rate": rate, "volume": volume},
+                "rate": rate, "volume": volume,
+                # **哪些分镜配音失败了**（已补静音垫片保住时长）。
+                # 没有这一项，用户只会看到一个"某段没声音"的成片，而记录里一切正常 ——
+                # 实测就是这么被静默吞掉的 ✗。
+                "failed": tts_failed},
         "beats": bt.describe(),
         "bgm": bgm,
         "bgm_offset_sec": bgm_offset,
@@ -406,7 +426,10 @@ def main(argv: list[str] | None = None) -> int:
              "segment_seconds": round(seg_durs[i], 3),
              "image": scenes[i]["image"],
              "subtitle": str(scenes[i].get("subtitle") or ""),
-             "has_voice": i < len(voice_parts),
+             # **按实际产出判**，不是按位置比（2026-10-18 修）：
+             # 原来写 `i < len(voice_parts)` —— 漏一个之后**后面全部错位**，
+             # 实测某一镜 TTS 静默失败时它还是 True ✗。
+             "has_voice": (used[i].get("plugin") is not None if i < len(used) else False),
              "plugin": (used[i].get("plugin") if i < len(used) else None),
              "voice": (used[i].get("voice") if i < len(used) else None)}
             for i, d in enumerate(durations)
@@ -487,6 +510,40 @@ def _concat_wavs(parts: list[Path], durations: list[float], out: Path, total: fl
             pad = max(0.0, d - have)
             if pad > 0:
                 w.writeframes(b"\x00\x00" * int(rate * pad))
+
+
+def _wav_rate(path: Path) -> int | None:
+    """读 wav 的采样率（拿不到返回 None）。"""
+    import wave
+    try:
+        with wave.open(str(path), "rb") as w:
+            return w.getframerate()
+    except Exception:                                        # noqa: BLE001
+        return None
+
+
+def _write_silence_wav(path: Path, seconds: float, *, like: list[Path]) -> Path | None:
+    """写一段**等长静音 wav**（配音失败时补上，保住成片时长）。
+
+    为什么补静音而不是"跳过这一镜"：跳过会让**成片时长与计划对不上**，
+    而记录仍按计划写 —— 那是"静默地少了一段"，比明确报错糟得多 ✗。
+    补静音保住时长，失败则进 `tts.failed`（记录里看得见 ✓）。
+
+    **采样率必须与已有配音一致**（实测踩到）：我第一版写死 44100，而 Windows SAPI
+    出的是 22050 —— 拼接时 `_concat_wavs` 直接拒绝：「采样率不一致：[22050, 44100]
+    —— 不静默拼，会变调」✓（那条守卫写得对：宁可失败，不悄悄变调）。
+    所以这里**照已有配音的采样率写**；一个都没有（第 1 镜就失败）才回落到 44100。
+
+    写不出来就返回 None（调用方照旧降级，绝不因此中断整条成片）。
+    """
+    rate = next((r for r in (_wav_rate(p) for p in like if p and p.is_file()) if r), 44100)
+    try:
+        code, err = rc._run_ffmpeg([rc._ffmpeg_bin("ffmpeg"), "-y", "-v", "error",
+                                    "-f", "lavfi", "-i", f"anullsrc=r={rate}:cl=mono",
+                                    "-t", f"{max(0.05, seconds):.3f}", str(path)])
+        return path if code == 0 else None
+    except Exception:                                        # noqa: BLE001
+        return None
 
 
 def _silent_track(out: Path, total: float) -> None:

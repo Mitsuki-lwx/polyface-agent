@@ -1,0 +1,157 @@
+{
+  "version": 1,
+  "strategy": "voice_first",
+  "transition_sec": 0.4,
+  "zoom": 1.08,
+  "margin_v": 23,
+  "size": {
+    "width": 1080,
+    "height": 1920,
+    "fps": 25
+  },
+  "tts": {
+    "plugins": [
+      "kokoro",
+      "own-audio",
+      "windows-sapi"
+    ],
+    "skipped": [],
+    "voice": "Microsoft Huihui Desktop",
+    "preset": null,
+    "rate": 0,
+    "volume": 100,
+    "failed": [
+      {
+        "seq": 2,
+        "plugin": "windows-sapi",
+        "reason": "模拟：SAPI 偶发失败",
+        "padded_sec": 8.0,
+        "padded": true
+      }
+    ]
+  },
+  "beats": {
+    "available": true,
+    "backend": "librosa",
+    "hint": ""
+  },
+  "bgm": "D:\\media works move\\polyface\\data\\e2e-b1\\media\\assets\\ca\\cadd2666c5571e12fafdb21697b26aef6f196a5a9c28e708129870167679991d.mp3",
+  "bgm_offset_sec": 0.0,
+  "aligned_ratio": 0.6364,
+  "aligned_ratio_before_offset": 0.6364,
+  "beat_tolerance_sec": 0.12,
+  "scenes": [
+    {
+      "seq": 1,
+      "seconds": 12.029,
+      "segment_seconds": 12.429,
+      "image": "D:\\media works move\\polyface\\data\\e2e-b1\\media\\assets\\75\\75d2c560abe92d9ca8911880da70ad0f9d2493dd53ccf257cb8a6a1bec98afca.jpg",
+      "subtitle": "裸辞11个月 / 从月入0到月入3万 / 我先算的不是勇气 / 是房租3500+吃饭2000",
+      "has_voice": true,
+      "plugin": "windows-sapi",
+      "voice": "Microsoft Huihui Desktop"
+    },
+    {
+      "seq": 2,
+      "seconds": 8.0,
+      "segment_seconds": 8.4,
+      "image": "D:\\media works move\\polyface\\data\\e2e-b1\\media\\assets\\0f\\0f45d32f5c528850261848de57da81e658d6d7398d2b1267ce615c6720552b0e.jpg",
+      "subtitle": "2023年3月裸辞 / 手上存款8万 / 房租3500、吃饭2000 / 算下来够撑14个月",
+      "has_voice": false,
+      "plugin": null,
+      "voice": null
+    },
+    {
+      "seq": 3,
+      "seconds": 8.401,
+      "segment_seconds": 8.801,
+      "image": "D:\\media works move\\polyface\\data\\e2e-b1\\media\\assets\\d2\\d27f5f117add2c71a21686afc81efc9b240b41ba37823e38362616555889874b.jpg",
+      "subtitle": "但我把月支出压到5500以内 / 先保生存 / 再谈赚钱",
+      "has_voice": true,
+      "plugin": "windows-sapi",
+      "voice": "Microsoft Huihui Desktop"
+    },
+    {
+      "seq": 4,
+      "seconds": 3.458,
+      "segment_seconds": 3.858,
+      "image": "D:\\media works move\\polyface\\data\\e2e-b1\\media\\assets\\6a\\6a375328da045f4f3786850cb84855b7734090a08aca724ca4cc4bd09d1c070e.jpg",
+      "subtitle": "我后来只做这几步",
+      "has_voice": true,
+      "plugin": "windows-sapi",
+      "voice": "Microsoft Huihui Desktop"
+    },
+    {
+      "seq": 5,
+      "seconds": 12.479,
+      "segment_seconds": 12.879,
+      "image": "D:\\media works move\\polyface\\data\\e2e-b1\\media\\assets\\16\\16a73f225bb02452a4d949b9e95eb34870eea1eb7ec53078e74fcec9af0b1874.jpg",
+      "subtitle": "1️⃣ 算生存成本 / 8万存款 / 按3500+2000算 / 能撑14个月 / 先知道自己能扛多久",
+      "has_voice": true,
+      "plugin": "windows-sapi",
+      "voice": "Microsoft Huihui Desktop"
+    },
+    {
+      "seq": 6,
+      "seconds": 9.96,
+      "segment_seconds": 10.36,
+      "image": "D:\\media works move\\polyface\\data\\e2e-b1\\media\\assets\\09\\09121a079555256ff9c8cd901c51959be641cd3f1d92dffb2d96d7af9157984b.jpg",
+      "subtitle": "2️⃣ 压缩固定开支 / 月支出压到5500以内 / 别让现金流先断",
+      "has_voice": true,
+      "plugin": "windows-sapi",
+      "voice": "Microsoft Huihui Desktop"
+    },
+    {
+      "seq": 7,
+      "seconds": 6.417,
+      "segment_seconds": 6.817,
+      "image": "D:\\media works move\\polyface\\data\\e2e-b1\\media\\assets\\8c\\8c5c26c7b0b51a16a17225b4bf847b061420b7473d42629297dc4ddb7f570292.jpg",
+      "subtitle": "3️⃣ 写作从爱好变产品 / 先接商单",
+      "has_voice": true,
+      "plugin": "windows-sapi",
+      "voice": "Microsoft Huihui Desktop"
+    },
+    {
+      "seq": 8,
+      "seconds": 14.893,
+      "segment_seconds": 15.293,
+      "image": "D:\\media works move\\polyface\\data\\e2e-b1\\media\\assets\\93\\931b2280fe5ac16e3faf80609f42b6b0223251612d79fd8519bc96f1769084f7.jpg",
+      "subtitle": "4️⃣ 砍掉分散动作 / 一开始什么都想做 / 结果三个月没收入 / 后来只做一件事 / 才有起色",
+      "has_voice": true,
+      "plugin": "windows-sapi",
+      "voice": "Microsoft Huihui Desktop"
+    },
+    {
+      "seq": 9,
+      "seconds": 6.787,
+      "segment_seconds": 7.187,
+      "image": "D:\\media works move\\polyface\\data\\e2e-b1\\media\\assets\\ef\\eff1cbe5c44ec591105725e8bc87ee91fd25adb3c2ef69e471ae3697e702de70.jpg",
+      "subtitle": "5️⃣ 靠案例涨单价 / 单价从800做到3000",
+      "has_voice": true,
+      "plugin": "windows-sapi",
+      "voice": "Microsoft Huihui Desktop"
+    },
+    {
+      "seq": 10,
+      "seconds": 5.587,
+      "segment_seconds": 5.987,
+      "image": "D:\\media works move\\polyface\\data\\e2e-b1\\media\\assets\\75\\75d2c560abe92d9ca8911880da70ad0f9d2493dd53ccf257cb8a6a1bec98afca.jpg",
+      "subtitle": "不是劝你裸辞 / 是先把账算清",
+      "has_voice": true,
+      "plugin": "windows-sapi",
+      "voice": "Microsoft Huihui Desktop"
+    },
+    {
+      "seq": 11,
+      "seconds": 6.962,
+      "segment_seconds": 6.962,
+      "image": "D:\\media works move\\polyface\\data\\e2e-b1\\media\\assets\\0f\\0f45d32f5c528850261848de57da81e658d6d7398d2b1267ce615c6720552b0e.jpg",
+      "subtitle": "你现在月支出多少 / 如果裸辞 / 能撑几个月",
+      "has_voice": true,
+      "plugin": "windows-sapi",
+      "voice": "Microsoft Huihui Desktop"
+    }
+  ],
+  "total_sec": 94.973,
+  "film_sec": 94.92
+}
