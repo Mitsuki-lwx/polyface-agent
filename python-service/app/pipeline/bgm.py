@@ -37,8 +37,17 @@ from .media import _ffmpeg_bin
 #: 多长的语音空隙算一个停顿（秒）
 DEFAULT_MIN_PAUSE_SEC = 0.8
 
-#: 判"有没有 BGM"时，无人声窗口的音量超过这个值就认为有 BGM（dB）
-DEFAULT_BGM_LEVEL_DB = -45.0
+#: 判"有没有 BGM"用的**对比度**门限（dB）：
+#: 无人声窗口比有人声窗口低**不足**这么多 → 那些"空隙"里有东西 → 是 BGM。
+#:
+#: 为什么用对比度而不是绝对电平（实测踩到）：绝对门限（原来写 -45dB）在这台机器上
+#: 判不出区别 —— 干净素材的"无人声窗口"实测 -30dB、人声 -22.8dB（只差 7dB，
+#: 因为合成音本身有底噪），带 BGM 的是 -26.3 / -29.2（差 -3dB）。两者都低于 -45 以上，
+#: 于是**都判成有 BGM** ✗。换成对比度：7dB 与 -3dB 的差别才是真正有信息的地方。
+#:
+#: ⚠️ 但**这条判据仍未在真实素材上验过**（见 checklist）—— 合成音有底噪、真实口播没有，
+#: 两者的"干净"基线不同。要真用起来，得先拿几条真实素材把这条门限标定出来。
+DEFAULT_BGM_CONTRAST_DB = 15.0
 
 
 @dataclass
@@ -170,24 +179,34 @@ def mean_volume_db(wav: str | Path, *, start: float | None = None,
         cmd += ["-t", f"{max(0.0, end - start):.3f}"]
     cmd += ["-af", "volumedetect", "-f", "null", "-"]
     cp = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
-    for line in (cp.stderr or "").splitlines():
+    err = cp.stderr or ""
+    for line in err.splitlines():
         if "mean_volume:" in line:
             try:
                 return float(line.split("mean_volume:")[1].split("dB")[0].strip())
             except (IndexError, ValueError):
                 return None
+    # **返回 None 之前要说清为什么** —— 实测踩到：窗口超出文件末尾时
+    # ffmpeg 打出 `n_samples: 0` 且**没有** mean_volume 行，于是这里静默返回 None，
+    # 上层拿到 None 去比阈值 → `None > x` 恒为 False → **错得无声**。
+    if "n_samples: 0" in err:
+        raise ValueError(
+            f"这段区间没有采样（start={start} end={end}）—— 多半是它超出了文件实际长度")
     return None
 
 
 @dataclass
 class BgmInfo:
-    has_bgm: bool = False
+    #: **三态**：True / False / **None（测不出来）**。
+    #: "测不出来" ≠ "没有 BGM" —— 混成一个 False 会让报告骗人（实测踩到过）。
+    has_bgm: bool | None = None
     quiet_level_db: float | None = None      # 无人声窗口的平均音量
     speech_level_db: float | None = None     # 有人声窗口的平均音量
     quiet_windows: list[tuple[float, float]] = field(default_factory=list)
 
     def as_dict(self) -> dict:
-        return {"has_bgm": self.has_bgm,
+        return {"has_bgm": self.has_bgm,      # None = 测不出来（不是"没有"）
+                "has_bgm_known": self.has_bgm is not None,
                 "quiet_level_db": self.quiet_level_db,
                 "speech_level_db": self.speech_level_db,
                 "quiet_window_count": len(self.quiet_windows),
@@ -195,7 +214,7 @@ class BgmInfo:
 
 
 def detect_bgm(wav: str | Path, windows: list[tuple[float, float]], total: float,
-               *, threshold_db: float = DEFAULT_BGM_LEVEL_DB,
+               *, min_contrast_db: float = DEFAULT_BGM_CONTRAST_DB,
                min_window: float = 1.0) -> BgmInfo:
     """素材里有没有 BGM？
 
@@ -206,19 +225,42 @@ def detect_bgm(wav: str | Path, windows: list[tuple[float, float]], total: float
     这正是本 spec 的由来。
     """
     info = BgmInfo()
+    # **按文件实际长度裁一遍** —— 实测踩到：调用方给的 total 可能比文件长，
+    # 于是最后一个窗口超出末尾 → 测不到样本 → 静默 None。
+    real_total = audio_duration_sec(wav)
+    if real_total is not None and real_total > 0:
+        total = min(total, real_total)
     quiet = [(s, e) for s, e in _complement(windows, total) if e - s >= min_window]
     info.quiet_windows = quiet
     if not quiet:
-        return info
-    # 取最长的那个窗口测（样本长，读数稳）
+        return info                       # has_bgm 保持 None = "测不出来"
     s, e = max(quiet, key=lambda w: w[1] - w[0])
-    info.quiet_level_db = mean_volume_db(wav, start=s, end=e)
+    try:
+        info.quiet_level_db = mean_volume_db(wav, start=s, end=e)
+    except ValueError:
+        return info
     if windows:
         ss, se = max(windows, key=lambda w: w[1] - w[0])
-        info.speech_level_db = mean_volume_db(wav, start=ss, end=se)
-    info.has_bgm = (info.quiet_level_db is not None
-                    and info.quiet_level_db > threshold_db)
+        try:
+            info.speech_level_db = mean_volume_db(wav, start=ss, end=se)
+        except ValueError:
+            pass
+    # 只有**两个电平都真的测到了**才下结论；否则保持 None（"测不出来" ≠ "没有"）
+    if info.quiet_level_db is None or info.speech_level_db is None:
+        return info
+    contrast = info.speech_level_db - info.quiet_level_db     # 人声比空隙高多少
+    info.has_bgm = contrast < min_contrast_db
     return info
+
+
+def audio_duration_sec(path: str | Path) -> float | None:
+    """wav 的实际时长（秒）。拿不到返回 None。"""
+    import wave
+    try:
+        with wave.open(str(path), "rb") as w:
+            return w.getnframes() / float(w.getframerate() or 1)
+    except Exception:                                        # noqa: BLE001
+        return None
 
 
 def _complement(windows: list[tuple[float, float]], total: float) -> list[tuple[float, float]]:
