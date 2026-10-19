@@ -185,11 +185,13 @@ async def main():
 
             # ---------- C5 生成 ----------
             await cdp.ev("document.getElementById('btnGenerate').click()")
-            # **不能只找「完成」**（2026-10-19 实测踩到）：进度文案里
-            # 「生成中 · 排队中 · 已完成 0 步」**也含「完成」** ✗ → 测试会提前往下走，
-            # 于是「封面按钮」永远等不到。条件改成「状态非空且不在生成中」✓。
+            # **不能只找「完成」、也不能只排除「生成中」**（2026-10-19 实测踩到两次 ✗）：
+            #  ① 进度文案「生成中 · 排队中 · 已完成 0 步」**也含「完成」** ✗
+            #  ② 发起时那句「已发起（…约 1~4 分钟）…」**不含「生成中」** ✗
+            # 两次都会让测试在生成**刚开始**时就往下走，后面全是误判。
+            # 唯一稳的条件是**等终态**：状态以 ✅/⚠️/❌/⏸ 开头，或「已取消」✓。
             await cdp.wait_for("(()=>{const t=(document.getElementById('genStatus').textContent||'');"
-                "return t.length>0 && t.indexOf('生成中')<0;})()",
+                "return /^[✅⚠❌⏸]|^已取消/.test(t);})()",
                                timeout=600, label="生成完成")
             gs = await cdp.ev("document.getElementById('genStatus').textContent")
             check("C5 生成完成", "完成" in gs, gs.strip()[:70])
@@ -197,10 +199,32 @@ async def main():
             # `genStatus` 在 `await loadDraftsOfMaterial(...)` **之前**就被设成「完成」，
             # 于是测试一看到「完成」就去读 `#edBody` —— 而重渲染还没发生，读到空串 ✗。
             # 这是**测试的竞态**，不是产品缺陷：真浏览器里正文确实会到（已复现 ✓）。
-            await cdp.wait_for(
-                "(()=>{const t=document.getElementById('edBody');"
-                "return !!t && t.value.trim().length>0;})()",
-                timeout=120, label="成稿正文到齐")
+            try:
+                await cdp.wait_for(
+                    "(()=>{const t=document.getElementById('edBody');"
+                    "return !!t && t.value.trim().length>0;})()",
+                    timeout=120, label="成稿正文到齐")
+            except TimeoutError:
+                dump = await cdp.ev("""(()=>{try{return JSON.stringify({
+                  genStatus: (document.getElementById('genStatus')||{}).textContent,
+                  currentMaterialId: (typeof currentMaterialId!=='undefined')?currentMaterialId:'undef',
+                  hasEdBody: !!document.getElementById('edBody'),
+                  edBodyLen: (document.getElementById('edBody')||{value:''}).value.length,
+                  resultAreaHead: (document.getElementById('resultArea')||{}).innerHTML?.slice(0,150)||'',
+                  badge: (document.querySelector('.qa-badge')||{}).textContent||'',
+                  draftFetchErrors: window.__draftFetchErrors || [],
+                  edBodyOuter: (document.getElementById('edBody')||{}).outerHTML?.slice(0,120)||'',
+                  draftsGlobal: (typeof drafts!=='undefined'&&drafts)?drafts.map(d=>({
+                    id:d.id, hasDraft:!!d.draft, bodyLen:((d.draft||{}).body||'').length,
+                    issues:((d.qa||{}).issues||[]).length, status:d.status})):'undef',
+                  pfGenDone: document.body.dataset.pfGenDone || null,
+                  pfOkN: document.body.dataset.pfOkN || null,
+                  pfLoad: document.body.dataset.pfLoad || null
+                });}catch(e){return 'ERR '+e}})()""")
+                print("  ---- 失败现场 dump ----")
+                print(dump)
+                print("  ----------------------")
+                raise
             body0 = await cdp.ev("document.getElementById('edBody').value")
             check("C5 成稿正文非空", bool((body0 or "").strip()), f"len={len(body0 or '')}")
 

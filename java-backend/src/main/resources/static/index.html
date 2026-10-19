@@ -507,10 +507,21 @@ async function loadDraftsOfMaterial(id){
       const f = await j("GET", `/api/drafts/${d.id}`);
       return Object.assign({}, d, f);
     } catch (e) {
-      return d;   // 单份读取失败不影响其它稿
+      // **不静默**（2026-10-19 修）：单份读取失败时原来只 `return d`（摘要），
+      // 结果是**正文空白、徽标说"0 个问题"，而界面上看不到任何异常** ✗✗。
+      // 这正是本文件反复踩的那一类：降级可以，但要**说出来** ✓。
+      console.warn(`[polyface] 草稿 ${d.id} 完整内容读取失败：`, e);
+      (window.__draftFetchErrors = window.__draftFetchErrors || []).push({
+        id: d.id, url: `/api/drafts/${d.id}`, err: String((e && e.message) || e)
+      });
+      return d;   // 仍然不影响其它稿
     }
   }));
   drafts = full;
+  // 探针：记录这次到底拿到了什么（排查"工作台空白"时靠它定位 ✗→✓）
+  document.body.dataset.pfLoad = JSON.stringify({
+    id: id, sumsLen: sums.length, fullLen: full.length,
+    bodyLens: full.map(d => ((d.draft || {}).body || "").length) });
   if (m.structured) {
     renderAnalyzeResult(m.structured, m.facts_confirmed, m.facts_confirmed_at);
   }
@@ -722,7 +733,9 @@ async function pollGenerateJob(jobId, total){
 }
 
 async function onGenerateJobDone(job, total){
+  document.body.dataset.pfGenDone = String((Number(document.body.dataset.pfGenDone)||0) + 1);
   const res = job.result || {};
+  document.body.dataset.pfOkN = String(res.ok_count || 0);
   const okN = res.ok_count || 0, failN = res.fail_count || 0;
   const secs = job.started_at && job.finished_at
     ? Math.max(0, Math.round((new Date(job.finished_at) - new Date(job.started_at))/1000)) : null;
@@ -782,6 +795,14 @@ async function onGenerateJobDone(job, total){
   if(okN > 0){
     try{
       await loadDraftsOfMaterial(currentMaterialId);
+      // **重试**：任务标记 succeeded 与草稿提交之间有个**几毫秒的窗口**
+      //（2026-10-19 实测：draft.created_at = …23.497，job.finished_at = …23.504，差 7ms ✗）。
+      // 撞进去就会拿到空列表 —— 于是工作台**渲染成空的、而且再也不刷新** ✗✗，
+      // 用户看到的是"生成成功但没内容"。等一会儿重查即可，成本极低。
+      for(let k = 0; k < 8 && (!drafts || !drafts.length); k++){
+        await new Promise(r => setTimeout(r, 600));
+        await loadDraftsOfMaterial(currentMaterialId);
+      }
       loadHistory();
     }catch(e){
       // **不静默** ✓：拉不到就说出来，否则用户对着空白正文无从下手

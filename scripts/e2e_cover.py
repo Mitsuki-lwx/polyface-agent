@@ -154,11 +154,13 @@ async def main():
             check("A2 素材解析 + 事实确认", True)
 
             await cdp.ev("document.getElementById('btnGenerate').click()")
-            # **不能只找「完成」**（2026-10-19 实测踩到）：进度文案里
-            # 「生成中 · 排队中 · 已完成 0 步」**也含「完成」** ✗ → 测试会提前往下走，
-            # 于是「封面按钮」永远等不到。条件改成「状态非空且不在生成中」✓。
+            # **不能只找「完成」、也不能只排除「生成中」**（2026-10-19 实测踩到两次 ✗）：
+            #  ① 进度文案「生成中 · 排队中 · 已完成 0 步」**也含「完成」** ✗
+            #  ② 发起时那句「已发起（…约 1~4 分钟）…」**不含「生成中」** ✗
+            # 两次都会让测试在生成**刚开始**时就往下走，后面全是误判。
+            # 唯一稳的条件是**等终态**：状态以 ✅/⚠️/❌/⏸ 开头，或「已取消」✓。
             await cdp.wait_for("(()=>{const t=(document.getElementById('genStatus').textContent||'');"
-                "return t.length>0 && t.indexOf('生成中')<0;})()",
+                "return /^[✅⚠❌⏸]|^已取消/.test(t);})()",
                                timeout=600, label="生成完成")
             try:
                 await cdp.wait_for("!!document.getElementById('btnCover')", timeout=30, label="封面按钮")
