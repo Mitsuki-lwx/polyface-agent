@@ -26,7 +26,13 @@ logger = logging.getLogger(__name__)
 HINT_SUBTITLE_OK = "已从视频字幕轨提取文字，请核对后使用。"
 HINT_SUBTITLE_EMPTY = "字幕轨为空或无法解析，请手动粘贴文案。"
 HINT_ASR_OK = "本地 ASR 转写完成，请重点核对同音字、专有名词与数字。"
-HINT_ASR_EMPTY = "转写结果为空，请手动粘贴文案。"
+# **提示里必须带可执行的安装指引**（2026-10-19 修，`e2e_fr51.py` 的 A6 判红）：
+# 原来只写"转写结果为空，请手动粘贴文案" —— 用户不知道**为什么**空、**怎么**修 ✗。
+# 降级本身是对的（不抛 5xx），但降级时要把"下一步怎么做"说清楚，
+# 否则用户只能猜（这与仓库里其它降级路径的约定一致：缺依赖 → 给确切命令）。
+HINT_ASR_EMPTY = ("转写结果为空，请手动粘贴文案；"
+                  "若本机没有本地转写组件，可执行 `pip install faster-whisper` 后重启服务"
+                  "（首次使用会下载模型，约 244MB）。")
 HINT_FFMPEG_MISSING = "未检测到 ffmpeg，请安装后重试（也可用环境变量 POLYFACE_FFMPEG 指向安装目录）。"
 HINT_BAD_FILE = "无法识别该文件，请确认为常见音视频格式（mp4/mov/mkv/mp3/m4a/wav 等）。"
 HINT_MANUAL = "该文件既无字幕轨也无可用转写组件，请直接粘贴文案后解析。"
