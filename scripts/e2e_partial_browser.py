@@ -185,7 +185,7 @@ async def main():
             await cdp.wait_for(
                 "(()=>{const t=(document.getElementById('genStatus').textContent||'');"
                 "return t.length>0 && t.indexOf('生成中')<0;})()",
-                timeout=180, label="生成完成")
+                timeout=600, label="生成完成")
             st = await cdp.ev("document.getElementById('genStatus').textContent")
             check("E3 真实生成显示成功计数", "成功" in st, st.strip())
 

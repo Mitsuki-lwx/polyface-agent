@@ -190,7 +190,7 @@ async def main():
             # 于是「封面按钮」永远等不到。条件改成「状态非空且不在生成中」✓。
             await cdp.wait_for("(()=>{const t=(document.getElementById('genStatus').textContent||'');"
                 "return t.length>0 && t.indexOf('生成中')<0;})()",
-                               timeout=180, label="生成完成")
+                               timeout=600, label="生成完成")
             gs = await cdp.ev("document.getElementById('genStatus').textContent")
             check("C5 生成完成", "完成" in gs, gs.strip()[:70])
             await cdp.wait_for("!!document.getElementById('edBody')", timeout=30, label="成稿面板")

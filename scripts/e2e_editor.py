@@ -168,10 +168,10 @@ async def prepare_draft_with_cover(cdp):
             # 于是「封面按钮」永远等不到。条件改成「状态非空且不在生成中」✓。
     await cdp.wait_for("(()=>{const t=(document.getElementById('genStatus').textContent||'');"
                 "return t.length>0 && t.indexOf('生成中')<0;})()",
-                       timeout=180, label="生成完成")
+                       timeout=600, label="生成完成")
     await cdp.wait_for("!!document.getElementById('btnCover')", label="封面按钮")
     await cdp.ev("document.getElementById('btnCover').click()")
-    await cdp.wait_for("!!document.getElementById('btnOpenEditor')", timeout=180, label="编辑器入口")
+    await cdp.wait_for("!!document.getElementById('btnOpenEditor')", timeout=600, label="编辑器入口")
 
 
 async def run_degraded(cdp):

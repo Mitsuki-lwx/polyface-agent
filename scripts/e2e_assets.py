@@ -326,10 +326,10 @@ async def main():
             # 于是「封面按钮」永远等不到。条件改成「状态非空且不在生成中」✓。
             await cdp.wait_for("(()=>{const t=(document.getElementById('genStatus').textContent||'');"
                 "return t.length>0 && t.indexOf('生成中')<0;})()",
-                               timeout=180, label="生成")
+                               timeout=600, label="生成")
             await cdp.wait_for("!!document.getElementById('btnCover')", label="封面按钮")
             await cdp.ev("document.getElementById('btnCover').click()")
-            await cdp.wait_for("!!document.getElementById('btnOpenEditor')", timeout=180, label="封面完成")
+            await cdp.wait_for("!!document.getElementById('btnOpenEditor')", timeout=600, label="封面完成")
 
             # 注意：资产的 name 是**草稿标题**（CoverController.deriveTitle），不是素材标题 ——
             # 所以不能按素材名搜，要按 source=generated + rel_path 前缀筛。

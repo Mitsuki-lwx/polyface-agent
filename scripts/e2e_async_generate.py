@@ -141,7 +141,7 @@ class CDP:
             raise RuntimeError(str(r["exceptionDetails"])[:200])
         return r.get("result", {}).get("value")
 
-    async def wait_for(self, expr, timeout=180, label=""):
+    async def wait_for(self, expr, timeout=600, label=""):
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:

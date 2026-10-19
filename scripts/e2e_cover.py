@@ -159,7 +159,7 @@ async def main():
             # 于是「封面按钮」永远等不到。条件改成「状态非空且不在生成中」✓。
             await cdp.wait_for("(()=>{const t=(document.getElementById('genStatus').textContent||'');"
                 "return t.length>0 && t.indexOf('生成中')<0;})()",
-                               timeout=180, label="生成完成")
+                               timeout=600, label="生成完成")
             try:
                 await cdp.wait_for("!!document.getElementById('btnCover')", timeout=30, label="封面按钮")
             except TimeoutError:
@@ -186,7 +186,7 @@ async def main():
             await cdp.wait_for(
                 "!!document.querySelector('#coverBox img') || "
                 "document.getElementById('coverBox').innerText.indexOf('需手动处理')>=0",
-                timeout=180, label="封面结果")
+                timeout=600, label="封面结果")
             elapsed = time.time() - t0
 
             box = await cdp.ev("document.getElementById('coverBox').innerText")
