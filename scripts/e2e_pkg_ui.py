@@ -193,7 +193,14 @@ async def main():
                                timeout=600, label="生成完成")
             gs = await cdp.ev("document.getElementById('genStatus').textContent")
             check("C5 生成完成", "完成" in gs, gs.strip()[:70])
-            await cdp.wait_for("!!document.getElementById('edBody')", timeout=30, label="成稿面板")
+            # **要等「正文到齐」，不是等元素存在**（2026-10-19 实测踩到）✗：
+            # `genStatus` 在 `await loadDraftsOfMaterial(...)` **之前**就被设成「完成」，
+            # 于是测试一看到「完成」就去读 `#edBody` —— 而重渲染还没发生，读到空串 ✗。
+            # 这是**测试的竞态**，不是产品缺陷：真浏览器里正文确实会到（已复现 ✓）。
+            await cdp.wait_for(
+                "(()=>{const t=document.getElementById('edBody');"
+                "return !!t && t.value.trim().length>0;})()",
+                timeout=120, label="成稿正文到齐")
             body0 = await cdp.ev("document.getElementById('edBody').value")
             check("C5 成稿正文非空", bool((body0 or "").strip()), f"len={len(body0 or '')}")
 

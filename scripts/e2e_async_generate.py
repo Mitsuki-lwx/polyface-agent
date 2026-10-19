@@ -66,7 +66,10 @@ def py(method, path, payload=None, timeout=180):
     return _req(PY_BASE + path, method, payload, timeout)
 
 
-def wait_job(jid, timeout=180):
+def wait_job(jid, timeout=900):
+    # **900s 不是拍脑袋**（2026-10-19 实测）：这条链路今天跑了 **250s** ——
+    # 质检未通过 → 又改写了一整轮，等于把生成跑两遍。
+    # 原来 180s 必然超时（表现为 socket `TimeoutError: timed out`，不像"断言失败" ✗）。
     deadline = time.time() + timeout
     last = {}
     while time.time() < deadline:

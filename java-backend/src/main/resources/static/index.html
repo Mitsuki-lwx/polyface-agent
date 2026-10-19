@@ -661,6 +661,15 @@ function renderFailures(list){
 $("btnGenerate").onclick = async (opts)=>{
   const plats = (opts && opts.platforms && opts.platforms.length) ? opts.platforms : selectedPlats();
   const btn=$("btnGenerate"); btn.disabled=true; btn.innerHTML='<span class="spinner"></span> 已发起…';
+  // **发起时就说清要等多久**（2026-10-19 补回）：异步化重构（af6e315）把这段弄丢了 ✗，
+  // 而 checklist 的 E2 一直勾着 —— 属于"重构静默回归了一条已验收项"。
+  // 实测这条链路**可能跑 250s**（质检没过 → 又改写一轮），不提示的话用户以为卡死了。
+  {
+    const _n = plats.length;
+    $("genStatus").textContent = _n > 1
+      ? `已发起（${_n} 个平台，每个约 1~4 分钟，上游限流时更久）…`
+      : "已发起（brief→draft→qa，约 1~4 分钟，遇限流自动重试）…";
+  }
   $("genStatus").style.color="var(--sub)";
   $("traceLine").textContent="";
   renderFailures([]);
@@ -697,7 +706,8 @@ async function pollGenerateJob(jobId, total){
     const p = job.progress || {};
     // 平台级进度来自 Java 写的「平台」事件（fields.index/total）；阶段级来自 Python 写的阶段事件
     const stage = p.stage || "";
-    $("genStatus").textContent = `生成中 · ${stage || "排队中"}`
+    // 轮询文案**也要带耗时预期** —— 否则第一帧就把上面的提示覆盖掉 ✗
+    $("genStatus").textContent = `生成中 · ${stage || "排队中"}（每个平台约 1~4 分钟，上游限流时更久）`
       + (p.pct != null ? ` (${p.pct}%)` : "")
       + ` · 已完成 ${(p.done_stages||[]).length} 步`
       + (p.stalled ? " · ⚠️ 疑似卡住" : "");
@@ -763,13 +773,20 @@ async function onGenerateJobDone(job, total){
       }catch(e){ b.disabled=false; b.textContent="🔁 重试失败平台"; alertFallback(e.message); }
     };
   }
-  // 稿件已落库 —— 直接按素材重新拉一次，不在前端拼
+  // 稿件已落库 —— 直接按素材重新拉一次，不在前端拼。
+  // **必须走 `loadDraftsOfMaterial`**（2026-10-19 修，`e2e_pkg_ui` 的 C5/D1 判红）：
+  // 它会把每份稿**补读成完整 payload**（`GET /api/drafts/{id}`）✓。
+  // 这里原来直接拿 `/api/materials/{id}` 的**摘要**渲染 ✗ —— 摘要里没有 `body`、也没有 `qa`，
+  // 于是生成完成后工作台显示**空白正文**、徽标显示「质检未通过（0 个问题）」✗✗。
+  // 这正是本文件 `loadDraftsOfMaterial` 注释里写的「此前缺陷」，只是这条路又踩了一遍。
   if(okN > 0){
     try{
-      const m = await j("GET", `/api/materials/${currentMaterialId}`);
-      renderTabsFromDb(m.drafts || [], null);
+      await loadDraftsOfMaterial(currentMaterialId);
       loadHistory();
-    }catch(e){ /* 拉不到也不影响上面的状态提示 */ }
+    }catch(e){
+      // **不静默** ✓：拉不到就说出来，否则用户对着空白正文无从下手
+      $("genStatus").textContent += `（稿件已生成，但列表刷新失败：${e.message}——请点左侧素材重新打开）`;
+    }
   }
 }
 
