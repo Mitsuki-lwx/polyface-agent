@@ -321,7 +321,11 @@ async def main():
             await cdp.ev("document.getElementById('btnConfirmFacts').click()")
             await cdp.wait_for("document.getElementById('analyzeStatus').textContent.indexOf('已确认')>=0", label="确认")
             await cdp.ev("document.getElementById('btnGenerate').click()")
-            await cdp.wait_for("document.getElementById('genStatus').textContent.indexOf('完成')>=0",
+            # **不能只找「完成」**（2026-10-19 实测踩到）：进度文案里
+            # 「生成中 · 排队中 · 已完成 0 步」**也含「完成」** ✗ → 测试会提前往下走，
+            # 于是「封面按钮」永远等不到。条件改成「状态非空且不在生成中」✓。
+            await cdp.wait_for("(()=>{const t=(document.getElementById('genStatus').textContent||'');"
+                "return t.length>0 && t.indexOf('生成中')<0;})()",
                                timeout=180, label="生成")
             await cdp.wait_for("!!document.getElementById('btnCover')", label="封面按钮")
             await cdp.ev("document.getElementById('btnCover').click()")

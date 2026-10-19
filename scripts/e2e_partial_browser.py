@@ -179,8 +179,12 @@ async def main():
 
             # ---------- 真实生成：单平台 ----------
             await cdp.ev("document.getElementById('btnGenerate').click()")
+            # **不能只找「完成」**（2026-10-19 实测踩到）：进度文案里
+            # 「生成中 · 排队中 · 已完成 0 步」**也含「完成」** ✗ → 测试会提前往下走，
+            # 于是「封面按钮」永远等不到。条件改成「状态非空且不在生成中」✓。
             await cdp.wait_for(
-                "document.getElementById('genStatus').textContent.indexOf('完成')>=0",
+                "(()=>{const t=(document.getElementById('genStatus').textContent||'');"
+                "return t.length>0 && t.indexOf('生成中')<0;})()",
                 timeout=180, label="生成完成")
             st = await cdp.ev("document.getElementById('genStatus').textContent")
             check("E3 真实生成显示成功计数", "成功" in st, st.strip())

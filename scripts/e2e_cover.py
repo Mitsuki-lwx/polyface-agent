@@ -154,9 +154,30 @@ async def main():
             check("A2 素材解析 + 事实确认", True)
 
             await cdp.ev("document.getElementById('btnGenerate').click()")
-            await cdp.wait_for("document.getElementById('genStatus').textContent.indexOf('完成')>=0",
+            # **不能只找「完成」**（2026-10-19 实测踩到）：进度文案里
+            # 「生成中 · 排队中 · 已完成 0 步」**也含「完成」** ✗ → 测试会提前往下走，
+            # 于是「封面按钮」永远等不到。条件改成「状态非空且不在生成中」✓。
+            await cdp.wait_for("(()=>{const t=(document.getElementById('genStatus').textContent||'');"
+                "return t.length>0 && t.indexOf('生成中')<0;})()",
                                timeout=180, label="生成完成")
-            await cdp.wait_for("!!document.getElementById('btnCover')", timeout=30, label="封面按钮")
+            try:
+                await cdp.wait_for("!!document.getElementById('btnCover')", timeout=30, label="封面按钮")
+            except TimeoutError:
+                # 失败时把**页面状态**dump 出来 —— 否则只能猜（这次就是靠它定位的）
+                dump = await cdp.ev("""(()=>{try{
+                  return JSON.stringify({
+                    genStatus: (document.getElementById('genStatus')||{}).textContent,
+                    currentMaterialId: (typeof currentMaterialId!=='undefined')?currentMaterialId:'undef',
+                    resultAreaLen: (document.getElementById('resultArea')||{}).innerHTML?.length||0,
+                    resultAreaHead: (document.getElementById('resultArea')||{}).innerHTML?.slice(0,200)||'',
+                    hasDraftPanel: !!document.getElementById('draftPanel'),
+                    btnIds: [...document.querySelectorAll('button[id]')].map(b=>b.id),
+                    consoleErr: (window.__errs||[]).slice(-3)
+                  });}catch(e){return 'ERR '+e}})()""")
+                print("  ---- 失败现场 dump ----")
+                print(dump)
+                print("  ----------------------")
+                raise
             check("A3 生成稿件并出现「生成封面」按钮", True)
 
             # ---------- 核心：点按钮 → 出图 ----------
