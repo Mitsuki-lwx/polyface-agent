@@ -199,19 +199,32 @@ async def main():
             n_checked = await cdp.ev("document.querySelectorAll('#platList input:checked').length")
             check("E2 可多选（2 个平台）", n_checked == 2, f"勾选 {n_checked}")
 
-            # 让后端立刻返回失败，避免真的等两个平台：替换 window.j 构造「1 成功 + 1 失败」
+            # 让后端立刻返回「1 成功 + 1 失败」，避免真的等两个平台。
+            # **必须桩异步任务接口**（2026-10-19 修）：异步化重构后 SPA 走的是
+            # `POST /api/jobs` + 轮询 `GET /api/jobs/{id}`，而这里原来桩的是**旧的同步
+            # `/generate`** ✗ —— 桩根本不触发，于是真跑了一次生成（成功），
+            # 「部分完成」永远等不到 ✗。（跟耗时提示是同一类：重构后测试没跟着改。）
             await cdp.ev("""(()=>{
               window.__lastBody = null;
               const real = window.j;
               window.__realJ = real;
+              window.__FAKE_JOB = 999999;
               window.j = async function(method, url, body){
-                if(url.indexOf('/generate')>=0 && body && body.platforms && body.platforms.length>1){
+                if(method === 'POST' && url === '/api/jobs'){
                   window.__lastBody = JSON.parse(JSON.stringify(body));
-                  await new Promise(r=>setTimeout(r,1500));
-                  return { drafts:[{id:1,platform_code:'xhs',platform_name:'小红书',titles:['t'],body:'b',tags:[]}],
-                           used_mock:true, ok_count:1, fail_count:1,
-                           failures:[{platform:'douyin', error:'LLMError: 模拟上游失败（浏览器实测）'}],
-                           trace_id:null };
+                  await new Promise(r=>setTimeout(r,300));
+                  return { job_id: window.__FAKE_JOB, kind: 'generate', status: 'queued' };
+                }
+                if(method === 'GET' && url.indexOf('/api/jobs/' + window.__FAKE_JOB) === 0
+                   && url.indexOf('/events') < 0){
+                  const now = new Date().toISOString();
+                  return { id: window.__FAKE_JOB, kind: 'generate', status: 'partial',
+                           started_at: now, finished_at: now, can_retry: true, can_resume: false,
+                           result: {
+                             ok: [{platform_code:'xhs', platform_name:'小红书', draft_id:1, status:'qa_passed'}],
+                             failed: [{platform_code:'douyin', platform_name:'抖音',
+                                       error:'LLMError: 模拟上游失败（浏览器实测）'}],
+                             ok_count: 1, fail_count: 1 } };
                 }
                 return real(method, url, body);
               };
@@ -244,24 +257,31 @@ async def main():
             # ---------- E5 重试失败平台 ----------
             has_btn = await cdp.ev("!!document.getElementById('btnRetryFail')")
             check("E5 存在「重试失败平台」按钮", has_btn)
-            await cdp.ev("window.__retryBody=null;(()=>{const real=window.j;"
-                         "window.j=async function(m,u,b){if(u.indexOf('/generate')>=0)"
-                         "window.__retryBody=JSON.parse(JSON.stringify(b));return real(m,u,b);};})()")
+            # **重试按钮发的是"只带失败平台的新任务"**（2026-10-19 修）：
+            # 界面上那个 `#btnRetryFail` 的 onclick 是 `$("btnGenerate").onclick({platforms:[…]})`
+            # —— 即再走一次 `POST /api/jobs`，**平台列表在请求体里** ✗（不是 `/retry`，也没有响应字段）。
+            # 原来桩的是旧同步 `/generate`，怎么等都等不到 ✗。
+            # 复用上面 `POST /api/jobs` 那个桩留下的 `__lastBody` 即可 ✓。
+            await cdp.ev("window.__lastBody=null")
             await cdp.ev("document.getElementById('btnRetryFail').click()")
-            await cdp.wait_for("window.__retryBody !== null", timeout=60, label="重试请求发出")
-            retry_plats = await cdp.ev("window.__retryBody && window.__retryBody.platforms.join(',')")
+            await cdp.wait_for("window.__lastBody !== null", timeout=60, label="重试请求发出")
+            retry_plats = await cdp.ev("window.__lastBody && (window.__lastBody.platforms||[]).join(',')")
             check("E5 重试只带失败平台（douyin）", retry_plats == "douyin", f"platforms={retry_plats}")
             # 等重试那一轮真正结束（按钮在生成中会被禁用，避免重复提交）
+            # 同样要等**终态**，不能只排除「生成中」（发起时的提示不含它 ✗）
             await cdp.wait_for(
-                "document.getElementById('genStatus').textContent.indexOf('生成中')<0",
+                "(()=>{const t=(document.getElementById('genStatus').textContent||'');"
+                "return /^[✅⚠❌⏸]|^已取消/.test(t);})()",
                 timeout=120, label="重试生成完成")
             await cdp.wait_for("!document.getElementById('btnGenerate').disabled",
                                timeout=30, label="按钮恢复可用")
 
             # ---------- E6 异常/超时提示可读 ----------
             await cdp.ev("""(()=>{
+              // **要拦 `POST /api/jobs`**（2026-10-19 修）：SPA 异步化后不再调 `/generate` ✗，
+              // 拦错了就抛不出错，于是真跑起生成来 —— E6 自然等不到错误提示 ✗。
               window.j = async function(m,u,b){
-                if(u.indexOf('/generate')>=0)
+                if(m==='POST' && u==='/api/jobs')
                   throw new Error('生成超时（已等待 240s）：上游限流时单平台可能需数分钟。请稍后重试，或减少平台数量后重试。');
                 return window.__realJ(m,u,b);
               };return true;})()""")
