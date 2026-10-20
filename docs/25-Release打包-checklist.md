@@ -223,3 +223,45 @@ await cdp.wait_for("document.getElementById('genStatus').textContent.indexOf('�
 - `e2e_cover` 的**真实渲染** ✗、`e2e_assets` 的 **E1** ✗、`e2e_editor` 的**普通模式（A~G）** ✗
   —— **三处都卡在同一个前置：本机没装 gimpish**（需 `Node.js ≥ 20.19`）。
 - `e2e_fr70` ✗ —— 要 **Langfuse :3000**，本机没起。
+
+---
+
+## 装上 gimpish 后补齐的三处验证（2026-10-20）
+
+### 怎么装的（本机全局目录要管理员，走用户目录 + 环境变量 ✓）
+
+```bash
+mkdir -p "C:/Users/lwx/.polyface-tools" && cd "C:/Users/lwx/.polyface-tools"
+npm install gimpish            # 全局装会因 D:\NodeJs 权限被拒 ✗
+# 然后起服务时带上（Java 与 Python 都要，Python 侧 cover.py 读它）：
+export POLYFACE_GIMPISH="C:/Users/lwx/.polyface-tools/node_modules/gimpish/bin/gimpish.js"
+```
+`bin: ./bin/gimpish.js` → `cover.py` 的 `_invocation()` 对 `.js` 入口会显式交给 `node` ✓。
+
+### 结果：三处**全部转绿**
+
+| 脚本 | 之前 | 现在 |
+|---|---|---|
+| `e2e_cover` | 5/5（**降级**，没出图 ✗） | **8/8** ✓ —— 真出图 **1080×1440** ✓、5.9s、真 PNG 字节 135039B |
+| `e2e_editor`（普通模式） | 未跑到 ✗ | **15/15** ✓ —— 真 iframe 编辑器 ✓、**改动静默落回 `scene.json`（x 540 → 570）** ✓ |
+| `e2e_assets` | 16/17（E1 挂 ✗） | **20/20** ✓ —— 封面自动登记 + 自动关联 draft ✓ |
+
+### 顺带修掉的两处**测试自身**的问题
+
+1. **`e2e_editor` 的 C2 是我传错参数** ✗：测试的 `EDITOR_PORT` 默认 **8765**（与服务默认一致 ✓），
+   我硬塞 `POLYFACE_EDITOR_PORT=18766` → 必然不等 ✗。**不传它**即全过 ✓。
+2. **`e2e_assets` 的 F1 把规范读错了** ✗：它写「删被 draft 引用的资产 → **文件保留**」，
+   而 `docs/73` §6（标题就是「最容易误解，必须按此实现」）定的是**按 sha256**：
+   > 3. 若**再无任何 asset 记录**引用同一 sha256（且非空）→ 删物理文件 `file_removed=true`
+
+   我先改成写死 `True` ✗ —— **又错了**：素材目录里上一轮留下的**同 sha 封面**会让规范要求保留 ✗，
+   断言时红时绿。最终改成**按规范推导期望值**（查"还有没有别的记录引用这个 sha" ✓）：
+   ```
+   PASS F1 … | {"file_removed": true, "links_removed": 1} · sha=a50ab358614f 其他引用=0 期望=True
+   ```
+
+### ⚠️ 一个**规范未覆盖**的观察（如实记下，未当场改）
+
+删掉封面资产后，**draft 的 cover 字段仍指向那个已不存在的路径** → 工作台里封面会 404。
+属于「悬空引用」，需要产品决策（删记录时清 draft 的 cover？还是这类资产不许删？）。
+脚本里已加了一行 INFO 探测，不会自动判红。

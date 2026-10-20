@@ -349,9 +349,37 @@ async def main():
             if hit:
                 aid = hit[0]["id"]
                 st, d1 = http_delete(f"{BASE}/api/assets/{aid}")
-                check("F1 删被 draft 引用的资产 → 只删记录，**文件保留**",
-                      st == 200 and d1.get("file_removed") is False and d1.get("links_removed", 0) >= 1,
-                      json.dumps(d1, ensure_ascii=False))
+                # **按 `docs/73` §6 判定**（2026-10-20 修）：删除语义是**按 sha256**，
+                # 不是"被 draft 引用就保留"✗ —— 这条断言原来那样写，是把规范读错了。
+                # 规范原文：
+                #   3. 若**再无任何 asset 记录**引用同一 sha256（且非空）→ 删物理文件 file_removed=true
+                #      否则 → 保留文件 file_removed=false
+                # 这里的封面图只有这一条记录 → 文件**应当**被删 ✓。
+                # **期望值必须按规范推导，不能写死**（2026-10-20 修）：
+                # 第一次我把它写成 `file_removed is True` ✗ —— 但那条素材目录里**上一轮留下的
+                # 同 sha 封面**会让规范要求"保留文件" ✗，于是断言时红时绿（不稳定）。
+                # 规范 §6 第 3 条是**当且仅当**：删文件 ⟺ 再无任何 asset 记录引用同一 sha256。
+                # 所以这里先查一下"还有没有别的记录引用这个 sha"，再据此判 ✓。
+                _sha = (hit[0].get("sha256") or "") if hit else ""
+                st2, _lst = http_json("GET", BASE + "/api/assets?limit=200")
+                _others = [i for i in (_lst.get("items") or [])
+                           if i.get("sha256") == _sha and i["id"] != aid]
+                _expect = bool(_sha) and not _others
+                check("F1 删被 draft 引用的资产 → 按 sha 规则（删文件 ⟺ 无其他记录引用）",
+                      st == 200 and d1.get("links_removed", 0) >= 1
+                      and d1.get("file_removed") is _expect,
+                      f"{json.dumps(d1, ensure_ascii=False)} · sha={_sha[:12]} 其他引用={len(_others)} 期望={_expect}")
+                # 顺带记录一个**规范没覆盖**的观察（不当场改，先如实记下）：
+                # 删掉之后 draft 的 cover 字段仍指向那个已不存在的路径 → 工作台里封面会 404。
+                # 属于"悬空引用"，需要产品决策（删记录时清 draft 的 cover？还是保留文件？）
+                _d4 = http_json("GET", BASE + "/api/drafts/4")[1] if hit else {}
+                _cover = ((_d4.get("draft") or {}).get("cover") or "")
+                if _cover:
+                    import os as _os
+                    _rel = _cover.split("/api/media/")[-1]
+                    _p = DATA_DIR / "media" / _rel
+                    if not _p.exists():
+                        print(f"  INFO 悬空引用：draft 4 的 cover 仍指向已删除的 {_rel}（规范未覆盖，待产品决策）")
                 st, gen2 = http_json("GET", BASE + "/api/assets?kind=image&limit=50")
                 check("F2 删除后列表里不再出现",
                       not any(i["id"] == aid for i in gen2["items"]))
