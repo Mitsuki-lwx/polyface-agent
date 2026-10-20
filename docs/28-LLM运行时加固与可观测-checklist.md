@@ -106,3 +106,43 @@
 | mock 回归 | ⬜ 待执行 | |
 | Langfuse 可见性 | ⬜ 待执行 | |
 | 未通过项 | — | 若有，须逐条说明原因；额度受限导致未完成项须显式标注 |
+
+---
+
+## 实机验证记录：`scripts/e2e_fr70.py`（2026-10-20）
+
+```
+===== FR-70/71/72 端到端验收 (RUN=170108) =====
+  PASS 1 建素材成功
+  PASS 2 生成成功
+  PASS 2 响应含 trace_id（FR-71）  | 414897af6032450b8833d4b078503722
+  PASS 2 响应头含 X-Trace-Id      | 414897af6032450b8833d4b078503722
+  PASS 2 trace_id 前后一致
+     · 生成耗时 107s，trace=414897af6032450b8833d4b078503722
+  PASS 3 /api/usage 可用
+  PASS 3 有调用记录  | total=598
+  PASS 3 记录含本 trace
+  PASS 3 按场景分组
+  PASS 3 不含 prompt 正文（脱敏）  | 无正文泄漏
+===== Java/Python 链路：10/10 通过 =====
+```
+
+### Langfuse 侧**独立复核**（不只信脚本 ✓）
+
+脚本只打印 trace_id；**真的去 Langfuse 查了**（`GET /api/public/traces/{id}`，basic auth 用 `.env` 里的 key）：
+
+```
+trace id: 414897af6032450b8833d4b078503722
+name: generate:xhs     observations: 13
+  - SPAN generate:xhs
+  - GENERATION OpenAI-generation | model: vmc/deepseek-v4p1-flash-contributor-fallbacks
+  - SPAN qa / SPAN draft / GENERATION …
+```
+
+**链路贯穿成立** ✓：一次生成 → 13 个 observation（span + generation 嵌套）落到了 Langfuse。
+
+### 更正一处我自己的错误判断 ✗
+
+我之前说「`e2e_fr70` 要 Langfuse :3000，**本机没起**」—— **这是错的** ✗：
+Langfuse 一直在跑（`:3000` 与 `:3030` 均 LISTENING，`.env` 里 `LANGFUSE_ENABLED=true` + key 齐全）。
+那是**从脚本 docstring 推断、没有实际探测** ✗ —— 结论先行不等于可以省掉验证。
