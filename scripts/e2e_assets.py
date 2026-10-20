@@ -348,6 +348,8 @@ async def main():
             # ---------- 删除三态（走 API，语义在 docs/73 §6）----------
             if hit:
                 aid = hit[0]["id"]
+                draft_of_asset = next((l["owner_id"] for l in hit[0].get("links", [])
+                                       if l.get("owner_kind") == "draft"), 0)
                 st, d1 = http_delete(f"{BASE}/api/assets/{aid}")
                 # **按 `docs/73` §6 判定**（2026-10-20 修）：删除语义是**按 sha256**，
                 # 不是"被 draft 引用就保留"✗ —— 这条断言原来那样写，是把规范读错了。
@@ -369,17 +371,22 @@ async def main():
                       st == 200 and d1.get("links_removed", 0) >= 1
                       and d1.get("file_removed") is _expect,
                       f"{json.dumps(d1, ensure_ascii=False)} · sha={_sha[:12]} 其他引用={len(_others)} 期望={_expect}")
-                # 顺带记录一个**规范没覆盖**的观察（不当场改，先如实记下）：
-                # 删掉之后 draft 的 cover 字段仍指向那个已不存在的路径 → 工作台里封面会 404。
-                # 属于"悬空引用"，需要产品决策（删记录时清 draft 的 cover？还是保留文件？）
-                _d4 = http_json("GET", BASE + "/api/drafts/4")[1] if hit else {}
-                _cover = ((_d4.get("draft") or {}).get("cover") or "")
-                if _cover:
-                    import os as _os
-                    _rel = _cover.split("/api/media/")[-1]
-                    _p = DATA_DIR / "media" / _rel
-                    if not _p.exists():
-                        print(f"  INFO 悬空引用：draft 4 的 cover 仍指向已删除的 {_rel}（规范未覆盖，待产品决策）")
+                # **"悬空引用"是个假问题**（2026-10-20 实测纠正 ✗）：
+                # 我一度以为"删了封面资产，draft 还指着它" —— 查了 `draft` 表**根本没有存封面路径的列** ✗，
+                # SPA 是 `POST /api/drafts/{id}/cover` **现场生成**（CoverController 不读任何已有资产）。
+                # 实测：删资产 → 老 url 404（符合 §6 ✓）→ **再 POST 一次就重新出图**（新 stem，200 + 117247B ✓）。
+                # 所以这里不写"悬空引用"的探测，而是把这条**真行为**验一下 ✓。
+                _st, _c2 = http_json("POST", f"{BASE}/api/drafts/{draft_of_asset}/cover")
+                _u2 = (_c2 or {}).get("url") or ""
+                _ok2 = False
+                if _u2:
+                    try:
+                        with urllib.request.urlopen(BASE + _u2, timeout=30) as _x:
+                            _ok2 = _x.status == 200 and (_x.headers.get("Content-Type") or "").startswith("image/")
+                    except Exception:
+                        _ok2 = False
+                check("F1b 删掉封面资产后，再点「生成封面」能重新出图（无悬空引用）",
+                      (_c2 or {}).get("status") == "ok" and _ok2, _u2[:70])
                 st, gen2 = http_json("GET", BASE + "/api/assets?kind=image&limit=50")
                 check("F2 删除后列表里不再出现",
                       not any(i["id"] == aid for i in gen2["items"]))

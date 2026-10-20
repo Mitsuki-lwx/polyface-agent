@@ -260,8 +260,31 @@ export POLYFACE_GIMPISH="C:/Users/lwx/.polyface-tools/node_modules/gimpish/bin/g
    PASS F1 … | {"file_removed": true, "links_removed": 1} · sha=a50ab358614f 其他引用=0 期望=True
    ```
 
-### ⚠️ 一个**规范未覆盖**的观察（如实记下，未当场改）
+### ✅ 更正：我一度以为的「悬空引用」是**假问题** ✗
 
-删掉封面资产后，**draft 的 cover 字段仍指向那个已不存在的路径** → 工作台里封面会 404。
-属于「悬空引用」，需要产品决策（删记录时清 draft 的 cover？还是这类资产不许删？）。
-脚本里已加了一行 INFO 探测，不会自动判红。
+我先写下过这样一段：「删掉封面资产后，draft 的 cover 字段仍指向已不存在的路径 → 封面 404，
+属悬空引用，需要产品决策」。**这段是错的** ✗ —— 而且是**没查就断言** ✗。
+
+查过之后：
+- `draft` 表**根本没有存封面路径的列** ✗ —— 封面不是"存下来的引用"；
+- SPA 是 `POST /api/drafts/{id}/cover` **现场生成** ✓，
+  `CoverController` 生成**之后**才自动登记资产，**不读任何已有资产** ✓。
+
+**实测**（删 → 老 url → 再生成 → 新 url）：
+
+```
+1) 生成封面  status=ok  url=/api/media/covers/draft-6-xhs-a70117/cover.png
+   对应资产: [(17, 'covers/draft-6-xhs-a70117/cover.png')]
+2) 删除资产  {"file_removed": true, "links_removed": 1}
+3) 老 url -> HTTP 404（文件确实没了，符合 docs/73 §6 ✓）
+4) 再生成封面 -> status=ok  url=…/draft-6-xhs-bce592/cover.png   ← 重新出图，新 stem
+5) 新 url -> 200 image/png 117247B ✓
+```
+
+**所以：删了封面再点一次就回来了，不存在悬空引用** ✓。
+
+这条行为已写成断言，`e2e_assets` 由 20/20 → **21/21**：
+
+```
+PASS F1b 删掉封面资产后，再点「生成封面」能重新出图（无悬空引用） | /api/media/covers/draft-7-xhs-21e852/cover.png
+```
