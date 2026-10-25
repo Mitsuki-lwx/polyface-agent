@@ -98,38 +98,46 @@ def build_brief_prompt(dna: dict, structured, tone_override: str | None,
     return json.dumps(payload, ensure_ascii=False, indent=1)
 
 
-# ============================================================ 成稿(draft)
+# ============================================================ 成稿(draft · 骨架式, ADR-025)
 DRAFT_SYSTEM = (
     "你是某平台的资深博主，正在把一份素材改写为该平台的原创内容。\n"
+    "你输出的不是正文，而是**段落级骨架** —— 系统会逐槽校验事实依据、回填、装配正文。\n"
     "硬性要求：\n"
     "1. 严格遵守【平台DNA】：风格、结构模板、标题规则、标签规则、字数上限。\n"
     "1b. **标题字数上限是硬约束**：见 platform_dna.title_chars_max。"
     "每个标题（主标题与备选）都必须 ≤ 该值，**包括标点与数字**。"
     "超了会在平台被截断/折叠，等于白写。宁可少塞一个数字，也不要超。\n"
-    "2. 事实红线：只能使用【素材事实清单】中出现的信息；禁止编造数字、数据、头衔、经历细节。\n"
-    "3. 不是翻译/搬运，而是按平台调性重写：改语气、改结构、改标题、补互动钩子。\n"
-    "只输出一个 JSON 对象：\n"
+    "2. 只输出一个 JSON 对象（骨架）：\n"
     "{\n"
     '  "titles": ["主标题", "备选2", "备选3"],\n'
-    '  "body": "正文(含平台化排版:分段/换行/emoji适度)",\n'
+    '  "paras": [\n'
+    '    {"facts": [1, 3], "role": "hook", "text": "段内文本，事实值写槽位 {{n:3|286块}}"}\n'
+    "  ],\n"
     '  "tags": ["标签1", "标签2"],\n'
     '  "cover_suggestion": "封面文案或首屏钩子",\n'
     '  "interaction_line": "文末互动引导语",\n'
-    '  "facts_used": [1, 3],\n'
     '  "rationale": "为什么这样写(对应哪些爆款机制)"\n'
     "}\n"
-    "\n"
-    "关于 facts_used（**必填**）：正文里的每一个数字、年份、专有名词、以及每一条"
-    "事实性断言，都必须来自【素材事实清单】里某一条。请把你**实际用到**的条目序号列出来。"
-    "用不到任何一条就写 []。\n"
-    "**写不出序号的内容，就是你不该写的内容** —— 删掉它，不要写进正文。\n"
+    "3. 段落与事实声明：paras 至少 1 段，数组顺序即正文顺序；每段 facts = 该段全部"
+    "事实依据的序号（1-based，对应 material_facts 的 n）。**段内事实性内容不得超出"
+    "声明集合** —— 写不进声明的内容，就是你不该写的内容。\n"
+    "4. 槽位：段内与标题里的每个数字、年份、专有名词，必须写成 {{n:序号|表层}}。"
+    "表层 = 你想让它出现在成稿里的写法，系统校验「表层在该条事实里有依据」后**原样回填**"
+    "（数值等价也算依据：素材「两百八十六」表层可写「286」；素材「第1步」表层可写「第一步」）。\n"
+    "5. 除槽位之外，段内与标题里**禁止出现任何数字/年份/专名** —— 裸写会被系统机械门"
+    "直接拒绝，整篇作废重写。\n"
+    "6. 表述完全自由：改语气、改结构、埋钩子 —— 被钉死的只有事实值与「哪段依据哪条事实」。"
+    "这不是翻译/搬运，而是按平台调性重写。\n"
+    "7. 若输入带 user_template：其 opening / closing **原样**放入首段/末段的 text，"
+    "不用槽位（系统对模板文本豁免数字校验）；structure 与 voice 按模板执行。\n"
+    "role 取 hook|body|evidence|close（提示段落用途，不影响顺序）。\n"
 )
 
 
-def build_draft_prompt(dna: dict, structured, brief, feedback: str | None = None,
-                       template: dict | None = None,
-                       creator_profile: dict | None = None,
-                       retrospect_hints: list[str] | None = None) -> str:
+def build_draft_skeleton_prompt(dna: dict, structured, brief, feedback: str | None = None,
+                                template: dict | None = None,
+                                creator_profile: dict | None = None,
+                                retrospect_hints: list[str] | None = None) -> str:
     payload = {
         "platform": {"code": dna["code"], "name": dna["name"]},
         "platform_dna": {
@@ -155,7 +163,7 @@ def build_draft_prompt(dna: dict, structured, brief, feedback: str | None = None
             "structure_plan": brief.structure_plan,
             "tag_direction": brief.tag_direction,
         },
-        # 带**序号**：模型要靠它填 facts_used（1-based，与 facts_used 的约定一致）
+        # 带**序号**：模型靠它写段落的 facts 声明与槽位（1-based）
         "material_facts": [{"n": i, "text": f.text}
                            for i, f in enumerate(structured.facts, 1)],
     }
@@ -167,7 +175,7 @@ def build_draft_prompt(dna: dict, structured, brief, feedback: str | None = None
         payload["retrospect_hints"] = list(retrospect_hints)
     prompt = json.dumps(payload, ensure_ascii=False, indent=1)
     if feedback:
-        prompt += f"\n\n【上一轮 QA 未通过，请针对性修改后重写】\n{feedback}"
+        prompt += f"\n\n【上一轮产出未通过校验，请针对性修复后重新输出完整骨架 JSON】\n{feedback}"
     return prompt
 
 
@@ -350,7 +358,7 @@ def build_disfluency_prompt(pairs: list[dict]) -> str:
 SCENE_BUILDERS: dict[str, str] = {
     "understand": "app.pipeline.prompts.build_understand_prompt",
     "brief": "app.pipeline.prompts.build_brief_prompt",
-    "draft": "app.pipeline.prompts.build_draft_prompt",
+    "draft": "app.pipeline.prompts.build_draft_skeleton_prompt",
     "qa": "app.pipeline.prompts.build_qa_prompt",
     "qa_verify": "app.pipeline.prompts.build_qa_prompt",      # 同一个构造函数
     "clip": "app.pipeline.prompts.build_clip_prompt",

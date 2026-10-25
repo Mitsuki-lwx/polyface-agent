@@ -50,7 +50,7 @@ def test_title_chars_max_returns_none_when_absent():
 
 def test_draft_prompt_carries_title_limit():
     """**核心接线**：上限必须显式传给模型 —— 它不在 `title_rules` 的散文里。"""
-    payload = json.loads(prompts.build_draft_prompt(dna.load_dna("xhs"), _mat(), _brief()))
+    payload = json.loads(prompts.build_draft_skeleton_prompt(dna.load_dna("xhs"), _mat(), _brief()))
     assert payload["platform_dna"]["title_chars_max"] == 20
 
 

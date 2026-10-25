@@ -45,8 +45,15 @@ from .prompts import (
     QA_SYSTEM,
     build_brief_prompt,
     build_clip_prompt,
-    build_draft_prompt,
+    build_draft_skeleton_prompt,
     build_qa_prompt,
+)
+from .skeleton import (
+    AssembleResult,
+    DraftSkeleton,
+    SkeletonPara,
+    assemble_skeleton,
+    parse_skeleton,
 )
 
 logger = logging.getLogger(__name__)
@@ -107,44 +114,80 @@ def run_brief(code: str, dna: dict, mat: StructuredMaterial, tone_override: str 
     )
 
 
-# ---------------------------------------------------------------- draft
-def _mock_draft(code: str, dna: dict, mat: StructuredMaterial, brief: Brief,
-                template: UserTemplate | None = None,
-                creator_profile: dict | None = None,
-                retrospect_hints: list[str] | None = None) -> DraftPayload:
-    facts = mat.facts[:5]
-    body_lines = []
-    # 用户模板优先级：opening 覆盖默认开头（ADR-014）
+# ---------------------------------------------------------------- draft（骨架式, ADR-025）
+def _clip_numsafe(text: str, n: int) -> str:
+    """同 `_clip`，但切点落在数字中间时退到数字串前。
+
+    半个数字（`286块` 被切成 `28`）既读不懂，也过不了骨架的裸数字门 ——
+    mock 的标题/开头用这个版本截断（mock 与真实模式共用同一道门，见下）。
+    """
+    t = text.strip()
+    if len(t) <= n:
+        return t
+    cut = t[: n - 1]
+    if t[n - 1].isdigit() and re.search(r"\d$", cut):
+        cut = re.sub(r"\d+(?:\.\d*)?$", "", cut).rstrip()
+    return cut + "…"
+
+
+def _extra_evidence(template: UserTemplate | None,
+                    creator_profile: dict | None) -> list[str]:
+    """豁免机械门的**用户自己写**的内容：模板开头/结尾、画像避雷（ADR-025）。
+
+    这些不是模型编造 —— 它们的数字不参与段声明核对。
+    （`core_message` 是 understand 的上游产物，只在 mock 豁免：mock 里它就是素材原句拼接，
+    真实模式**不豁免** —— 成稿的事实值必须落到事实清单这个闭集里。）
+    """
+    out = []
     if template and template.opening:
-        body_lines.append(template.opening)
-    else:
-        body_lines.append(f"先说结论：{_clip(mat.core_message, 80)}")
-    body_lines.append("")
-    for f in facts:
-        marker = {"data": "📊", "story": "📖", "opinion": "💡"}.get(f.type, "·")
-        body_lines.append(f"{marker} {f.text}")
-    # FR-32 创作者画像在 mock 中以"避雷"段落呈现
-    if creator_profile and creator_profile.get("avoid"):
-        body_lines.append("")
-        body_lines.append(f"⚠️ {creator_profile['avoid']}")
+        out.append(template.opening)
     if template and template.closing:
-        body_lines.append("")
-        body_lines.append(template.closing)
-    else:
-        body_lines += ["", "觉得有用就收藏，下次需要直接翻出来看～"]
+        out.append(template.closing)
+    if creator_profile and creator_profile.get("avoid"):
+        out.append(str(creator_profile["avoid"]))
+    return out
+
+
+def _mock_skeleton(code: str, dna: dict, mat: StructuredMaterial, brief: Brief,
+                   template: UserTemplate | None = None,
+                   creator_profile: dict | None = None,
+                   retrospect_hints: list[str] | None = None
+                   ) -> tuple[DraftSkeleton, list[str]]:
+    """mock 也产**骨架**，与真实模式走同一个装配器（逻辑只有一份 ——
+    装配器的 bug 在 mock 的 e2e 里就能暴露，不用真 Key）。
+
+    段内多行用 `\\n` 嵌在 text 里、段落间由装配器 `\\n\\n` 拼接 ——
+    与改版前 `_mock_draft` 的行结构同构（见 test_generate 对 body 的逐字节断言）。
+    """
+    facts = mat.facts[:5]
+    hook = (template.opening if template and template.opening
+            else f"先说结论：{_clip_numsafe(mat.core_message, 80)}")
+    markers = {"data": "📊", "story": "📖", "opinion": "💡"}
+    fact_lines = "\n".join(f"{markers.get(f.type, '·')} {f.text}" for f in facts)
+    paras = [SkeletonPara(facts=[], role="hook", text=hook)]
+    if fact_lines:
+        paras.append(SkeletonPara(facts=list(range(1, len(facts) + 1)), role="body",
+                                  text=fact_lines))
+    if creator_profile and creator_profile.get("avoid"):
+        paras.append(SkeletonPara(facts=[], role="body",
+                                  text=f"⚠️ {creator_profile['avoid']}"))
+    closing = (template.closing if template and template.closing
+               else "觉得有用就收藏，下次需要直接翻出来看～")
+    paras.append(SkeletonPara(facts=[], role="close", text=closing))
+
     tags = (brief.tag_direction or ["干货"])[:6]
     titles = [
-        _clip(mat.core_message, 18),
-        f"{_clip(mat.core_message, 12)}｜真实经验",
+        _clip_numsafe(mat.core_message, 18),
+        f"{_clip_numsafe(mat.core_message, 12)}｜真实经验",
     ]
     extra_rationale = ""
     if creator_profile and creator_profile.get("domain"):
         extra_rationale = f"（已对齐创作者领域:{creator_profile['domain']}）"
     if retrospect_hints:
         extra_rationale += f"（已应用{len(retrospect_hints)}条历史经验）"
-    return DraftPayload(
+    sk = DraftSkeleton(
         titles=titles,
-        body="\n".join(body_lines),
+        paras=paras,
         tags=tags,
         cover_suggestion=_clip(mat.core_message, 16),
         interaction_line="你们平时会复盘吗？评论区聊聊～",
@@ -152,40 +195,24 @@ def _mock_draft(code: str, dna: dict, mat: StructuredMaterial, brief: Brief,
         + ("（已应用我的模板）" if template else "")
         + extra_rationale,
     )
+    # mock 豁免 core_message（understand 的上游产物）；模板/避雷两类豁免同真实模式
+    return sk, [mat.core_message] + _extra_evidence(template, creator_profile)
 
 
 # 年份（整词匹配：`月收入在8000—12000元` 里的 `12000` 不能抠出 `2000`）
 _YEAR_RE = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
 
 
-def _coerce_facts_used(raw) -> list[int] | None:
-    """把模型回的「依据了哪几条事实」规整成 `list[int]`。
+class SkeletonGateError(RuntimeError):
+    """骨架装配机械门两轮（初次+修复）均未通过 —— 平台显式失败（FR-70 语义）。
 
-    ⚠️ **None 与 [] 必须区分**（`docs/spec_factguard.md` 关键决定三）：
-      None = 没声明（违规）；[] = 声明了"没用到事实"（合法）。
-    模型有时会把 `[1,3]` 回成字符串 `"1,3"` 或 `"[1, 3]"`，所以这里宽容解析，
-    但**解析不出来时返回 None**（宁可按"没声明"报，也不假装声明过）。
+    不静默带病产出：异常消息带全部违规明细，由 `generate()` 的单平台失败路径
+    记录进 failures，其余平台成果照常交付。
     """
-    if raw is None:
-        return None
-    if isinstance(raw, str):
-        # 显式的"空声明"（`[]` / `空` / `无`）→ `[]`；**其它非空但无数字的串是垃圾** → None。
-        # 不能把垃圾当成"声明了空" —— 那会把违规伪装成合法（三态语义的关键）。
-        bare = raw.strip().strip("[]").strip()
-        if not bare or bare.lower() in ("空", "无", "none", "null"):
-            return []
-        raw = re.findall(r"\d+", raw)
-        if not raw:
-            return None
-    if not isinstance(raw, (list, tuple)):
-        return None
-    out: list[int] = []
-    for x in raw:
-        try:
-            out.append(int(x))
-        except (TypeError, ValueError):
-            continue
-    return out
+
+    def __init__(self, violations: list[str]):
+        self.violations = list(violations)
+        super().__init__("skeleton_gate: " + "；".join(violations))
 
 
 def run_draft(
@@ -197,27 +224,45 @@ def run_draft(
     template: UserTemplate | None = None,
     creator_profile: dict | None = None,
     retrospect_hints: list[str] | None = None,
-) -> DraftPayload:
+) -> tuple[DraftPayload, list[str]]:
+    """成稿 = 骨架 → 装配 → 机械门（ADR-025）。返回 `(成稿, 软违规)`。
+
+    - mock：`_mock_skeleton` 造骨架，走**同一个装配器**（逻辑只有一份）；
+      硬违规只告警不拦截（mock 契约 = 无 Key 也能出稿；有测试钉住它恒为零）。
+    - 真实：硬违规 → 带违规清单修复一轮 → 仍硬违规 → 抛 `SkeletonGateError`。
+    - `facts_used` 由装配器从各段声明计算 —— 模型自报的字段不再采信
+      （自报会全量声明，让 QA 的「超出声明」核对形同虚设，factguard 实测）。
+    """
     if llm.is_mock():
-        return _mock_draft(code, dna, mat, brief, template, creator_profile, retrospect_hints)
+        sk, extra = _mock_skeleton(code, dna, mat, brief, template,
+                                   creator_profile, retrospect_hints)
+        res = assemble_skeleton(sk, mat.facts, extra_evidence=extra)
+        if res.hard:      # 不应发生（test_skeleton 用语料级样本钉住恒零）
+            logger.warning("mock 骨架装配硬违规（请修 mock 或装配器）：%s", res.hard)
+        return res.draft, res.soft + [f"[mock门]{v}" for v in res.hard]
+
+    extra = _extra_evidence(template, creator_profile)
     tpl = template.model_dump() if template else None
-    data = llm.chat_json(
-        build_draft_prompt(dna, mat, brief, feedback, tpl, creator_profile, retrospect_hints),
-        system=DRAFT_SYSTEM, temperature=0.8,
-        scene="draft", platform=dna.get("code"),
-    )
-    return DraftPayload(
-        titles=[str(t).strip() for t in (data.get("titles") or []) if str(t).strip()][:3],
-        body=str(data.get("body", "")).strip(),
-        tags=[str(t).strip().lstrip("#") for t in (data.get("tags") or []) if str(t).strip()][:8],
-        cover_suggestion=str(data.get("cover_suggestion", "")).strip(),
-        interaction_line=str(data.get("interaction_line", "")).strip(),
-        rationale=str(data.get("rationale", "")).strip(),
-        # ⚠️ 这一行不能漏：`run_draft` 是**逐字段构造**的，
-        # 漏掉字段不会报错，只会让 `facts_used` 永远是 None —— 整个声明机制静默失效
-        # （实测踩到：smoke 跑出来 facts_used=None，而单独测 prompt 时模型明明回了 [1,2,3]）
-        facts_used=_coerce_facts_used(data.get("facts_used")),
-    )
+
+    def _call_once(fb: str | None) -> AssembleResult:
+        data = llm.chat_json(
+            build_draft_skeleton_prompt(dna, mat, brief, fb, tpl,
+                                        creator_profile, retrospect_hints),
+            system=DRAFT_SYSTEM, temperature=0.8,
+            scene="draft", platform=dna.get("code"),
+        )
+        return assemble_skeleton(parse_skeleton(data), mat.facts, extra_evidence=extra)
+
+    res = _call_once(None)
+    if res.hard:
+        repair = ("机械校验未通过，逐条修复：\n"
+                  + "\n".join(f"- {v}" for v in res.hard)
+                  + "\n重新输出**完整**骨架 JSON（含全部字段）。")
+        logger.info("骨架机械门未通过（%d 项），修复一轮：%s", len(res.hard), res.hard)
+        res = _call_once(repair)
+        if res.hard:
+            raise SkeletonGateError(res.hard)
+    return res.draft, res.soft
 
 
 # ---------------------------------------------------------------- clip_sheet（FR-50, A阶段）
@@ -574,12 +619,17 @@ def _generate_one(code: str, mat: StructuredMaterial, tone_override: str | None,
     with _stage(log, f"平台:{code}:策略") as r:
         brief = run_brief(code, dna, mat, tone_override, template, creator_profile, retrospect_hints)
         r.done("策略完成")
+    gate_soft: list[str] = []
     with _stage(log, f"平台:{code}:成稿") as r:
-        draft = run_draft(code, dna, mat, brief, template=template,
-                          creator_profile=creator_profile, retrospect_hints=retrospect_hints)
-        r.done("成稿完成")
+        draft, gate_soft = run_draft(code, dna, mat, brief, template=template,
+                                     creator_profile=creator_profile,
+                                     retrospect_hints=retrospect_hints)
+        r.done("成稿完成" if not gate_soft else f"成稿完成（{len(gate_soft)} 项软提醒）")
     with _stage(log, f"平台:{code}:质检") as r:
         qa = run_qa(dna, draft, mat, source_text)
+        # 骨架机械门的软违规（如疑似未声明专名）并进 QA warnings —— 不阻断，但要可见
+        if gate_soft:
+            qa = qa.model_copy(update={"warnings": list(qa.warnings) + list(gate_soft)})
         r.done("通过" if qa.passed else f"未通过（{len(qa.issues)} 项）")
 
     # 真实模式下 QA 未通过 → **定向**重写（T6），轮数可配（T7）
@@ -590,9 +640,11 @@ def _generate_one(code: str, mat: StructuredMaterial, tone_override: str | None,
         for attempt in range(1, rounds + 1):
             feedback = _build_targeted_feedback(qa)
             with _stage(log, f"平台:{code}:改写{attempt}" if rounds > 1 else f"平台:{code}:改写") as r:
-                draft = run_draft(code, dna, mat, brief, feedback=feedback, template=template,
-                                  creator_profile=creator_profile, retrospect_hints=retrospect_hints)
+                draft, gate_soft = run_draft(code, dna, mat, brief, feedback=feedback, template=template,
+                                             creator_profile=creator_profile, retrospect_hints=retrospect_hints)
                 qa = run_qa(dna, draft, mat, source_text)
+                if gate_soft:
+                    qa = qa.model_copy(update={"warnings": list(qa.warnings) + list(gate_soft)})
                 r.done("改写后通过" if qa.passed else f"改写{attempt}后仍未通过")
             if qa.passed:
                 break

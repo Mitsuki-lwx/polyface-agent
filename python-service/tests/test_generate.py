@@ -190,7 +190,7 @@ def test_profile_and_retro_compose_clean():
 def test_template_carried_into_brief_and_draft_prompts():
     """真实模式：用户模板字段必须进入 brief/draft 的 prompt payload。"""
     from app import dna as dna_lib
-    from app.pipeline.prompts import build_brief_prompt, build_draft_prompt
+    from app.pipeline.prompts import build_brief_prompt, build_draft_skeleton_prompt
     from app.schemas_gen import Brief
 
     d = dna_lib.load_dna("xhs")
@@ -201,7 +201,7 @@ def test_template_carried_into_brief_and_draft_prompts():
                   structure_plan="sp", tag_direction=["t"], rationale="r")
 
     bp = build_brief_prompt(d, mat, None, tpl)
-    dp = build_draft_prompt(d, mat, brief, None, tpl)
+    dp = build_draft_skeleton_prompt(d, mat, brief, None, tpl)
     for prompt in (bp, dp):
         assert "user_template" in prompt
         assert "E2E模板" in prompt

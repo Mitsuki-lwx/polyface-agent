@@ -43,7 +43,7 @@ def _blobs() -> dict[str, str]:
     brief = Brief(platform_code="xhs", angle="a", hooks=["h"], structure_plan="s")
     return {
         "brief": prompts.build_brief_prompt(d, mat, None),
-        "draft": prompts.build_draft_prompt(d, mat, brief),
+        "draft": prompts.build_draft_skeleton_prompt(d, mat, brief),
         "qa": prompts.build_qa_prompt(d, DraftPayload(titles=["t"], body="b"), mat),
     }
 

@@ -54,50 +54,62 @@ def _dna() -> dict:
             "limits": {"body_chars_max": 1000}, "viral_logic": []}
 
 
-# ---------------------------------------------------------------- 接线
+# ---------------------------------------------------------------- 接线（骨架式, ADR-025）
 
-def test_run_draft_carries_facts_used(monkeypatch):
-    """**核心接线守卫**：模型回了 facts_used，`run_draft` 必须把它带进产物。
+def _skeleton_ok() -> dict:
+    """一份能过机械门的骨架（facts：两万三 / 五十份简历）。"""
+    return {
+        "titles": ["标题"],
+        "paras": [
+            {"facts": [1], "role": "body", "text": "卡里就剩{{n:1|两万三}}。"},
+            {"facts": [2], "role": "body", "text": "投了{{n:2|五十份}}简历。"},
+        ],
+        "tags": ["t"], "rationale": "r",
+    }
 
-    漏掉这一行不会报错 —— 只会让整个声明机制静默失效。
+
+def test_run_draft_computes_facts_used_from_paras(monkeypatch):
+    """**核心接线守卫（ADR-025）**：`facts_used` 由代码从各段声明计算，
+    不再采信模型自报 —— 自报会全量声明，让「超出声明」核对形同虚设。
     """
     monkeypatch.setattr(llm, "is_mock", lambda: False)
-    monkeypatch.setattr(llm, "chat_json", lambda *a, **k: {
-        "titles": ["标题"], "body": "正文", "tags": ["t"],
-        "facts_used": [1, 2], "rationale": "r"})
-    d = gen.run_draft("xhs", _dna(), _mat(), _brief())
-    assert d.facts_used == [1, 2]
+    monkeypatch.setattr(llm, "chat_json", lambda *a, **k: _skeleton_ok())
+    d, soft = gen.run_draft("xhs", _dna(), _mat(), _brief())
+    assert d.facts_used == [1, 2]            # 段声明的并集
+    assert d.body == "卡里就剩两万三。\n\n投了五十份简历。"   # 槽位已回填、段落已拼接
+    assert soft == []
 
 
-def test_run_draft_keeps_none_when_model_omits(monkeypatch):
-    """模型没回这个字段 → 必须是 `None`（= 没声明，违规），**不能**被填成 `[]`。"""
+def test_run_draft_ignores_model_declared_facts_used(monkeypatch):
+    """模型就算自报了 facts_used 也必须被忽略（以段声明为准）。"""
     monkeypatch.setattr(llm, "is_mock", lambda: False)
-    monkeypatch.setattr(llm, "chat_json", lambda *a, **k: {
-        "titles": ["标题"], "body": "正文", "tags": ["t"]})
-    d = gen.run_draft("xhs", _dna(), _mat(), _brief())
-    assert d.facts_used is None
+    sk = _skeleton_ok()
+    sk["facts_used"] = [1, 2, 3, 4, 5]       # 典型的"全量声明"
+    monkeypatch.setattr(llm, "chat_json", lambda *a, **k: sk)
+    d, _ = gen.run_draft("xhs", _dna(), _mat(), _brief())
+    assert d.facts_used == [1, 2]            # 只认段声明
 
 
-# ---------------------------------------------------------------- 宽容解析
+def test_run_draft_repairs_gate_then_raises(monkeypatch):
+    """机械门两段行为：先修复一轮；仍硬违规 → `SkeletonGateError`（FR-70 显式失败）。"""
+    monkeypatch.setattr(llm, "is_mock", lambda: False)
+    bad = _skeleton_ok()
+    bad["paras"][0]["text"] = "卡里就剩199。"          # 裸数字，硬违规
+    calls = {"n": 0}
 
-@pytest.mark.parametrize("raw,expect", [
-    ([1, 2], [1, 2]),
-    (["1", "3"], [1, 3]),
-    ("[1, 3]", [1, 3]),          # 模型有时把列表回成字符串
-    ("1、3", [1, 3]),
-    ([], []),                    # 声明了"没用到事实" —— 合法，且与 None 不同
-    (None, None),                # 没声明
-    ("说不清", None),             # 解析不出来 → 按"没声明"处理，不假装声明过
-])
-def test_coerce_facts_used(raw, expect):
-    assert gen._coerce_facts_used(raw) == expect
+    def fake_chat(*a, **k):
+        calls["n"] += 1
+        return bad if calls["n"] == 1 else _skeleton_ok()
 
+    monkeypatch.setattr(llm, "chat_json", fake_chat)
+    d, _ = gen.run_draft("xhs", _dna(), _mat(), _brief())
+    assert calls["n"] == 2                     # 修复轮真的发生了
+    assert d.facts_used == [1, 2]              # 修好了就用修复后的
 
-def test_none_and_empty_are_different():
-    """**三态语义**：None（没声明）与 []（声明了空）必须可区分。"""
-    assert gen._coerce_facts_used(None) is None
-    assert gen._coerce_facts_used([]) == []
-    assert gen._coerce_facts_used(None) != gen._coerce_facts_used([])
+    monkeypatch.setattr(llm, "chat_json", lambda *a, **k: bad)
+    with pytest.raises(gen.SkeletonGateError) as ei:
+        gen.run_draft("xhs", _dna(), _mat(), _brief())
+    assert "199" in str(ei.value)              # 违规明细要能读
 
 
 # ---------------------------------------------------------------- 证据集合

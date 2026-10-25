@@ -68,7 +68,7 @@ def test_shared_builder_shares_fingerprint():
 def test_template_does_not_contain_material():
     """存的是**模板**，不该含素材正文（素材是运行时拼进去的）。"""
     tpl = prompts.template_for_scene("draft")
-    assert tpl and "def build_draft_prompt" in tpl
+    assert tpl and "def build_draft_skeleton_prompt" in tpl
 
 
 # ---------------------------------------------------------------- 存储
@@ -108,7 +108,7 @@ def test_fingerprint_equals_independently_recomputed_hash():
     """
     import hashlib
     import inspect
-    src = inspect.getsource(prompts.build_draft_prompt)
+    src = inspect.getsource(prompts.build_draft_skeleton_prompt)
     want = hashlib.sha256(src.encode("utf-8")).hexdigest()[:12]
     assert prompts.fingerprint_for_scene("draft") == want
 
