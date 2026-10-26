@@ -230,7 +230,26 @@ async def main():
 
             # ---------- D1/D2/D3 表述边界 ----------
             badge = await cdp.ev("(document.querySelector('.qa-badge')||{}).textContent||''")
-            check("D1 徽标为「未发现阻断问题」", "未发现阻断问题" in badge, badge.strip()[:60])
+            # **徽标不是固定文案**（2026-10-26 修）：质检判定依赖**模型当场输出**，
+            # 可能是「未发现阻断问题」，也可能是「质检未通过（N 个问题）」——**两者都是正常工作** ✗。
+            # 原来写死要「未发现阻断问题」，于是 QA 一判 needs_review 就红（跟 G3/M5 同一类错）。
+            # 要验的是**徽标与后端 qa.passed 一致** ✓。
+            _mid = await cdp.ev("(typeof currentMaterialId!=='undefined')?currentMaterialId:0")
+            _passed = None
+            try:
+                _m = json.loads(urllib.request.urlopen(
+                    f"{BASE}/api/materials/{_mid}", timeout=30).read().decode())
+                _did = ((_m.get("drafts") or [{}])[0] or {}).get("id")
+                if _did:
+                    _d = json.loads(urllib.request.urlopen(
+                        f"{BASE}/api/drafts/{_did}", timeout=30).read().decode())
+                    _passed = bool((_d.get("qa") or {}).get("passed"))
+            except Exception as e:
+                info("D1 取 qa.passed 失败", str(e)[:80])
+            _expect = "未发现阻断问题" if _passed else "质检未通过"
+            check("D1 徽标与后端 qa.passed 一致",
+                  _passed is not None and _expect in badge,
+                  f"qa.passed={_passed} badge={badge.strip()[:44]}")
             disclaim2 = await cdp.ev("document.body.innerText.indexOf('不代表事实无误')>=0")
             check("D2 免责说明存在", disclaim2)
             tr = await cdp.ev("(document.getElementById('traceLine')||{}).textContent||''")
