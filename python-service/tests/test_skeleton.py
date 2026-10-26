@@ -137,6 +137,29 @@ def test_g3_bare_number_rejected():
     assert any("声明依据之外的数字" in h and "199" in h for h in res.hard)
 
 
+def test_g3_number_from_other_fact_is_soft_not_hard():
+    """数字在**别的**事实里（素材里有依据）→ 软违规，**不是幻觉**（2026-10-26 修）。
+
+    实测来源：`eval/reports/skeleton-v1` 的 m07 —— 段5 声明事实 3，
+    却写了事实 7 里的「一千五」（素材原文："对方报价一千五一条图文"）。
+    原来判**硬违规** → 整个调用 `SkeletonGateError` → 该格算 `call_failed`，
+    通过率因此掉 4 格 ✗。而评测 A1 的口径本来就是「素材**或**事实清单里有依据」。
+    """
+    facts = _facts("转折点出现在第67天。", "第一次商单对方报价一千五一条图文。")
+    sk = _sk(paras=[({1}, "第一次商单报价一千五。")])
+    res = assemble_skeleton(sk, facts)
+    assert res.hard == [], f"素材里有依据的数字不该判硬违规：{res.hard}"
+    assert any("一千五" in x for x in res.soft), f"应报软违规：{res.soft}"
+
+
+def test_g3_number_absent_from_material_still_hard():
+    """素材里**也**没有的数字 → 仍然硬违规（真幻觉必须拦）。"""
+    facts = _facts("转折点出现在第67天。", "第一次商单对方报价一千五一条图文。")
+    sk = _sk(paras=[({1}, "后来我月入五万。")])
+    res = assemble_skeleton(sk, facts)
+    assert any("五万" in h for h in res.hard), f"素材外数字必须拦：{res.hard}"
+
+
 def test_g3_equivalent_rewrite_passes():
     """素材「三步」→ 正文「3步」（声明事实含「三步」）：改写不是编造，必须放行。"""
     facts = _facts("我总结出三步方法。")

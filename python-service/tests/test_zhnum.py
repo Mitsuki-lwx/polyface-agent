@@ -139,3 +139,33 @@ def test_every_cn_char_is_handled_by_parse():
             Z.parse(ch)
         except Exception as e:  # noqa: BLE001
             raise AssertionError(f"parse({ch!r}) 抛了 {type(e).__name__}: {e}") from e
+
+def test_stops_before_measure_word():
+    """「一千五一条图文」= 1500 + 「一条」的「一」，**不是** 1100（2026-10-26 修）。
+
+    中文数字解析的贪心 bug：`_CN_RE` 把连续汉字数字字符整串吃掉 →「一千五一」→ 1100 ✗。
+    后果不只是显示错：素材侧算 1100、稿件侧「一千五」算 1500 → 数字依据校验判"越界" →
+    `skeleton_gate` 把整个调用判死（`SkeletonGateError`），
+    `eval/reports/skeleton-v1` 里 4 格因此算 `call_failed`（通过率掉 4 个点）。
+    """
+    from app.pipeline.numberish import num_values
+    got = num_values("对方报价一千五一条图文。", strict=True)
+    assert 1500 in got, got
+    assert 1100 not in got, got
+
+
+def test_keeps_zero_placeholder():
+    """「一千零五」= 1005 —— 不能因为"连续数字字符"被毙掉（这次改动的回归防线）。"""
+    from app.pipeline.numberish import num_values
+    assert 1005 in num_values("一千零五", strict=True)
+    assert 1510 in num_values("一千五百一十", strict=True)
+
+
+def test_common_forms_unchanged():
+    """既有口径不能被这次改动带偏。"""
+    from app.pipeline.numberish import num_values
+    for text, exp in [("九十九", 99), ("两万三", 23000), ("三千二", 3200),
+                      ("十万", 100000), ("五成", 50)]:
+        assert exp in num_values(text, strict=True), (text, exp)
+    assert num_values("迈出这一步", strict=True) == {}
+    assert num_values("两年后", strict=True) == {}

@@ -52,6 +52,8 @@ def parse(text: str) -> int | None:
     number = 0         # 当前累积的阿拉伯位
     zero_after_unit = False   # 见过「零」→ 末尾那位是**个位**，不是省略单位
     seen_digit = False        # 见过数字字符（「十万」没有，但它是合法的）
+    prev_digit = False        # 上一个字符是数字字符（见下方连续判定）
+    prev_ch = ""              # 上一个数字字符本身（判断是不是「零」占位）
 
     for ch in text:
         if ch == "成":
@@ -63,10 +65,27 @@ def parse(text: str) -> int | None:
             # 也就是**生产里任何一句含「成」的稿件都会让整个平台生成失败**（实测炸过）。
             return None
         if ch in FILLERS:
+            prev_digit = False
+            prev_ch = ""
             continue
         if ch in DIGITS:
+            # **连续两个数字字符**（且前一个不是「零」占位）→ 这不是一个合法中文数字，**不猜**。
+            #
+            # 实测（2026-10-26）：素材「对方报价**一千五一条**图文」被 `_CN_RE` 整串吃成
+            # 「一千五一」→ 解析出 **1100** ✗（正确是 1500 + 「一条」的「一」）。
+            # 后果不是小错：素材侧算出 1100、稿件侧「一千五」算出 1500 → 数字依据校验判"越界" ✗，
+            # `skeleton_gate` 直接把整个调用判死（`SkeletonGateError`），
+            # eval 里 4 格因此算 `call_failed`，通过率掉 4 个点。
+            #
+            # 「一千零五」里的 零→五 是**合法**的（有「零」占位），所以要放行。
+            # 放行条件看的是**前一个**字符是不是「零」占位（「一千零五」合法 ✓），
+            # 不是当前字符 —— 写反了会把「一千零五」也毙掉（实测踩到 ✗）。
+            if prev_digit and prev_ch not in ("零", "〇"):
+                return None
             number = DIGITS[ch]
             seen_digit = True
+            prev_digit = True
+            prev_ch = ch
             if ch in ("零", "〇") and last_unit:
                 zero_after_unit = True
         else:
@@ -81,6 +100,8 @@ def parse(text: str) -> int | None:
             last_unit = unit
             zero_after_unit = False
             number = 0
+            prev_digit = False
+            prev_ch = ""
 
     if number:
         # 口语省略末位单位：「两万三」= 2万 + 3千，「三千二」= 3千 + 2百
@@ -99,16 +120,31 @@ def parse(text: str) -> int | None:
     return total + section
 
 
+def _scan(text: str, strict: bool):
+    """扫出中文数字。`_CN_RE` 会把**连续的汉字数字字符**整串吃掉，而那一串未必合法 ——
+    例如「一千五一条图文」里的「一千五一」✗。
+
+    所以这里**带回退**：整串解析不了就逐步缩短，取**最长能解析**的前缀 ✓。
+    没有回退的话，`parse` 判 None 会让**整个 token 被丢掉** ——
+    于是「一千五」这个真数字在素材侧"隐身"，稿件侧却算得出来 → 又一类误报。
+    """
+    for m in _CN_RE.finditer(text or ""):
+        token = m.group(0)
+        cand = token
+        while len(cand) >= 1:
+            if not (strict and not (len(cand) >= 2 or any(c in UNITS for c in cand))):
+                v = parse(cand)
+                if v is not None:
+                    yield v, cand
+                    break
+            cand = cand[:-1]
+
+
 def tokens_in(text: str, *, strict: bool = False) -> dict[int, str]:
     """文本里中文数字的 **值 → 原文**。展示告警时要用原文（别把「九十九」显示成 99）。"""
     out: dict[int, str] = {}
-    for m in _CN_RE.finditer(text or ""):
-        token = m.group(0)
-        if strict and not (len(token) >= 2 or any(c in UNITS for c in token)):
-            continue
-        v = parse(token)
-        if v is not None:
-            out.setdefault(v, token)
+    for v, token in _scan(text, strict):
+        out.setdefault(v, token)
     return out
 
 
@@ -122,12 +158,4 @@ def numbers_in(text: str, *, strict: bool = False) -> set[int]:
     **用法是不对称的**：素材侧用宽松（都算"有依据"，宁可放过），
     稿件侧用严格（只查真正像数字的，宁可少报）。
     """
-    out: set[int] = set()
-    for m in _CN_RE.finditer(text or ""):
-        token = m.group(0)
-        if strict and not (len(token) >= 2 or any(c in UNITS for c in token)):
-            continue
-        v = parse(token)
-        if v is not None:
-            out.add(v)
-    return out
+    return {v for v, _ in _scan(text, strict)}

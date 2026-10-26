@@ -157,25 +157,46 @@ def _assemble_unit(kind: str, text: str, allowed_idx: set[int], facts: list[Fact
 
 
 def _gate_numbers(kind: str, text: str, evidence: list[str], hard: list[str],
-                  soft: list[str]) -> None:
+                  soft: list[str], material_evidence: list[str] | None = None) -> None:
     """G3：单元文本里的数字/年份必须落在证据集合里；专名疑似越界只报软违规。
 
-    证据集合 = 该单元声明的事实 ∪ 已回填表层 ∪ 豁免证据（用户模板等）。
-    口径与 `_rule_qa` / 评测 A1/A2 相同：证据侧宽松、稿件侧严格 ——
-    「迈出这一步」不会误报，真幻觉 `199` 一定拦。
+    **三级判定**（2026-10-26 修，此前只有两级 → 误伤）：
 
-    ⚠️ 证据为空**不是**跳过检查 —— 一段没声明任何事实，里面的数字就全是
-    无依据的（「没有可对照的证据」≠「数字合规」）。
+    1. 在该单元**声明的事实**里 → 通过；
+    2. 不在本段声明里，但**在素材（全部事实）里** → **软违规** ✓
+       —— 数字确实来自素材，只是模型没在本段把它声明进来。这**不是幻觉**，
+       而评测 A1 的口径（`scripts/eval/assertions.py`）本来就是「素材**或**事实清单里有依据」，
+       原来 docstring 自称"口径与评测 A1/A2 相同"，**实际更严** ✗；
+    3. 素材里也找不到 → **硬违规**（真幻觉，必须拦）。
+
+    为什么必须区分：`eval/reports/skeleton-v1` 里有 4 格是
+    `SkeletonGateError: 段5 出现声明依据之外的数字「一千五」` —— 而「一千五」
+    **就在素材原文里**（"对方报价一千五一条图文"）✗。按第 3 级判死 → 整个调用失败、
+    该格算 `call_failed`，通过率因此掉了 4 格。
+
+    ⚠️ 证据为空**不是**跳过检查 —— 一段没声明任何事实、且素材里也没有这个数字，
+    那它就是无依据的（「没有可对照的证据」≠「数字合规」）。
     """
     ev = " ".join(x for x in evidence if x)
     allowed_vals = set(num_values(ev, strict=False)) if ev else set()
+    mat = " ".join(x for x in (material_evidence or []) if x)
+    material_vals = set(num_values(mat, strict=False)) if mat else set()
     for v, tok in num_values(text, strict=True).items():
-        if v not in allowed_vals:
-            hard.append(f"{kind} 出现声明依据之外的数字「{tok}」")
+        if v in allowed_vals:
+            continue
+        if v in material_vals:
+            soft.append(f"{kind} 的数字「{tok}」不在本段声明的事实里（素材里有依据，非幻觉）")
+            continue
+        hard.append(f"{kind} 出现声明依据之外的数字「{tok}」")
     known_years = set(_YEAR_RE.findall(ev))
+    material_years = set(_YEAR_RE.findall(mat))
     for y in _YEAR_RE.findall(text):
-        if y not in known_years:
-            hard.append(f"{kind} 出现声明依据之外的年份「{y}」")
+        if y in known_years:
+            continue
+        if y in material_years:
+            soft.append(f"{kind} 的年份「{y}」不在本段声明的事实里（素材里有依据，非幻觉）")
+            continue
+        hard.append(f"{kind} 出现声明依据之外的年份「{y}」")
     # 专名疑似越界：软违规（专名抽取有漏，硬拦会误伤 —— 同 _rule_qa 的宁可不查）
     known_names = proper.extract(ev, strict=False) if ev else set()
     if known_names:
@@ -215,7 +236,8 @@ def assemble_skeleton(sk: DraftSkeleton, facts: list[Fact],
         if "{{" in filled:
             hard.append(f"段{i} 残留未回填的槽位写法（格式不对或未通过校验：检查 {{{{n:序号|表层}}}}）")
         evidence = [facts[n - 1].text for n in sorted(legal)] + extra
-        _gate_numbers(f"段{i}", filled, evidence, hard, soft)
+        _gate_numbers(f"段{i}", filled, evidence, hard, soft,
+                      material_evidence=[f.text for f in facts] + extra)
         para_texts.append(filled)
 
     # 标题的证据集合 = 全部事实 ∪ 豁免证据（标题是全篇层面，不绑定段 —— spec §3）
@@ -225,7 +247,8 @@ def assemble_skeleton(sk: DraftSkeleton, facts: list[Fact],
         filled = _assemble_unit(f"标题{i}", t, set(range(1, len(facts) + 1)), facts, extra, hard)
         if "{{" in filled:
             hard.append(f"标题{i} 残留未回填的槽位写法（格式不对或未通过校验）")
-        _gate_numbers(f"标题{i}", filled, title_evidence, hard, soft)
+        _gate_numbers(f"标题{i}", filled, title_evidence, hard, soft,
+                      material_evidence=title_evidence)
         titles.append(filled)
     titles = [t for t in titles if t.strip()]
     if not titles:
