@@ -273,7 +273,14 @@
       **已修**：给边界类判断（越界 / 重叠）单独用 `_ROUND_EPS = 5e-4`
       —— 与"秒值四舍五入到 3 位小数"的精度配套；`_EPS` 仍留给纯浮点噪声。
       修后：原来失败的用例**通过** ✓，而真越界（`100.5` vs `100.0`）**仍被拦住** ✓。
-- [ ] 上面每一步的**原始输出都留着**（写进 §8）
+- [x] 上面每一步的**原始输出都留着**（写进 §8）
+      **（2026-10-27）**：§8 末尾新增「原始输出归档」小节，收了五组：
+      ① 生成类真杀→resume 的完整 e2e 输出（含 `reused: true`）；
+      ② 粗剪类杀在「找停顿」→ resume（含 5 条 `[续跑] 跳过…`）；
+      ③ 全阶段完成时续跑（0.0s）；
+      ④ 端点守卫的 409 原文；
+      ⑤ 中断清理与舍入修复的**前后对照**。
+      每条都注明可从 `data/e2e-*/jobs/*/{events.jsonl,stderr.log,work/done/}` 复核 ✓。
 
 ---
 
@@ -297,6 +304,68 @@
       不是"已花的那些"
             **（2026-10-27 核对）**：`spec_resume.md` 第 26 行：「而**已花掉的 LLM 额度**不可恢复 ——
       这不是"重来一次"那么便宜」；第 41 行：「继续时**跳过已完成的平台/阶段**，不重跑、不重复花额度」✓
+
+### 原始输出归档（2026-10-27，本轮实测留下的）
+
+**① 生成类：真杀 Java → 重启 → resume**（`scripts/e2e_resume.py`，3 平台）
+
+```
+== 5) 重启后看状态（job 1）==
+   HTTP 200  status=interrupted  can_resume=True
+   error='服务重启时任务尚未结束（可继续）'
+== 6) 继续 ==
+   HTTP 200  {'job_id': 1, 'resumed': True, 'status': 'interrupted'}
+== 7) 等它跑完 ==
+   最终 status=succeeded
+   result={"ok": [{"platform_code": "xhs",    "draft_id": 1, "status": "qa_passed", "reused": true},
+                  {"platform_code": "douyin", "draft_id": 2, "status": "qa_passed"},
+                  {"platform_code": "zhihu",  "draft_id": 3, "status": "needs_review"}],
+           "failed": [], "ok_count": 3, "fail_count": 0}
+   落盘（续跑前）：['xhs']
+   落盘（续跑后）：['douyin', 'xhs', 'zhihu']
+✅ 端到端通过
+```
+
+**② 粗剪类：杀在「找停顿」→ 重启 → resume**（`data/e2e-reaper2`）
+
+```
+job 1 重启后: interrupted  can_resume=True
+  done_stages: ['探测', '去冗余', '找停顿', '剪裁', '抽音轨']      ← 没有转写 ✓
+resume → 200 {"job_id": 1, "resumed": true}
+[续跑] 跳过探测（已完成：720×1280，199.04s）
+[续跑] 跳过去冗余（已完成：判出 0 段）
+[续跑] 跳过找停顿（已完成：32 段静音，剪掉 81.31s）
+[续跑] 跳过剪裁（已完成）
+[续跑] 跳过抽音轨（已完成）
+耗时 53s → succeeded
+```
+
+**③ 全阶段都完成时的续跑**（`data/e2e-resume`）
+
+```
+[续跑] 跳过 7 个已完成阶段 ['探测','去冗余','找停顿','剪裁','抽音轨','转写','烧字幕']
+耗时 0.0s → succeeded
+```
+
+**④ 端点守卫**（对不该续跑的状态调 resume / retry）
+
+```
+对 succeeded 调 resume → 409 {"detail":"只有「已中断」的任务能继续，当前状态：succeeded"}
+对 interrupted 调 retry → 409 {"detail":"这个任务是「已中断」—— 请用 resume 接着跑；
+                                    retry 会从头重跑，把已经跑过的部分再花一遍额度"}
+```
+
+**⑤ 中断清理与舍入修复的前后对照**
+
+```
+杀 Java 不带子进程走（修复前）：done/ 6 个阶段、含转写 ✗、孤儿 python 2 个 ✗
+补 JobReaper 后（优雅停）      ：done/ 5 个阶段、无转写 ✓、孤儿 python 0 个 ✓
+舍入误判（修复前）：TimelineError: 第 33 段 [198.965, 199.045] 越界：源视频只有 199.045s
+舍入修复后        ：同一时间线通过 ✓；真越界（100.5 vs 100.0）仍被拦住 ✓
+```
+
+> 每一条都能从 `data/e2e-*/jobs/*/{events.jsonl,stderr.log,work/done/}` 与
+> `data/e2e-*/polyface.db` 复核 ✓ —— 报告里只放结论，原始文件留在数据目录。
 
 ---
 
