@@ -473,11 +473,23 @@ def main(argv: list[str] | None = None) -> int:
         if _u is not None and out.exists():
             print("[续跑] 跳过烧字幕（已完成）")
         else:
-            if params.burn_subs:
+            if params.burn_subs and segments:
                 with log.stage("烧字幕") as r:
                     rc.burn_subtitles(cut, out, srt, params, expected_sec=after,
                                       on_progress=r.progress, on_raw=log.raw)
                     r.done(str(out.name))
+            elif params.burn_subs:
+                # **没有可烧的字幕**（素材里没识别到语音，或字幕全落在被剪区间里）
+                # → 不烧，直接过，并说清原因。
+                #
+                # 原来没有这个分支：会把 `segments_to_srt([])` 产出的**空字符串**写成 srt，
+                # 再喂给 ffmpeg 的 subtitles 滤镜 → 报
+                # 「烧字幕失败：Unable to open out.srt / Error initializing filters」✗。
+                # 那句话用户看不懂，也修不了 —— **素材本来就没有语音**，
+                # 正确行为是"出一版无字幕的成片 + 告诉他为什么"，不是整条任务失败 ✗。
+                print(f"  [提示] 没有可烧的字幕（识别到 {len(segments)} 段）"
+                      f"—— 跳过烧字幕，成片将不含字幕。")
+                out.write_bytes(cut.read_bytes())
             else:
                 out.write_bytes(cut.read_bytes())
             res.put("烧字幕", out=str(out))
