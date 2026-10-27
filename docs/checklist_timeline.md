@@ -99,7 +99,31 @@
       （对照：源图无字幕是 `68d30aef04`））
       ⚠️ 参数结构要注意：`segments` 在 **`timeline` 体内**（`GET` 返回 `{asset_id,…,timeline:{keep,segments,source,version}}`），
       我第一次改的是顶层 `segments`（空数组），保存成了空操作 ✗。
-- [ ] 重渲染是**任务**：能看到进度、能取消
+- [x] 重渲染是**任务**：能看到进度、能取消
+      **实测通过（2026-10-27），但过程中发现并修掉一个真 bug** ✗：
+
+      **进度** ✓：任务对象带 `progress`，轮询能看到阶段递进 ——
+      `{'stage': ''}` → `{'stage': '探测'}` → `{'stage': '剪裁', done_stages: ['探测'], last_message: '720×1280，24.84…'}`
+      → `{'stage': '烧字幕', pct: 100.0}` → `succeeded` ✓。
+
+      **取消** ✗→✓：**原来对刚发起的任务不生效** ✗。根因是竞态 ——
+      `RoughcutRunner.execute` 里 `store.markJobRunning()` 在 `pb.start()` **之前**、
+      `running.put()` **之前**，中间有窗口：状态已是 `running`、进程还没登记。
+      那一刻调 `cancel()` → `running.get()` 拿不到进程 → `killed=false`；
+      而 `abandoned` 只认 `interrupted` → 也是 false → 回 `{"canceled": false}`，
+      **任务照跑到底** ✗（实测：发起渲染后立刻取消，两个 job 都变成 `succeeded`）。
+
+      **修法**（两处）：
+      1. `JobController.cancel`：把 `queued`/`running` 也认作"可放弃"（原本只认 `interrupted`）；
+      2. `RoughcutRunner.execute`：`running.put()` 之后**补一次取消检查** ——
+         若期间已被标 canceled，立刻 `destroyForcibly()` 并如实收尾。
+
+      **修后实测**：
+      ```
+      delay=0.0s → {"canceled": true, "status": "canceled"}  最终 canceled ✓
+      delay=0.5s → {"canceled": true, "status": "canceled"}  最终 canceled ✓
+      ```
+      Java 单测 **132 passed** ✓ 无回归。
 - [ ] 重渲染任务**能断点续跑**（杀掉重启 → `interrupted`）
 
 ---

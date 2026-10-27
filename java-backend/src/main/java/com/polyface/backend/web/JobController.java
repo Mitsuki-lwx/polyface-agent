@@ -471,7 +471,16 @@ public class JobController {
         };
         // 已中断的任务**没有进程可杀**，但它确实需要能被"放弃" ——
         // 否则它会永远躺在"可继续"里，用户既跑不掉也清不掉（见 docs/tasks_resume.md T8）。
-        boolean abandoned = !killed && Store.JOB_INTERRUPTED.equals(j.status());
+        //
+        // **2026-10-27 补 queued/running**：`RoughcutRunner.execute` 里 `markJobRunning` 早于
+        // `running.put`，中间有窗口 —— 那一刻 `cancel()` 拿不到进程（`killed=false`），
+        // 状态却已是 running，于是 `abandoned` 也是 false → 界面回 `{"canceled": false}`、
+        // **任务照跑到底** ✗（实测：发起渲染后立刻取消，两个 job 都 succeeded）。
+        // 现在把这两种状态也认作"可放弃"：标成 canceled 后，
+        // `execute` 会在登记进程后补一次检查并**真的杀掉**（见那里的注释）。
+        String st = j.status();
+        boolean abandoned = !killed && (Store.JOB_INTERRUPTED.equals(st)
+                || Store.JOB_RUNNING.equals(st) || Store.JOB_QUEUED.equals(st));
         if (killed || abandoned) {
             store.finishJob(id, Store.JOB_CANCELED,
                     abandoned ? "已放弃（不再继续）" : "已取消", null, null, null);

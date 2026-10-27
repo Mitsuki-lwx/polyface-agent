@@ -214,6 +214,17 @@ public class RoughcutRunner {
             pb.redirectOutput(errFile.toFile());
             Process p = pb.start();
             running.put(jobId, p);
+            // **补一次取消检查**（2026-10-27 修）：`markJobRunning` 在 `pb.start()` **之前**，
+            // 所以存在一个窗口——状态已是 running、进程还没进 `running` 表。
+            // 用户在那一刻按取消：`cancel()` 拿不到进程 → `killed=false` → 任务**照跑到底** ✗，
+            // 界面回 `{"canceled": false}`，用户看到"点了取消但什么都没发生"。
+            // 这里在登记之后再看一眼：若期间已被标 canceled，立刻杀掉并如实收尾。
+            if (Store.JOB_CANCELED.equals(store.getJob(jobId).map(Store.JobRow::status).orElse(""))) {
+                p.destroyForcibly();
+                try { p.waitFor(); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                store.finishJob(jobId, Store.JOB_CANCELED, "已取消", null, null, null);
+                return;
+            }
             exit = p.waitFor();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
