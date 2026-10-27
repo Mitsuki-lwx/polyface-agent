@@ -124,7 +124,15 @@
       delay=0.5s → {"canceled": true, "status": "canceled"}  最终 canceled ✓
       ```
       Java 单测 **132 passed** ✓ 无回归。
-- [ ] 重渲染任务**能断点续跑**（杀掉重启 → `interrupted`）
+- [x] 重渲染任务**能断点续跑**（杀掉重启 → `interrupted`）
+      **实测通过（2026-10-27）**：
+      1. 发起重渲染（job 16）→ `sleep 0.3` → `Stop-Process -Force` 杀掉 Java；
+      2. 杀完库里 job 16 仍是 **`running`**（正是那个"永远不会动的进度条"状态 ✗）；
+      3. 重启 Java → 启动清理（`RoughcutRunner.recoverInterrupted`）把它标成
+         **`interrupted`**，`error = "服务重启时任务尚未结束（可继续）"`，API 里 **`can_resume: True`** ✓。
+
+      **为什么是 `interrupted` 而不是 `failed`** ✓（代码注释写明）：粗剪的中间产物本来就落盘保留，
+      用户点一下就能从断掉的阶段接着跑；标 failed 会让它从"可继续"里消失 ✗。
 
 ---
 
