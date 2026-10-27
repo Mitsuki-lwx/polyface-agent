@@ -22,6 +22,18 @@ VERSION = 1
 # 时间比较的容差（秒）：浮点运算后判断"有没有交叠"不能直接用 ==
 _EPS = 1e-6
 
+# **与"秒值被四舍五入到 3 位小数"配套的容差**（2026-10-27 修，实测踩到）。
+#
+# 时间线里的秒值落盘时是 `round(x, 3)`，所以最大误差 **5e-4**。
+# 而源时长来自 ffprobe、是**未舍入**的（如 `199.044844`）——
+# 于是"段尾 199.045"会大于"源时长 199.044844"，差 **0.000156 秒**。
+# 用 `_EPS = 1e-6` 判越界 → **整条渲染失败** ✗：
+#   `第 33 段 [198.965, 199.045] 越界：源视频只有 199.045s`
+# （报错里两个数看着相等，因为消息里也是 `.3f` 格式化过的 —— 更难排查 ✗）
+#
+# 所以边界类判断要用**与舍入精度同量级**的容差；`_EPS` 仍留给纯浮点噪声。
+_ROUND_EPS = 5e-4
+
 
 class TimelineError(ValueError):
     """时间线不合法。
@@ -210,11 +222,11 @@ def validate(tl: Any, source_duration: float | None = None) -> None:
             raise TimelineError(f"第 {i} 段的起止不是数字：{seg!r}") from None
         if e - s <= _EPS:
             raise TimelineError(f"第 {i} 段 [{s}, {e}] 的起不小于止")
-        if prev_end is not None and s < prev_end - _EPS:
+        if prev_end is not None and s < prev_end - _ROUND_EPS:
             raise TimelineError(
                 f"第 {i} 段 [{s}, {e}] 与上一段重叠（上一段止于 {prev_end}）—— "
                 f"保留区间必须升序且互不重叠")
-        if source_duration is not None and e > float(source_duration) + _EPS:
+        if source_duration is not None and e > float(source_duration) + _ROUND_EPS:
             raise TimelineError(
                 f"第 {i} 段 [{s}, {e}] 越界：源视频只有 {source_duration:.3f}s")
         prev_end = e
