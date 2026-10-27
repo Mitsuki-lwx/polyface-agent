@@ -68,6 +68,9 @@ public class RoughcutRunner {
         this.script = script == null || script.isBlank() ? "scripts/roughcut.py" : script;
         this.stallSec = stallSec;
         this.keepJobs = keepJobs;
+        // 退出时清理：杀掉还在跑的 job 子进程（含子孙）。见 JobReaper 的注释 ——
+        // 没有它的话，杀 Java 会把子进程留成孤儿，孤儿跑完还继续调 LLM ✗。
+        JobReaper.install("roughcut-reaper", () -> java.util.List.copyOf(running.values()));
         recoverInterrupted();
     }
 

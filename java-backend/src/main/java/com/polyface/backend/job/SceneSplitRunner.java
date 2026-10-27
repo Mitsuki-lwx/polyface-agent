@@ -80,6 +80,8 @@ public class SceneSplitRunner {
         this.script = script == null || script.isBlank() ? "scripts/roughcut.py" : script;
         this.stallSec = stallSec;
         this.keepJobs = keepJobs;
+        // 退出时清理：杀掉还在跑的 job 子进程（含子孙）。见 JobReaper 的注释。
+        JobReaper.install("scene-split-reaper", () -> java.util.List.copyOf(running.values()));
         // 不做自己的 recoverInterrupted：GenerateRunner.recoverInterrupted() 启动时按
         // in-flight 扫**全表**，对 scene_split 一视同仁地标「可继续」，这里不重复做。
     }
