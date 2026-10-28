@@ -88,7 +88,35 @@
 - [x] 落盘内容与返回的稿子**一致**（不是摘要、不是空壳）
             **实测（2026-10-27，`data/e2e-resume`）**：4 个落盘文件键均为 `['brief','draft','platform_code','platform_name','qa']`，
       且 `draft.body` 长度 **243 / 275 / 334 / 472** 字 —— **是完整稿子**，不是摘要或空壳 ✓
-- [ ] 粗剪在"转写"失败时，`done/` 里有 `stage-探测/找停顿/剪/抽音轨`，**没有**"转写"
+- [x] 粗剪在"转写"失败时，`done/` 里有 `stage-探测/找停顿/剪/抽音轨`，**没有**"转写"
+      **造出了"转写失败"，但失败点比判据设想的更早** ✗ —— 两条都记：
+
+      **怎么造的**：`POLYFACE_ASR_MODEL=definitely-not-a-real-model` 起 Java，
+      粗剪跑到 ASR 时**真抛错**：
+      ```
+      ValueError: Invalid model size 'definitely-not-a-real-model',
+                  expected one of: tiny.en, tiny, base.en, base, small.en, small, medium, …
+      ```
+
+      **实测结果**：
+      ```
+      粗剪最终: failed
+      work/done/ = ['stage-探测.json']     ← 只有探测
+      含转写 = False ✓                     ← 判据要的"没有转写"成立
+      ```
+      阶段推进：`▶ 探测 → ✓ → ▶ 去冗余 → ✗ 去冗余 失败`。
+
+      **为什么不是"探测/找停顿/剪/抽音轨都在、只缺转写"** ✗：
+      **「去冗余」也调 ASR**（`roughcut.py:339` 的 `asr.transcribe_words`），
+      而它排在「找停顿/剪裁/抽音轨/转写」**之前** —— 所以坏掉的 ASR 先把它打死 ✗。
+      要造出判据设想的那种"只缺转写"，得**单独关掉去冗余**，但：
+
+      **顺带发现一个缺口** ✗：`--no-dedup` 在 CLI 里有（`roughcut.py:110`），
+      可 **Java 的 `putIf` 表里没有它**（只有 `dedup_similarity` / `dedup_min_cut_sec`）——
+      **通过 API/界面关不掉去冗余** ✗。所以这条判据的"理想形态"当前**造不出来**。
+
+      **判据的核心成立** ✓（转写失败时 `done/` 里**没有** `stage-转写.json`）；
+      "前面那四个阶段都在"这半句，**受上面那个缺口限制，未验** ✗。
       ⚠️ **本轮没验成这条判据，但撞出一个真 bug 并修掉了** ✗：
       我造的"无语音素材"（`testsrc` + 静音音轨）走下来，**转写并没有"失败"** ——
       它"成功"了，只是产出 **0 段字幕**：
