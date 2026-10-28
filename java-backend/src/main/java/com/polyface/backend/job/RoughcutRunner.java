@@ -19,6 +19,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.polyface.backend.asset.AssetService;
 import com.polyface.backend.media.MediaDir;
 import com.polyface.backend.store.Store;
@@ -41,6 +43,7 @@ public class RoughcutRunner {
     private final Store store;
     private final MediaDir mediaDir;
     private final AssetService assets;
+    private final ObjectMapper mapper;
 
     private final String python;
     private final String script;
@@ -56,7 +59,7 @@ public class RoughcutRunner {
 
     private final Map<Long, Process> running = new ConcurrentHashMap<>();
 
-    public RoughcutRunner(Store store, MediaDir mediaDir, AssetService assets,
+    public RoughcutRunner(Store store, MediaDir mediaDir, AssetService assets, ObjectMapper mapper,
                           @Value("${polyface.roughcut.python:}") String python,
                           @Value("${polyface.roughcut.script:}") String script,
                           @Value("${polyface.roughcut.stall-sec:300}") int stallSec,
@@ -64,6 +67,7 @@ public class RoughcutRunner {
         this.store = store;
         this.mediaDir = mediaDir;
         this.assets = assets;
+        this.mapper = mapper;
         this.python = python == null || python.isBlank() ? "python-service/.venv/Scripts/python.exe" : python;
         this.script = script == null || script.isBlank() ? "scripts/roughcut.py" : script;
         this.stallSec = stallSec;
@@ -384,7 +388,7 @@ public class RoughcutRunner {
     }
 
     /** 成片产物：成片 + 字幕 + **初剪记录**（人工定稿要看它）。 */
-    private void registerFilmOutputs(long jobId, Path out, Path srt, Path plan) {
+    void registerFilmOutputs(long jobId, Path out, Path srt, Path plan) {
         try {
             Long srcAssetId = store.getJob(jobId).map(Store.JobRow::inputAssetId).orElse(null);
             String stem = out.getFileName().toString().replace(".mp4", "");
@@ -398,8 +402,42 @@ public class RoughcutRunner {
             if (srcAssetId != null) {
                 assets.link(outId, "asset", srcAssetId);
             }
+            // **血缘挂回成稿**（`docs/checklist_b1.md` §8-4）：这条成片是从哪份成稿来的。
+            // 剪辑单里本来就带 `source`（JobController 写进去的），照着挂即可 ——
+            // 与封面成图（CoverController 挂 `draft`）同一条约定。
+            // 没有这一步的话，成片在素材库里是**断线**的：界面上"已用于 N 处"永远是 0，
+            // 从成稿也查不到它出过什么片。
+            linkToSourceDraft(outId, plan);
         } catch (Exception e) {                              // noqa: BLE001
             log.warn("job {} 成片产物登记失败（任务本身仍算成功）：{}", jobId, e.getMessage());
+        }
+    }
+
+    /**
+     * 从剪辑单的 `source` 里读出来源，把产物**挂回成稿**。
+     *
+     * <p>读不到就跳过（老剪辑单没有 `source`，或成稿已被删）—— **不影响任务成功**：
+     * 血缘是附加信息，缺了不该让成片白跑。
+     */
+    void linkToSourceDraft(long assetId, Path plan) {
+        try {
+            if (!Files.isRegularFile(plan)) {
+                return;
+            }
+            JsonNode src = mapper.readTree(Files.readString(plan, StandardCharsets.UTF_8)).path("source");
+            long materialId = src.path("material_id").asLong(0);
+            String platform = src.path("platform").asText("");
+            if (materialId <= 0 || platform.isBlank()) {
+                return;
+            }
+            for (Store.DraftRow d : store.draftsByMaterial(materialId)) {
+                if (platform.equals(d.platformCode())) {
+                    assets.link(assetId, "draft", d.id());
+                    return;
+                }
+            }
+        } catch (Exception e) {                              // noqa: BLE001
+            log.warn("成片血缘挂回成稿失败（不影响任务成功）：{}", e.getMessage());
         }
     }
 

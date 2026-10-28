@@ -69,30 +69,35 @@ class _Worker:
         self.tail: list[str] = []          # 出错时给人看的那几行
 
     def _spawn(self) -> None:
-        self.queue = queue.Queue()
-        self.tail = []
+        # **队列与进程必须成对**：读线程若往"当前队列"里塞（`self.queue`），
+        # 重开之后新调用就会读到**旧进程的回复** —— 实测：请求 `DDD` 拿到旧进程的 `CCC`，
+        # 一个**静默的错误结果**（时长/音色全串了）。所以队列与 tail 都当参数传进去。
+        q: queue.Queue = queue.Queue()
+        tail: list[str] = []
+        self.queue = q
+        self.tail = tail
         self.proc = subprocess.Popen(
             self.cmd, cwd=self.dir, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
             bufsize=1)
-        threading.Thread(target=self._read_stdout, daemon=True).start()
-        threading.Thread(target=self._read_stderr, daemon=True).start()
+        threading.Thread(target=self._read_stdout, args=(self.proc, q), daemon=True).start()
+        threading.Thread(target=self._read_stderr, args=(self.proc, tail), daemon=True).start()
 
-    def _read_stdout(self) -> None:
-        p = self.proc
+    @staticmethod
+    def _read_stdout(p: subprocess.Popen, q: queue.Queue) -> None:
         try:
             for line in p.stdout:                        # type: ignore[union-attr]
-                self.queue.put(line)
+                q.put(line)
         except Exception:                                # noqa: BLE001
             pass
-        self.queue.put(None)                             # EOF 标记
+        q.put(None)                                      # EOF 标记
 
-    def _read_stderr(self) -> None:
-        p = self.proc
+    @staticmethod
+    def _read_stderr(p: subprocess.Popen, tail: list[str]) -> None:
         try:
             for line in p.stderr:                        # type: ignore[union-attr]
-                self.tail.append(line.rstrip())
-                del self.tail[:-20]                      # 只留最后 20 行
+                tail.append(line.rstrip())
+                del tail[:-20]                           # 只留最后 20 行
         except Exception:                                # noqa: BLE001
             pass
 
@@ -106,7 +111,7 @@ class _Worker:
                 self._spawn()
             try:
                 return self._once(req)
-            except (BrokenPipeError, OSError):
+            except (BrokenPipeError, OSError) as first:
                 # 插件上次回完就退出了（一问一答型）—— 重开再来
                 self._spawn()
                 try:
@@ -117,7 +122,8 @@ class _Worker:
                     raise PluginError(
                         f"插件 {self.id} 起不来或一启动就退出"
                         f"（退出码 {self.proc.poll() if self.proc else '?'}）："
-                        f"{' / '.join(self.tail[-3:])[:300] or '(没有输出)'}") from None
+                        f"{' / '.join(self.tail[-3:])[:300] or '(没有输出)'}"
+                        f"；重开前的失败：{first}") from None
 
     def _once(self, req: dict) -> dict:
         assert self.proc and self.proc.stdin
@@ -125,7 +131,14 @@ class _Worker:
             self.proc.stdin.write(json.dumps(req, ensure_ascii=False) + "\n")
             self.proc.stdin.flush()
         except Exception as e:                           # noqa: BLE001
-            raise PluginError(f"插件 {self.id} 写不进去（可能已退出）：{e}") from None
+            # **必须抛 OSError**（`call()` 靠它走"重开重试"）。
+            # 早先这里抛 `PluginError`（RuntimeError）—— `call()` 的
+            # `except (BrokenPipeError, OSError)` **接不到**，于是
+            # "进程正在退出时写不进去"（Windows 上偶发 `[Errno 22]`）
+            # 直接变成整镜配音失败。实测：一次成片 11 个分镜里 **3 个丢了旁白**
+            # （`tts.failed` 记着原因，成片被静音垫片顶住，但旁白就是没有）。
+            raise BrokenPipeError(
+                f"插件 {self.id} 写不进去（可能已退出）：{e}") from None
 
         deadline = time.monotonic() + self.timeout
         while True:

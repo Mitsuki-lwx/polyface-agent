@@ -289,7 +289,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---- 2) 对齐策略 ----
     bgm = str(plan.get("bgm") or "").strip() or None
-    bgm_offset, ratio, ratio_before = 0.0, 0.0, 0.0
+    # 对齐占比**没算的时候是 `None`（记录里是 `null`），不是 `0.0`**：
+    # `0%` 看着像"完全没对齐"，其实只是没测 —— 留一个会误导人的数比留空更糟
+    # （下面那句注释早就说了这个道理，只有"没节拍"这条路径没照做）。
+    # 给程序看的那个标记是 `beats.available`，两者分工不同。
+    bgm_offset, ratio, ratio_before = 0.0, None, None
     final = list(durations)
     if bgm and bt.is_available():
         try:

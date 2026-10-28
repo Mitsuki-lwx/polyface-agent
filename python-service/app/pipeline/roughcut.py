@@ -356,11 +356,30 @@ def srt_timestamp(t: float) -> str:
     return f"{int(h):02d}:{int(m):02d}:{s:06.3f}".replace(".", ",")
 
 
+# 键帽（`1️⃣`）= `数字 + 变体选择符(U+FE0F) + 组合用键帽(U+20E3)`。
+# libass **画不出这个组合**（实测：连 `FontName=Segoe UI Emoji` 也照样是豆腐块），
+# 而普通 emoji（📊 ✅ ✨ 🔥）靠字体回退**能**画出来 —— 所以只剥这两个组合符，
+# **数字留着**：`2️⃣ 压缩固定开支` → `2 压缩固定开支`（可读），
+# 原来的方块（□压缩固定开支）不可读。见 `docs/checklist_b1.md` §9-2。
+# 与 `numberish._KEYCAP_RE` 是同一件事的两面：那边**连数字一起**剥
+# （数字校验时序号不算主张），这边只剥组合符（渲染要留住序号）。
+_KEYCAP_MARKS_RE = re.compile(r"[\ufe0e\ufe0f]?\u20e3")
+
+
+def renderable_text(text: str) -> str:
+    """字幕文本 → **烧得出来**的字幕文本。
+
+    只管一件已知会画成豆腐块的事：键帽的组合符（见 `_KEYCAP_MARKS_RE`）。
+    不认识的字符不动它 —— 字体回退能画的就别替用户删。
+    """
+    return _KEYCAP_MARKS_RE.sub("", text or "")
+
+
 def segments_to_srt(segments: list[dict]) -> str:
     out = []
     for i, seg in enumerate(segments, 1):
         out.append(f"{i}\n{srt_timestamp(seg['start'])} --> {srt_timestamp(seg['end'])}\n"
-                   f"{seg['text'].strip()}\n")
+                   f"{renderable_text(seg['text']).strip()}\n")
     return "\n".join(out)
 
 

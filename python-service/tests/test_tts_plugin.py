@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import time
 import wave
 from pathlib import Path
 
@@ -221,6 +222,83 @@ def test_oneshot_plugin_is_respawned(plugdir, tmp_path):
         d = tp.synthesize("one-shot", f"第{i}次", tmp_path / f"o{i}.wav")
         assert d == pytest.approx(1.0), f"第 {i+1} 次失败 —— 重开逻辑没生效"
     tp.shutdown()
+
+
+def test_respawn_does_not_leak_old_process_replies(plugdir, tmp_path):
+    """**重开之后，旧进程的输出不许串进新调用**（队列必须与进程成对）。
+
+    实测过的错误形态：旧读线程往"当前队列"里塞，于是新请求 `DDD` 拿回了
+    旧进程的 `CCC` —— 一个**静默的错误结果**（时长/音色会全串），比报错危险得多。
+    """
+    _plugin(plugdir, "echoer", {"id": "echoer", "name": "回显", "kind": "tts",
+                                "run": {"command": ["{python}", "run.py"]}}, "run.py",
+            "import json,sys,wave\n"
+            "for line in sys.stdin:\n"
+            "    req=json.loads(line)\n"
+            "    with wave.open(req['out'],'wb') as w:\n"
+            "        w.setnchannels(1);w.setsampwidth(2);w.setframerate(22050)\n"
+            "        w.writeframes(b'\\x00\\x00'*22050)\n"
+            "    print(json.dumps({'ok':True,'seconds':1.0,'echo':req['text']}), flush=True)\n")
+    w = tp._worker_for(tp.load_plugins()[0][0])
+    assert w.call(_req(tmp_path, "a", "AAA"))["echo"] == "AAA"
+
+    old = w.proc                                  # 抓住旧进程，再模拟"死了要重开"
+    w._spawn()
+    old.stdin.write(json.dumps(_req(tmp_path, "c", "CCC")) + "\n")
+    old.stdin.flush()
+    _drain(w, seconds=1.0)                        # 让旧进程的回复有机会进队列
+
+    assert w.call(_req(tmp_path, "d", "DDD"))["echo"] == "DDD", \
+        "拿到了旧进程的回复 —— 队列没跟着进程换"
+    w.kill()
+    tp.shutdown()
+
+
+def test_write_failure_is_retried_not_fatal(plugdir, tmp_path):
+    """**写失败必须走"重开重试"**，不能直接判整镜失败。
+
+    实测过的错误形态：Windows 上插件正在退出时写 stdin 会偶发 `[Errno 22]`；
+    而 `_once` 当时把它包成 `PluginError`（RuntimeError），`call()` 的
+    `except (BrokenPipeError, OSError)` **接不到** —— 一次成片 11 个分镜里
+    **3 个丢了旁白**（成片被静音垫片顶住，所以没人发现，除了记录里的 `tts.failed`）。
+    """
+    _plugin(plugdir, "echoer2", {"id": "echoer2", "name": "回显", "kind": "tts",
+                                 "run": {"command": ["{python}", "run.py"]}}, "run.py",
+            "import json,sys,wave\n"
+            "for line in sys.stdin:\n"
+            "    req=json.loads(line)\n"
+            "    with wave.open(req['out'],'wb') as w:\n"
+            "        w.setnchannels(1);w.setsampwidth(2);w.setframerate(22050)\n"
+            "        w.writeframes(b'\\x00\\x00'*22050)\n"
+            "    print(json.dumps({'ok':True,'seconds':1.0,'echo':req['text']}), flush=True)\n")
+    w = tp._worker_for(tp.load_plugins()[0][0])
+    w._spawn()
+
+    class _DeadPipe:
+        """模拟"进程正在退出"时的 stdin：写就报 `[Errno 22]`。"""
+
+        def write(self, _s: str) -> None:
+            raise OSError(22, "Invalid argument")
+
+        def flush(self) -> None:
+            pass
+
+    w.proc.stdin = _DeadPipe()                    # 只坏这一次：重开时 _spawn() 会给真 stdin
+    assert w.call(_req(tmp_path, "e", "EEE"))["echo"] == "EEE", "写失败没有重试"
+    w.kill()
+    tp.shutdown()
+
+
+def _req(tmp_path: Path, name: str, text: str) -> dict:
+    return {"text": text, "out": str(tmp_path / f"{name}.wav"),
+            "voice": None, "rate": 0, "volume": 100}
+
+
+def _drain(w: tp._Worker, seconds: float) -> None:
+    """给读线程一点时间把旧进程的输出塞进队列（不这么做测试会偶发）。"""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline and w.queue.empty():
+        time.sleep(0.02)
 
 
 def test_serve_plugin_is_reused(plugdir, tmp_path):

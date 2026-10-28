@@ -118,6 +118,21 @@ def test_segments_to_srt_roundtrip():
     assert "2\n00:00:02,000 --> 00:00:04,500\n第二句" in srt
 
 
+def test_keycap_markers_are_stripped_for_rendering():
+    """键帽（`1️⃣`）**画不出来**（libass 给豆腐块），剥掉组合符、留住数字。
+
+    实测（2026-10-28）：`2️⃣ 压缩固定开支` 烧出来是 `□压缩固定开支`；
+    换 `FontName=Segoe UI Emoji` 也还是方块 —— 换字体治不了，只能剥组合符。
+    普通 emoji（📊 ✅ ✨ 🔥）字体回退能画，**不许动**。
+    """
+    srt = rc.segments_to_srt([{"start": 0.0, "end": 2.0, "text": "2️⃣ 压缩固定开支"},
+                              {"start": 2.0, "end": 4.0, "text": "📊 数据 & #️⃣ 井号"}])
+    assert "2 压缩固定开支" in srt, "数字要留住，只剥组合符"
+    assert "\u20e3" not in srt and "\ufe0f" not in srt, "组合符必须剥干净"
+    assert "📊 数据" in srt, "字体回退画得出来的 emoji 不许动"
+    assert "# 井号" in srt
+
+
 def test_simplified_prompt_is_simplified():
     """简体偏置提示词必须是简体中文 —— 这是治"whisper 输出繁体"的那一味药。"""
     assert asr.ZH_SIMPLIFIED_PROMPT == "以下是普通话的句子。"

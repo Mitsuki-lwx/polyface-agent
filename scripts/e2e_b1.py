@@ -116,6 +116,11 @@ def make_bgm(interval: float = 1.0, n: int = 40) -> Path:
     return p
 
 
+def _pct(v) -> str:
+    """对齐占比：`None` = **没测**（没 BGM 或没 librosa）—— 别打成 0%。"""
+    return "未检测" if v is None else f"{v:.0%}"
+
+
 def wait_job(job_id: int, label: str, timeout=2400):
     t0 = time.time()
     while time.time() - t0 < timeout:
@@ -202,7 +207,7 @@ def _from_material(mid: int) -> None:
                                capture_output=True, text=True).stdout.strip())
     print(f"   成片 {film.name}  {dur:.2f}s")
     print(f"   记录：策略 {rec['strategy']} · 分镜 {len(rec['scenes'])} 个 · "
-          f"对齐 {rec.get('aligned_ratio_before_offset', 0):.0%} → {rec['aligned_ratio']:.0%}")
+          f"对齐 {_pct(rec.get('aligned_ratio_before_offset'))} → {_pct(rec['aligned_ratio'])}")
     print(f"   时长：记录 {rec['film_sec']:.2f}s / 实际 {dur:.2f}s")
     assert abs(rec["film_sec"] - dur) <= 0.35, "记录与成片时长对不上"
     # **断言真实字段**（2026-10-18 修）：原来断言 `tts["available"]`，而记录的 schema
@@ -222,9 +227,9 @@ def _from_material(mid: int) -> None:
     films2 = [a for a in (assets.get("items") or []) if "图文成片" in (a.get("name") or "")]
     rec2 = json.loads((DATA / "media" / films2[0]["rel_path"]).with_suffix(".plan.json")
                       .read_text(encoding="utf-8"))
-    print(f"   voice_first：{rec['aligned_ratio_before_offset']:.0%} → {rec['aligned_ratio']:.0%}"
+    print(f"   voice_first：{_pct(rec['aligned_ratio_before_offset'])} → {_pct(rec['aligned_ratio'])}"
           f"   分镜 {[s['seconds'] for s in rec['scenes']]}")
-    print(f"   beat_first ：{rec2['aligned_ratio']:.0%}"
+    print(f"   beat_first ：{_pct(rec2['aligned_ratio'])}"
           f"   分镜 {[s['seconds'] for s in rec2['scenes']]}")
     assert rec2["aligned_ratio"] >= rec["aligned_ratio"] - 1e-9, "卡点优先不该更差"
     print("\n✅ 端到端通过")

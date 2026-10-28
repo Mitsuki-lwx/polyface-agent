@@ -192,7 +192,10 @@ def test_pipeline_survives_without_librosa(tmp_path, monkeypatch):
     rec = json.loads(out.with_suffix(".plan.json").read_text(encoding="utf-8"))
     assert rec["beats"]["available"] is False
     assert rec["beats"]["hint"]
-    assert rec["aligned_ratio"] == 0.0
+    # **没测就是没测**：写 `0.0` 会被读成"完全没对齐"，而真相是"没算"
+    # （`docs/checklist_b1.md` §3：「记录里对齐占比标为『未检测』」）
+    assert rec["aligned_ratio"] is None
+    assert rec["aligned_ratio_before_offset"] is None
 
 
 @pytest.mark.skipif(not tts.is_available(), reason="本机没有可用 TTS")
