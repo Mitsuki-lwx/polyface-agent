@@ -106,6 +106,14 @@ def pauses_vad(wav: str | Path, total: float, *,
     except Exception as e:                                   # noqa: BLE001
         return PauseResult([], source="unavailable", note=f"VAD 不可用：{str(e)[:150]}")
     pauses = pauses_between(win, total, min_pause=min_pause_sec)
+    # **一个语音窗口都没有 → 不剪，并说清楚**。
+    # 实测（2026-10-30）：一条 12s 的**纯 BGM** 素材（没有人声）→ VAD 给 0 个窗口
+    # → `pauses_between` 把"整条"当成一个停顿 → **12.00s 剪成 0.16s** ✗✗。
+    # "没找到人说话"不等于"全是废话"；这种素材该原样保留并如实说明
+    # （`checklist_bgm` §3：「路径在带 BGM 素材上**允许**给不出 —— 但要说明」）。
+    if not win:
+        return PauseResult([], source="vad",
+                           note="没检测到任何语音（整条都没有人声？）→ **不剪**，原样保留")
     return PauseResult(pauses, source="vad",
                        note=f"VAD 语音窗口 {len(win)} 个，最短静音 {min_pause_sec}s")
 
@@ -165,7 +173,7 @@ def pauses_between(windows: list[tuple[float, float]], total: float,
     return [(s, e) for s, e in out if e > s]
 
 
-# ---------------------------------------------------------------- 音量（用于 BGM 检测 / 降噪兜底）
+# ---------------------------------------------------------------- 音量（用于 BGM 检测）
 
 
 def mean_volume_db(wav: str | Path, *, start: float | None = None,
@@ -174,9 +182,14 @@ def mean_volume_db(wav: str | Path, *, start: float | None = None,
     cmd = [_ffmpeg_bin("ffmpeg"), "-hide_banner", "-nostats"]
     if start is not None:
         cmd += ["-ss", f"{start:.3f}"]
-    cmd += ["-i", str(wav)]
+    # **`-t` 必须放在 `-i` 之前**（当输入选项用）。放 `-i` 后面时它是"输出选项"，
+    # 本机实测**会被忽略** ✗：量 (0,2) 这段静音拿到 -24.9（= 整条 4s 的平均），
+    # 而量 (0,1) 又是对的 -91.0 —— 时灵时不灵 ✗。放前面两条都对 ✓。
+    # 后果很实在：`detect_bgm` 的"无人声窗口音量"会量到更长的范围 →
+    # 人声/伴奏对比度被稀释 → `has_bgm` 判错（而且**错得无声**）。
     if end is not None and start is not None:
         cmd += ["-t", f"{max(0.0, end - start):.3f}"]
+    cmd += ["-i", str(wav)]
     cmd += ["-af", "volumedetect", "-f", "null", "-"]
     cp = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
     err = cp.stderr or ""
@@ -289,20 +302,3 @@ def pick_bed_clip(quiet_windows: list[tuple[float, float]],
     if not usable:
         return None
     return max(usable, key=lambda w: w[1] - w[0])
-
-
-# ---------------------------------------------------------------- 降噪兜底
-
-
-#: 降噪滤镜（ffmpeg 内置）。`afftdn` 不需要额外模型文件，优先用它。
-#: `arnndn` 效果更好但要一个 .rnnn 模型（开源，另下）—— 有就带上，没有就只用 afftdn。
-DENOISE_CHAIN = "afftdn=nf=-25"
-
-
-def denoise_wav(src: str | Path, dst: str | Path, *, chain: str = DENOISE_CHAIN) -> None:
-    """降噪到另一个文件（兜底路径用：降噪后再跑 silencedetect）。"""
-    cp = subprocess.run([_ffmpeg_bin("ffmpeg"), "-y", "-hide_banner", "-loglevel", "error",
-                         "-i", str(src), "-af", chain, "-ac", "1", "-ar", "16000", str(dst)],
-                        capture_output=True, text=True, errors="replace")
-    if cp.returncode != 0:
-        raise RuntimeError(f"降噪失败：{(cp.stderr or '').strip()[:300]}")

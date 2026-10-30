@@ -231,6 +231,10 @@ def _find_pauses(src, work, params, log) -> tuple[list, str]:
         if res.source != "vad":
             print(f"  ⚠️ VAD 不可用（{res.note}）→ 退回音量门限")
             return rc.detect_pauses(src, params.noise_db, params.pause_sec, on_raw=log.raw), "音量门限"
+        # **一条都没找到语音时要说清楚**（否则用户看到"0 段"会以为工具坏了，
+        # 或者更糟：以为"没停顿"就是"没废话"）。见 `bgm.pauses_vad` 的注释。
+        if not res.pauses and res.note:
+            print(f"  ⚠️ {res.note}")
         return res.pauses, "vad"
     except Exception as e:                                   # noqa: BLE001
         print(f"  ⚠️ VAD 路径失败（{str(e)[:120]}）→ 退回音量门限")
