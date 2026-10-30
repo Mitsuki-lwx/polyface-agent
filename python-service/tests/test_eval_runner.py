@@ -199,3 +199,44 @@ def test_write_report_splits_failure_kinds(tmp_path):
     assert rep["totals"]["pass_rate"] == 0.0
     assert (tmp_path / "report.json").exists()
     assert (tmp_path / "report.md").exists()
+
+
+def test_reassert_keeps_the_original_fingerprint(tmp_path):
+    """**离线复算不许把指纹改成"现在"的** —— 稿子是当时那次 prompt 产的。
+
+    实测（2026-10-30）：对一份"改坏 prompt 时跑出来"的报告做 `--reassert`，
+    报告的 `prompt_fingerprint_combined` 变成了**当前**值，而 `_drafts` 还是上一次跑的
+    → 报告声称了一个**没产过它**的 prompt 版本 ✗（这正是评测报告最不能出的错）。
+    修法：`write_report(prev=...)` 沿用原报告的指纹。
+    """
+    cells = {"m01": {"xhs": {"ok": True, "kind": "pass", "reason": ""},
+                     "_meta": {"elapsed_sec": 1.0, "tokens": {"calls": 2, "prompt_tokens": 10,
+                                                              "completion_tokens": 20}}}}
+    manifest = {"version": "v1", "gen": {"prompt_fingerprint": "abc"}}
+    old = R.write_report(tmp_path, manifest, cells, ["xhs"], [{"id": "m01", "title": "t"}], 1.0, None)
+    old_fp = old["prompt_fingerprint_combined"]
+
+    # 模拟"改过 prompt 之后"再复算：传 prev（原报告）
+    again = R.write_report(tmp_path, manifest, cells, ["xhs"], [{"id": "m01", "title": "t"}],
+                           0.0, None, prev=old)
+    assert again["prompt_fingerprint_combined"] == old_fp
+    assert again["dna_fingerprint_combined"] == old["dna_fingerprint_combined"]
+
+
+def test_report_shows_tokens_and_elapsed_once_per_material(tmp_path):
+    """**逐格明细里耗时/token 只在首行标注** —— 它是整条素材的，不是每个平台各一份。
+
+    实测（2026-10-30）：5 个平台行都写着 `408.4s · 18 次`，看起来像每个平台各调了 18 次 ✗。
+    """
+    cells = {"m01": {"_meta": {"elapsed_sec": 408.4,
+                               "tokens": {"calls": 18, "prompt_tokens": 33325,
+                                          "completion_tokens": 59409}},
+                     "xhs": {"ok": True, "kind": "pass", "reason": ""},
+                     "douyin": {"ok": True, "kind": "pass", "reason": ""}}}
+    manifest = {"version": "v1", "gen": {"prompt_fingerprint": "abc"}}
+    R.write_report(tmp_path, manifest, cells, ["xhs", "douyin"], [{"id": "m01", "title": "t"}], 1.0, None)
+    md = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert md.count("33325+59409") == 1, "token 只该出现一次（整条素材），不该每个平台行都重复"
+    assert "（整条素材）" in md
+    rep = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    assert rep["tokens"]["calls"] == 18

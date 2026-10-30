@@ -26,13 +26,23 @@
 
 ## 2. 参数可改（**本轮的核心验收**）
 
-- [ ] `--limit 3` → 报告里实际参与矩阵的素材是 **3 条**（不是 10 条）
-- [ ] `--platforms xhs` → 报告里只有 1 个平台，格子数 = 素材数 × 1
-- [ ] `--out /tmp/x` → 报告真的落在 `/tmp/x`，不在默认目录
-- [ ] `--no-reuse` → 已有结果的格子**重新跑了**（日志里能看到它又调了一次）
-- [ ] `--timeout 1` → 立刻出现「调用失败（超时）」归因，且**不中断整轮**
-- [ ] `--jobs 2` → 素材级并行（`ThreadPoolExecutor`）；默认 1=串行（上游限流，见 MEMORY）
-- [ ] `--dry-run` → **不发任何 LLM 请求**，只打印预计格数与调用次数
+- [x] `--limit 3` → 报告里实际参与矩阵的素材是 **3 条**
+      **实测**：`--dry-run --limit 3` → `素材 3 × 平台 5 = 15 格` ✓
+- [x] `--platforms xhs` → 报告里只有 1 个平台，格子数 = 素材数 × 1
+      **实测**：`素材 10 × 平台 1 = 10 格` ✓
+- [x] `--out` → 报告真的落在指定目录
+      **实测**：`--out .workbuddy-ai/evalout/to` → `report.md` / `report.json` 就在那儿 ✓
+- [x] `--no-reuse` → 已有结果的格子**重新跑了**
+      **实测**：同一个 `--out`：不加 → `[跳过] m01 已有结果`、**0s**；
+      加 `--no-reuse` → 真跑 **191.4s** ✓
+- [x] `--timeout 1` → 立刻出现「调用失败（超时）」归因，且**不中断整轮**
+      **实测**：`[完成] m01 timeout 0/1 通过 1.0s` → `调用失败 1`、`断言失败 0`，
+      整轮正常结束（**没有**崩/中断）✓
+- [x] `--jobs 2` → 素材级并行
+      **实测**：`--limit 2 --platforms xhs --jobs 2` → 两条**同时**在跑
+      （m02 102s 先回、m01 184.9s 后回），**墙钟 192s** ≈ 串行（约 287s）的 2/3 ✓
+- [x] `--dry-run` → **不发任何 LLM 请求**，只打印预计格数与调用次数
+      **实测**：秒回，输出 `{"materials":10,"platforms":5,"cells":50,"approx_llm_calls":210,...}` ✓
 
 > 判据：任一行改了而行为没变 → 该项**不通过**，回到 T9。
 
@@ -44,29 +54,56 @@
 
 ## 3. 素材集
 
-- [ ] `eval/corpus/` 下有 10 条素材文件，`MANIFEST.json` 与之一一对应
-- [ ] manifest 记录了：素材集版本、条数、每条的数字/专有名词计数、生成时的 prompt 指纹、模型名
-- [ ] 每条素材长度落在 300~2000 字（`docs/50` §2.1 的口径）
-- [ ] 每条素材**至少含 2 个数字**（否则 A1 断言没有咬合点）
-- [ ] 删掉一条素材文件 → 跑分器**明确报错**，而不是静默少跑一条
-- [ ] 素材文件头部注明「改动等同于改测试基准」
+- [x] `eval/corpus/` 下有 10 条素材文件，`MANIFEST.json` 与之一一对应
+      **实测**：`m01..m10.json` + `MANIFEST.json` ✓，`count: 10` ✓（loader 会**忽略** MANIFEST ✓，
+      有测试钉住 `test_load_corpus_ignores_manifest_json_as_material`）
+- [x] manifest 记录了版本 / 条数 / 口径 / 生成时的 prompt 指纹 / 模型名
+      **实测**：`version: v1` · `count: 10` ·
+      `spec: {chars_min:300, chars_max:2000, min_numbers:3, min_entities:2, min_claims:2}` ·
+      `gen: {model_configured, models_used, mock:false, temperature, ts, prompt_fingerprint: 50bb64dff13578a1}` ✓
+      （逐条的"数字/专名计数"在 `items[]` 与每条素材的 `features` 里 ✓）
+- [x] 每条素材长度落在 300~2000 字
+      **实测（逐条量）**：436 / 476 / 1334 / 794 / 964 / 607 / 1275 / 562 / 1057 / 965 ✓ **10/10 在区间内**
+- [x] 每条素材**至少含 2 个数字**
+      **实测**：14 / 46 / 25 / 37 / 115 / 30 / 10 / 20 / 70 / 14 处 ✓ **全 ≥10**（口径要求 3）
+- [x] 删掉一条素材文件 → 跑分器**明确报错**
+      **实测（单测）**：`test_load_corpus_rejects_manifest_file_mismatch` ✓ ——
+      manifest 说有 10 条、盘上只有 9 条 → **抛错**，不是静默少跑 ✓
+- [x] 素材文件头部注明「改动等同于改测试基准」
+      **本轮补上** ✗→✓：10 条素材原文件**只有 JSON 内容、没有这句提示** ✗。
+      现在每条都加了 `_note` 字段（JSON 不能写注释，所以用字段）：
+      「改动本文件等同于改动测试基准（eval/corpus）。改之前先读 docs/checklist_eval.md §3。」✓
 
 ---
 
 ## 4. 断言
 
-- [ ] A1 正文数字无依据 → 红
-- [ ] A2 出现素材外的年份 → 红
-- [ ] A3 标题为空 / 重复 / 超长 → 红
-- [ ] A4 正文长度越界 → 红
-- [ ] A5 标签含 `#` / 数量不足 → 红；**超过平台上限 → 红**（上限来自 DNA 的 `tags.count_max`）
-- [ ] A6 `video_native` 平台缺 `clip_sheet` → 红；分镜序号不连续 → 红
-- [ ] A7 QA 未通过 → 红
-- [ ] A8 出现站外导流（手机号 / 邮箱 / 站外链接 / 微信号）→ 红；「评论区聊聊」这类正常互动引导**不误报**
-- [ ] **全合规产物 → 全绿**（不误报）
-- [ ] 断言层**不调 LLM**：把 `llm.chat` / `llm.chat_json` 换成会抛异常的桩，
+- [x] A1 正文数字无依据 → 红
+      `test_a1_number_not_in_material_fails` ✓ + `test_a1_real_fabrication_still_caught` ✓
+- [x] A2 出现素材外的年份 → 红
+      `test_a2_foreign_year_fails` ✓
+- [x] A3 标题为空 / 重复 / 超长 → 红
+      `test_a3_bad_titles_fail`（参数化）✓
+- [x] A4 正文长度越界 → 红
+      `test_a4_too_short_body_fails` ✓
+- [x] A5 标签含 `#` / 数量不足 → 红；**超过平台上限 → 红**
+      `test_a5_hash_prefixed_tag_fails` / `test_a5_too_few_tags_fails` /
+      `test_a5_tags_max_from_platform_dna` ✓（上限确实来自 DNA ✓）
+- [x] A6 `video_native` 平台缺 `clip_sheet` → 红；分镜序号不连续 → 红
+      `test_a6_video_platform_without_clip_sheet_fails` / `test_a6_non_contiguous_seq_fails` ✓
+- [x] A7 QA 未通过 → 红
+      `test_a7_qa_failed_fails` / `test_a7_missing_qa_fails` ✓
+- [x] A8 站外导流 → 红；正常互动引导**不误报**
+      `test_a8_catches_offsite_diversion`（参数化 4 类）/ `test_a8_clean_draft_passes` /
+      `test_a8_does_not_false_positive_on_normal_phrases` ✓
+- [x] **全合规产物 → 全绿**
+      `test_good_draft_passes_everything` / `test_video_platform_good_clip_sheet_passes` ✓
+- [x] 断言层**不调 LLM**（**用行为证明，不用 grep**）
+      `test_assertions_never_call_llm`：把 `llm.chat` / `llm.chat_json` 换成抛异常的桩，
+      跑完全部断言仍全绿 ✓ —— 调了就会炸。
       跑完全部断言仍全绿（`test_assertions_never_call_llm`）—— 用**行为**证明，不用 grep 源码
-- [ ] 阈值改动（如把标题上限调小）→ 原本通过的产物变红
+- [x] 阈值改动 → 原本通过的产物变红
+      `test_a3_title_max_is_configurable` / `test_a4_body_max_is_configurable` ✓
 
 ---
 
@@ -77,36 +114,89 @@
 （实测例子：`m02/bilibili` 的「正文超长 1024字 > 上限1000字」是产品自己的 QA 抓到的，
 A4 用的默认 `body_max=20000` 根本不会报。）
 
-- [ ] `--dry-run` 打印的 `rules_by_platform` 里，5 个平台的阈值都来自 DNA：
+- [x] `--dry-run` 的 `rules_by_platform` 里 5 个平台的阈值都来自 DNA
+      **实测（原文照抄）**：
+      ```
+      xhs        title_max=20  body_max=1000   tags_max=6
+      douyin     title_max=55  body_max=2200   tags_max=5
+      gzh        title_max=64  body_max=20000  tags_max=3
+      zhihu      title_max=100 body_max=100000 tags_max=5
+      bilibili   title_max=80  body_max=2000   tags_max=10
+      ```
+      与判据里的数字**逐个对得上** ✓
       xhs `title_max=20 body_max=1000 tags_max=6`、douyin `55/2200/5`、
       gzh `64/20000/3`、zhihu `100/无上限/5`、bilibili `80/2000/10`
-- [ ] **知乎的 `body_chars_max: 0` 必须识别成「无上限」**，不能掉进 `normalize_limits` 的默认值 1000
+- [x] **知乎的 `body_chars_max: 0` 识别成「无上限」**
+      `platform-dna/zhihu.yaml` 里就是 `body_chars_max: 0` ✓ →
+      `dna_rules._NO_LIMIT = 100000`（源码注释写明"DNA 里写 0 表示无上限，断言里不能真用 0"）✓
+      → dry-run 输出 `zhihu body_max=100000` ✓（**不是** 1000）
       （早先的分支顺序踩过这个坑 —— 凭空给知乎加了个上限，且看起来一切正常）
-- [ ] B站用 `specs.desc_chars_max`、抖音用 `specs.caption_chars_max`（各平台字段名不统一）
-- [ ] 报告里含 **DNA 指纹**（每平台一个 + 合并一个）
-- [ ] 报告里含**分平台切片**表（改了 xhs 的 DNA，就要能只看 xhs 那几格）
-- [ ] 基线对比时，**DNA 指纹不同 → 标为「不可比」**，不静默比较
-- [ ] `sources` / `updated_at` 变了**不影响**指纹（否则补个来源链接就把报告全标成不可比）
-- [ ] `python scripts/doctor.py` 会报平台 DNA 的新鲜度；超期给**提示**（非阻塞）
-- [ ] `POLYFACE_DNA_MAX_AGE_DAYS` 可配；乱填/非正数退回默认
+- [x] B站用 `desc_chars_max`、抖音用 `caption_chars_max`
+      **实测**：`bilibili.yaml → desc_chars_max: 2000` ✓、`douyin.yaml → caption_chars_max: 2200` ✓；
+      代码按 `body_chars_max → desc_chars_max → caption_chars_max` 顺序取 ✓
+- [x] 报告里含 **DNA 指纹**（每平台 + 合并）
+      `report.json` 有 `dna_fingerprint`（每个平台一个）与 `dna_fingerprint_combined` ✓
+- [x] 报告里含**分平台切片**表
+      `report.json` 的 `by_platform` + Markdown 的「分平台」表 ✓（实测生成过）
+- [x] 基线对比时 **DNA 指纹不同 → 不可比**
+      `diff_baseline` 里 `same_dna` 参与 `comparable` 判定，
+      原因文案是「platform-dna 指纹不同（改了平台规则）」✓
+- [x] `sources` / `updated_at` 变了**不影响**指纹
+      源码里只取影响产出的键（`specs/style/structure_template/title_rules/tags/limits/hooks/
+      viral_logic/content_forms/distribution`），`sources`/`verify`/`updated_at` **不在其中** ✓
+- [x] `doctor.py` 报平台 DNA 新鲜度，超期**提示**（非阻塞）
+      **实测**：`[OK] 平台 DNA: 5 个平台，最新 48 天前` ✓；
+      阈值调到 1 天 → `[提示] 平台 DNA: …` ✓（**提示**不是阻塞 ✓）
+- [x] `POLYFACE_DNA_MAX_AGE_DAYS` 可配；乱填/非正数退回默认
+      **实测三档**：`=1` → `[提示]` ✓ · `=abc` → `[OK]`（退回默认 ✓）· `=-5` → `[提示]`（`max(1,-5)=1` ✓）
 
 ## 5. 跑分器
 
-- [ ] 跑到一半中断 → 已完成的格子结果**仍在盘上**
-- [ ] 再跑 → 只跑剩下的格子（日志里能看到跳过的）
-- [ ] 429 / 超时 → 该格记入「调用失败」，**不**记入「断言失败」
-- [ ] 单格失败**不中断整轮**
-- [ ] 报告里 prompt 指纹 / 模型名 / 耗时 / token 用量**齐全**
-- [ ] 同一份产物重跑断言 → 结论完全一致（判定确定性）
+- [x] 跑到一半中断 → 已完成的格子结果**仍在盘上**
+      **实测**：第一次跑完后，第二次不加 `--no-reuse` → `[跳过] m01 已有结果` ✓
+      （说明结果确实落在盘上、能被读回来）。真正的"杀进程"没做（如实记）。
+- [x] 再跑 → 只跑剩下的（日志里看得到跳过）
+      **实测**：`[跳过] m01 已有结果（--no-reuse 可强制重跑）`，整轮 **0s** ✓
+- [x] 429 / 超时 → 记入「调用失败」，**不**记入「断言失败」
+      **实测**：`--timeout 1` → `调用失败 1`、`断言失败 0` ✓；
+      单测 `test_assert_material_separates_call_failure_from_assertion_failure` ✓
+- [x] 单格失败**不中断整轮**
+      **实测**：`--timeout 1` 那轮只有 1 格、且它失败了 → 整轮仍然正常结束并写好报告 ✓
+- [x] 报告里 prompt 指纹 / 模型名 / 耗时 / token 用量**齐全**
+      **token 原先没有** ✗ —— 本轮补上 ✓：从 `app.usage` 的记账文件量增量（**不另立一套口径**），
+      写进每格 `_meta.tokens` 与报告顶层 `tokens`。实测输出：
+      ```
+      | m01 辞职一年，我靠什么活下来 | xhs | ✅ | 92.9s · 4 次 · 6684+12052 tok | |
+      ```
+- [x] 同一份产物重跑断言 → 结论完全一致
+      **实测**：`--reassert` → `离线复算：重算 1 条、跳过 0 条（未调 LLM）`，
+      通过率仍 100% ✓（不调 LLM 就能复算，说明判定是确定的 ✓）。
 
 ---
 
 ## 6. 变异测试（**必须做，绿不等于有效**）
 
-- [ ] 把 A1（数字有依据）的实现注释掉 → 对应测试**变红** → 还原
-- [ ] 把 A6（`clip_sheet`）的实现注释掉 → 对应测试**变红** → 还原
-- [ ] 改一个字符进任一 prompt → **指纹变化**；不改 → 指纹不变
-- [ ] **改坏一个 prompt 后真跑一轮 → 通过率或断言结论确实变了**（证明评测集抓得住退化）
+- [x] 把 A1 摘掉 → 对应测试**变红** → 还原
+      **实测**：从 `ALL` 里摘掉 `a1_numbers_supported` → **8 条变红** ✓ **已还原**
+- [x] 把 A6 摘掉 → 对应测试**变红** → 还原
+      **实测**：摘掉 `a6_clip_sheet_ok` → **7 条变红** ✓ **已还原**
+- [x] 改一个字符进任一 prompt → 指纹变化；不改 → 不变
+      **实测**：在 `DRAFT_SYSTEM` 的拼接里加一个「先」→
+      `cba730c76dd24910` → **`0581f9f1b7e5e251`**；还原 → 回到 `cba730c76dd24910` ✓
+      （⚠️ 踩过一次坑：`DRAFT_SYSTEM` 是**括号拼接**不是三引号，第一次改在字符串**外面**，
+      指纹当然没变 ✗ —— 那是变异写错，不是评测集的问题。）
+- [x] **改坏之后真跑一轮 → 结论确实变了**（证明抓得住退化）
+      **两次"改 prompt"都没跑通** ✗：让模型"编数字"、"标题写 45 字以上"，
+      模型**两次都没听**（稿子里的数字/标题长度和有病前一样）—— 那不是评测集的问题，
+      是**变异太弱**（模型不照做的指令等于没改）。
+      **改成更硬的变异**：直接在**产品代码**里往成稿追加一句编造
+      （「这条内容带来了 88888 次播放」）→ 真跑一轮：
+      ```
+      通过率 100% → **0.0%**（断言失败 1）
+      ✗ A1 数字有依据：素材里找不到依据的数字：['88888']   （checked 14 / failed 1）
+      支持率 97.37%（14 个原子里错 1 个 —— 二值 0%、支持率 97.37%，正是 FActScore 说的那个差别）
+      ```
+      **评测集抓住了退化** ✓ **已还原产品代码**
 
 > 若某条变异没被抓住：先判断它是不是**等价变异**，再怀疑测试。
 
@@ -114,30 +204,58 @@ A4 用的默认 `body_max=20000` 根本不会报。）
 
 ## 7. 报告
 
-- [ ] 产出 JSON 与 Markdown 两个文件
-- [ ] Markdown 抬头**有**那句边界声明：「本报告只说明同一批输入下产出有没有变差，
+- [x] 产出 JSON 与 Markdown 两个文件
+      `report.json` + `report.md` ✓
+- [x] Markdown 抬头的边界声明**在**
+      > **本报告只说明**同一批输入下产出有没有变差**；它**不能**说明产品有没有用（那是第三关 docs/50 的事）。**
+      ✓ 与判据一字不差；单测 `test_scope_note_states_the_boundary` 也钉着 ✓
       **不能**说明产品有没有用（见 `docs/50`）」
-- [ ] JSON 含每个格子的：素材 id、平台、断言结论明细、耗时、token、失败归因
-- [ ] 与基线对比时，prompt 指纹不同的格子被标为**不可比**（不静默比较）
+- [x] JSON 含每个格子的：素材 id、平台、断言结论明细、耗时、token、失败归因
+      素材/平台 = `cells[素材id][平台]` 的键 ✓；`assertions`（每条带 `code/ok/detail/checked/failed`）✓；
+      `_meta.elapsed_sec` ✓；**`_meta.tokens`（本轮补）** ✓；`reason`（失败归因）✓
+- [x] 与基线对比时指纹不同 → **不可比**
+      **实测**：拿改坏 prompt 那一轮对基线：
+      `{"comparable": false, "same_prompt_fingerprint": false, "reason": "prompt 指纹不同"}` ✓
+      Markdown 也写了：`可比：**False**（不可比原因：prompt 指纹不同）` ✓
 
 ---
 
 ## 8. 端到端（**至少一条**）
 
-- [ ] 用**真实 Key**（非 mock）跑一次 5 平台 × 10 条，拿到报告，通过率是**真实数字**
-- [ ] 报告里模型名 = `.env` 里配的模型，`mock=false`
-- [ ] 全程无需人工干预；中断后能续跑到完成
+- [ ] **按规模做了部分**（如实记）：
+      **真实 Key 跑通了 5 平台**：`--limit 1 --platforms xhs,douyin,gzh,zhihu,bilibili`
+      → **5/5 通过**、408.4s、0 调用失败、token `33325+59409` ✓。
+      **没有跑 10 条** ✗ —— 5 平台 × 10 条按实测速度约 **5~7 小时**（历史上被 1 小时上限切成 5 段续跑过），
+      本轮没有这个时间窗。判据原样保留未勾 ✓。
+      ⚠️ 顺带**现场撞到了** §9 说的那个噪声：同一份 `m01/xhs`，
+      单跑时通过 ✓、并行跑时被产品自己的 QA 判红 ✗（"凭空新增的适用人群结论"）——
+      同一代码不同结果。这正是"±1 格不能当退化"的活例子。
+- [x] 报告里模型名 = `.env` 里配的模型，`mock=false`
+      **实测**：`model_configured = cline-pass/deepseek-v4.1-flash`（与 `python-service/.env` 一致）✓、
+      `mock = false` ✓、`_meta.used_mock = False` ✓
+- [x] 全程无需人工干预；中断后能续跑到完成
+      **实测**：`--limit 1 --platforms xhs` 一次跑完（92.9s），**没有任何交互** ✓；
+      第二轮不加 `--no-reuse` → `[跳过] m01 已有结果` → 续跑语义成立 ✓
+      ⚠️ 如实记：**没有**真的在中途 kill 进程再续（靠 `--out` 指回同一目录的跳过逻辑验的 ✓）。
 
 ---
 
 ## 9. 诚实边界（验收时必须如实填）
 
-- [ ] 明确记录：**合成素材不能论证"产品有没有用"** —— 它只测"同一批输入下产出有没有变差"
-- [ ] 明确记录：单模型基线，**未**做多模型横向对比
-- [ ] 明确记录：本版**未**接 CI
-- [ ] 明确记录：断言是**性质断言**，不是"像不像人写的"的质量分
-- [ ] 明确记录：LLM 非确定性 → 通过率会有波动，**不能**把单次 ±1 格的波动当退化
-- [ ] 明确记录：**A1 有两类已知误报，不打算修**（加阈值就是"为了让测试变绿而调参"）：
+- [x] 明确记录：合成素材不能论证"产品有没有用"
+      → spec §6 Out of Scope 末条 + **新增的 spec §7 诚实边界** ✓
+- [x] 明确记录：单模型基线，未做多模型横向
+      → spec §6 + §7 ✓
+- [x] 明确记录：本版未接 CI
+      → spec §6 + §7 ✓
+- [x] 明确记录：断言是性质断言，不是质量分
+      → spec §7 ✓
+- [x] 明确记录：LLM 非确定性 → 通过率有波动，不能把 ±1 格当退化
+      **原先只在 checklist 的「指标问题」一节有，spec 里没有** ✗ →
+      本轮补进 **spec §7** ✓（连"5 格里 3 格翻面 / ±10 点在噪声带"的实测数字一起）
+- [x] 明确记录：A1 有两类已知误报，**不打算修**
+      **原先只在 checklist 的「已知误报（不修）」一节** ✗ → 本轮补进 **spec §7** ✓
+      （成语化数字 / 派生算术，两条都写了，并指向 checklist 的完整清单）
       1. **成语化数字** —— 「比说**一百句**都管用」「从**0到1**的第一步」不是事实主张；
       2. **派生算术** —— 素材说「月入3000、日投入1.5小时」，稿件算成「一个月45小时、时薪66块」——
          是可推导的新断言，判不判看立场。
@@ -401,3 +519,48 @@ qa cline-pass/deepseek-v4.1  成功约  50000ms
 修后实测：等价数字**不再告警**；真幻觉 `199` **照样抓**；成语「这一步」**不误报**。
 回归测试 4 条加在 `python-service/tests/test_num_basis.py`。
 
+---
+
+## 本轮验收（2026-10-30）：56 条里 **55 条验掉**，1 条按规模部分完成
+
+> 原先 **0 勾**。这一轮把能验的验掉（`--dry-run` + 单测 + 小规模真跑），
+> 过程中**修掉 3 个评测集自身的缺陷**。
+
+### 修掉的 3 个缺陷
+
+**① 报告里没有 token 用量**（§5-5 / §7-3 都要求，实测确实没有）
+`app.usage` 一直在记账（`llm-usage.jsonl`，FR-72），**评测集没读它** ✗。
+接上后每格带 `_meta.tokens`，报告顶层带合计：
+```
+| m01 辞职一年，我靠什么活下来 | xhs | ✅ | 408.4s（整条素材） · 18 次 · 33325+59409 tok | |
+```
+**没有另立一套口径** —— 读的就是产品那本账（两边各算一遍必然分叉，这条踩过）。
+
+**② 逐格明细把"整条素材"的耗时/用量重复到每个平台行**
+5 个平台行都写着 `408.4s · 18 次`，看起来像**每个平台各调了 18 次** ✗。
+改成只在首行标一次并写明「（整条素材）」。回归测试
+`test_report_shows_tokens_and_elapsed_once_per_material`。
+
+**③ `--reassert` 会把指纹改成"现在"的**（而稿子是**当时**那次 prompt 产的）
+复算一次之后，报告的 `prompt_fingerprint_combined` 变成了当前值 ✗ ——
+等于**声称一个没产过这批稿子的 prompt 版本** ✗，而"能不能比"全靠这个指纹。
+修法：`write_report(prev=...)` 沿用原报告的指纹。
+验证：对一份"改坏 prompt 时跑的"报告做 `--reassert`，
+复算前 `4fbe9404f1db3245` → 复算后**仍是** `4fbe9404f1db3245` ✓（而当时真实指纹是 `cba730c76dd24910`）。
+回归测试 `test_reassert_keeps_the_original_fingerprint`。
+
+### 顺带补的
+
+- **素材文件没有"改动=改基准"的提示** ✗（只在 `MANIFEST._note` 里有）→
+  10 条素材各加了一个 `_note` 字段（JSON 不能写注释）✓
+- **`spec_eval` 缺两条诚实边界**（"LLM 非确定性 → 通过率波动"、"A1 两类已知误报不修"，
+  原先只在 checklist 里）→ 补成 **spec §7 诚实边界** ✓（本节其余四条 spec 里本来就有）
+
+### 关于 §6-4 的一个**教训**（如实记）
+
+判据要的是"改坏一个 prompt → 真跑一轮 → 结论确实变了"。
+我先试了两次**改 prompt**（让模型"编数字"、"标题写 45 字以上"）——
+**模型两次都没听**，稿子的数字/标题长度和有病前一样 ✗，于是通过率没变 ✗。
+那不是评测集抓不住，是**变异太弱**（模型不照做的指令等于没改）。
+换成**产品代码级**的变异（往成稿追加一句编造「88888 次播放」）→ **通过率 100% → 0%** ✓、
+`A1 数字有依据：素材里找不到依据的数字：['88888']`（checked 14 / failed 1，支持率 97.37%）✓。

@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bootstrap import CORPUS_DIR, REPORTS_DIR, ROOT  # noqa: E402,F401
 
 import assertions as A  # noqa: E402
+from app import usage as usage_mod  # noqa: E402
 import dna_rules as dna_rules_mod  # noqa: E402
 import fingerprint as fp_mod  # noqa: E402
 
@@ -82,6 +83,46 @@ def flatten_draft(pd) -> dict:
 
 
 # ---------------------------------------------------------------- 跑一条素材
+
+def _usage_mark() -> int:
+    """当前用量文件的行数 —— 跑一格的 token 基线。"""
+    try:
+        p = usage_mod.usage_path()
+        if not p.is_file():
+            return 0
+        with p.open(encoding="utf-8") as f:
+            return sum(1 for _ in f)
+    except Exception:                                          # noqa: BLE001
+        return 0
+
+
+def _usage_since(mark: int) -> dict:
+    """跑这一格新写进去的 token 用量。
+
+    **为什么要读文件**：`app.usage` 是**唯一**的记账口径（FR-72），
+    评测集再自己数一遍必然和线上分叉（这条踩过：数字口径两边各写一套就必然分叉）。
+    读不到就当没记到（返回空 dict），**不影响跑分结论**。
+    """
+    try:
+        p = usage_mod.usage_path()
+        if not p.is_file():
+            return {}
+        pt = ct = calls = 0
+        with p.open(encoding="utf-8") as f:
+            for _ in range(mark):
+                next(f, None)
+            for line in f:
+                try:
+                    d = json.loads(line)
+                except Exception:                              # noqa: BLE001
+                    continue
+                pt += d.get("prompt_tokens") or 0
+                ct += d.get("completion_tokens") or 0
+                calls += 1
+        return {"prompt_tokens": pt, "completion_tokens": ct, "calls": calls}
+    except Exception:                                          # noqa: BLE001
+        return {}
+
 
 def run_one(item: dict, platforms: list[str], timeout: int) -> dict:
     """跑一条素材的全部平台。返回 {platform: {...}} + `_meta`。
@@ -164,7 +205,8 @@ def assert_material(item: dict, raw: dict, platforms: list[str],
 
 def write_report(out_dir: Path, manifest: dict, cells: dict, platforms: list[str],
                  items: list[dict], elapsed: float, baseline_path: Path | None,
-                 rules_by_platform: dict[str, dict] | None = None) -> dict:
+                 rules_by_platform: dict[str, dict] | None = None,
+                 prev: dict | None = None) -> dict:
     fp = fp_mod.fingerprint()
     dna_fp = dna_rules_mod.fingerprint()
     # ⚠️ 分母用**实际存在的格子**，不是 `素材数 × 平台数` 的理论值。
@@ -185,11 +227,16 @@ def write_report(out_dir: Path, manifest: dict, cells: dict, platforms: list[str
         "corpus": {"version": manifest.get("version"),
                    "count": len(items),
                    "prompt_fingerprint": manifest.get("gen", {}).get("prompt_fingerprint")},
-        "prompt_fingerprint": fp,
-        "prompt_fingerprint_combined": fp_mod.combined(fp),
+        # **离线复算（--reassert）时沿用原报告的指纹**：稿子是**当时那次** prompt 产的，
+        # 用"现在"的指纹重写会让报告声称一个没产过它的版本 ✗（实测踩到：复算后
+        # `prompt_fingerprint_combined` 变成了当前值，而 `_drafts` 是上一次跑的）。
+        "prompt_fingerprint": (prev or {}).get("prompt_fingerprint") or fp,
+        "prompt_fingerprint_combined": (prev or {}).get("prompt_fingerprint_combined")
+                                       or fp_mod.combined(fp),
         # DNA 指纹：没有它，「通过率变了」分不清是 prompt 改了、DNA 改了、还是模型换了
-        "dna_fingerprint": dna_fp,
-        "dna_fingerprint_combined": dna_rules_mod.combined(dna_fp),
+        "dna_fingerprint": (prev or {}).get("dna_fingerprint") or dna_fp,
+        "dna_fingerprint_combined": (prev or {}).get("dna_fingerprint_combined")
+                                    or dna_rules_mod.combined(dna_fp),
         "rules_by_platform": {p: (rules_by_platform or {}).get(p, {}) for p in platforms},
         "model_configured": get_settings().llm_model,
         "mock": llm.is_mock(),
@@ -203,6 +250,7 @@ def write_report(out_dir: Path, manifest: dict, cells: dict, platforms: list[str
                    "support_rate": _support_rate(cells, platforms)},
         "by_platform": _by_platform(cells, platforms),
         "elapsed_sec": round(elapsed, 1),
+        "tokens": _sum_tokens(cells),
         "cells": {mid: cells[mid] for mid in cells},
     }
 
@@ -250,6 +298,17 @@ def _by_platform(cells: dict, platforms: list[str]) -> dict:
                      "call_failed": cf,
                      "pass_rate": round(ok / tot, 4) if tot else 0.0}
     return out
+
+
+def _sum_tokens(cells: dict) -> dict:
+    """全场 token 合计（每格的 `_meta.tokens` 累加）。"""
+    pt = ct = calls = 0
+    for per in cells.values():
+        tok = ((per.get("_meta") or {}).get("tokens") or {})
+        pt += tok.get("prompt_tokens") or 0
+        ct += tok.get("completion_tokens") or 0
+        calls += tok.get("calls") or 0
+    return {"prompt_tokens": pt, "completion_tokens": ct, "calls": calls}
 
 
 def diff_baseline(report: dict, baseline_path: Path) -> dict:
@@ -326,14 +385,23 @@ def render_md(r: dict, items: list[dict]) -> str:
               + (f"（不可比原因：{d['reason']}）" if not d["comparable"] else ""),
               f"- 退化 {len(d['regressed'])} 个：{d['regressed'][:10]}",
               f"- 改善 {len(d['improved'])} 个：{d['improved'][:10]}", ""]
-    L += ["## 逐格明细", "", "| 素材 | 平台 | 结果 | 说明 |", "|---|---|---|---|"]
+    L += ["## 逐格明细", "", "| 素材 | 平台 | 结果 | 耗时 / 用量（整条素材） | 说明 |", "|---|---|---|---|---|"]
     title_of = {it["id"]: it.get("title", "")[:18] for it in items}
     for mid in sorted(r["cells"]):
         for code in r["platforms"]:
             c = r["cells"][mid].get(code) or {}
             mark = "✅" if c.get("ok") else ("⛔" if c.get("kind") == "call_failed" else "❌")
             reason = (c.get("reason") or "")[:80].replace("|", "/")
-            L.append(f"| {mid} {title_of.get(mid, '')} | {code} | {mark} | {reason} |")
+            # 耗时与 token 是**整条素材**的（一次生成把所有平台一起跑完），不是每个平台各一份。
+            # 只在首行写一次，别在每个平台行上重复 —— 实测那样看起来像"每个平台各调了 18 次" ✗
+            meta = (r["cells"][mid].get("_meta") or {})
+            tok = (meta.get("tokens") or {})
+            cost = ""
+            if code == r["platforms"][0]:
+                cost = f'{meta.get("elapsed_sec", "?")}s（整条素材）'
+                if tok.get("calls"):
+                    cost += f' · {tok.get("calls")} 次 · {tok.get("prompt_tokens")}+{tok.get("completion_tokens")} tok'
+            L.append(f"| {mid} {title_of.get(mid, '')} | {code} | {mark} | {cost} | {reason} |")
     L.append("")
     return "\n".join(L)
 
@@ -413,8 +481,10 @@ def _reassert(items: list[dict], platforms: list[str],
                      encoding="utf-8", newline="\n")
         redone += 1
 
+    prev_path = out_dir / "report.json"
+    prev = json.loads(prev_path.read_text(encoding="utf-8")) if prev_path.is_file() else None
     report = write_report(out_dir, manifest, cells, platforms, items, 0.0,
-                          args.baseline, rules_by_platform)
+                          args.baseline, rules_by_platform, prev=prev)
     t = report["totals"]
     print(f"离线复算：重算 {redone} 条、跳过 {skipped} 条（未调 LLM）")
     print(f"通过率 {t['pass_rate']:.1%}（{t['passed']}/{t['cells']}）"
@@ -508,6 +578,7 @@ def main() -> int:
     print(f"单条素材超时上限：{timeout or '不限'}s")
 
     def process(it: dict) -> tuple[str, dict]:
+        mark = _usage_mark()
         raw = run_one(it, platforms, timeout)
         if raw["_meta"]["status"] != "ok":
             res = {p: {"ok": False, "kind": "call_failed",
@@ -516,6 +587,8 @@ def main() -> int:
         else:
             res = assert_material(it, raw, platforms, rules_by_platform)
         res["_meta"] = raw["_meta"]
+        # token 用量（FR-72 口径）：从 `app.usage` 的记账文件里量增量，不另立一套
+        res["_meta"]["tokens"] = _usage_since(mark)
         # 存下产物与理解结果：否则报告说"数字 99 没依据"却看不到稿子、也无法离线复算
         # （实测踩到过 —— 改一条断言就得重跑几小时，有了这个就能离线重算）
         res["_drafts"] = {p: (raw.get(p) or {}) for p in platforms}
