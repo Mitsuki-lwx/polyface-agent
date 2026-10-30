@@ -300,3 +300,27 @@ def test_cue_only_sentence_is_not_marked_as_abandoned():
     assert len(out) == 1
     assert out[0].start == 0.0                 # 只标"去年"那句
     assert all(f.start != 2.1 for f in out), "纠正信号本身不该被剪"
+
+
+# ---------------------------------------------------------------- 同一段只报一次
+
+def test_overlapping_findings_report_one_span_once():
+    """**同一段时间只报一次**，高置信的赢。
+
+    一段可能同时"像上一句"（`repeat`，标在**后**一句）和"是下一句的半句重起"
+    （`restart`，标在**前**一句）—— 两者覆盖的是**同一段时间**。
+    实测（2026-10-30）：报告里同一段出现两遍、理由还不一样 ✗，
+    而 `rule_findings` 的注释本来就写着"免得报告里同一段出现两次…用户没法复核"。
+    """
+    segs = [
+        seg("今天聊聊怎么把长文改成五个平台的稿件。", 0.0, 2.0),
+        seg("今天我们聊的是怎么把长文改成五个平台。", 3.0, 5.0),
+        seg("今天我们聊的是怎么把长文改成五个平台的稿件。", 5.5, 8.0),
+    ]
+    found = df.rule_findings(segs)
+
+    spans = [(round(f.start, 3), round(f.end, 3)) for f in found]
+    assert len(spans) == len(set(spans)), f"同一段报了多次：{[(f.start, f.end, f.kind) for f in found]}"
+    # 留下的是**高置信**的那个（restart 的理由比"疑似重复"具体）
+    assert [f.kind for f in found] == ["restart"]
+    assert found[0].confidence == "high"

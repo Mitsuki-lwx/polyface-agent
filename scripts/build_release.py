@@ -30,7 +30,13 @@ from pathlib import Path
 
 # 不应进入发布包的文件/目录名（精确名或后缀）
 FORBIDDEN_DIRS = {".venv", "venv", "__pycache__", ".pytest_cache", ".ruff_cache",
-                  "target", "node_modules", ".git", "dist"}
+                  "target", "node_modules", ".git", "dist",
+                  # **大依赖不进包**（spec_tts_plugin「发布包不显著变大」、README 的承诺）：
+                  # Kokoro 的模型 ~639MB、它自己的 Python 3.12 环境。实测（2026-10-30）：
+                  # 少了这两条，发布包从 ~250MB 涨到 **887MB** ✗，而校验还说"干净"。
+                  "kokoro-models"}
+# 以这些**前缀**开头的目录也不进包：`.venv-kokoro` 这种"带后缀的 venv"用精确名拦不住 ✗
+FORBIDDEN_DIR_PREFIXES = (".venv", "venv-")
 FORBIDDEN_FILES = {".env", "polyface.db", "polyface.db-shm", "polyface.db-wal"}
 FORBIDDEN_SUFFIXES = (".pyc", ".pyo", ".log", ".db", ".sqlite", ".sqlite3")
 # 顶层不应出现的目录（用户数据）
@@ -99,7 +105,7 @@ def find_forbidden(pkg: Path) -> list[str]:
     for p in pkg.rglob("*"):
         rel = p.relative_to(pkg)
         if p.is_dir():
-            if p.name in FORBIDDEN_DIRS:
+            if p.name in FORBIDDEN_DIRS or p.name.startswith(FORBIDDEN_DIR_PREFIXES):
                 bad.append(str(rel))
             continue
         if (p.name in FORBIDDEN_FILES or p.name.endswith(FORBIDDEN_SUFFIXES)
@@ -128,6 +134,7 @@ def assemble(root: Path, version: str, dist: Path, jar: Path) -> Path:
         shutil.copytree(src, pkg / d,
                         ignore=shutil.ignore_patterns(*FORBIDDEN_DIRS,
                                                       *FORBIDDEN_FILES,
+                                                      *[f"{x}*" for x in FORBIDDEN_DIR_PREFIXES],
                                                       "*.pyc", "*.pyo", "*.log"))
     for f in COPY_FILES:
         src = root / f

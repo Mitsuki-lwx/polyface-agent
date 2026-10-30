@@ -365,3 +365,33 @@ succeeded（195s）→ film.mp4 89.24s
   内置插件本来就"与主程序同仓"，复制走属非常规用法。**记着，没修。**
 - **界面只支持全片统一一个来源**：命令行支持逐分镜混用，界面没做（这句一直是真的）。
 - **没在真机（手机）上听过成片**；混源那片是 3 个分镜的短样例，不是完整成片。
+
+---
+
+## 附带：中文配音乱码（2026-10-30）与发布包体积
+
+### ① 中文配音全是乱码（修在 `tts.py`，SAPI 插件内部调的就是它）
+
+`$synth.Speak([Console]::In.ReadToEnd())` 按**控制台代码页**解 stdin（本机 GBK），
+而 Python 写的是 UTF-8 → 中文念成乱码 ✗，英文正常（ASCII 两种编码一样）。
+**SAPI 插件走的正是这条路径** ✓，所以插件产出的中文音频当时也是乱码。
+修法与证据见 `docs/checklist_b1.md` 的「附带修掉」一节 ✓。
+
+### ② 发布包从 **34.8MB** 涨到 **887MB**（`build_release.py` 的禁用表漏了两个大目录）
+
+实测（2026-10-30）：
+
+```
+python-service/kokoro-models   639 MB  ← 在包里 ✗
+python-service/.venv-kokoro           ← 在包里 ✗（`venv` 精确名拦不住 `.venv-kokoro`）
+→ dist 包 887 MB（校验还说"干净"）
+```
+
+而 spec §4 明说「大依赖（TTS 模型、librosa）**不进包**」✗。
+
+**修法**：`FORBIDDEN_DIRS` 加 `kokoro-models`；新增 `FORBIDDEN_DIR_PREFIXES = (".venv", "venv-")`
+（前缀匹配，拦住 `.venv-kokoro` 这类"带后缀的 venv"）；`find_forbidden` 与 `copytree` 的
+ignore 都走同一套规则 ✓。
+**结果**：887 MB → **34.8 MB**，打包时间 317s → **18s** ✓。
+回归用例：`test_find_forbidden_catches` 加了 `kokoro-models` / `.venv-kokoro` 两条，
+变异（去掉规则）→ **2 红** ✓。

@@ -99,3 +99,34 @@ def test_presets_really_change_the_audio(tmp_path):
                                   voice=r["voice"], rate=r["rate"], volume=r["volume"]))
     assert out[0] > out[1] > out[2], f"语速 -2 / 0 / +3 应当依次变短，实际 {out}"
     assert out[0] - out[2] > 2.0, f"差异太小就不算「几种不同的配音」：{out}"
+
+
+# ---------------------------------------------------------------- 中文编码（实测踩过）
+
+def test_chinese_text_reaches_sapi_uncorrupted(tmp_path):
+    """**说出去的中文必须是中文** —— 用 ASR 回读做客观判据。
+
+    实测过（2026-10-30）：`$synth.Speak([Console]::In.ReadToEnd())` 用的是**控制台代码页**
+    （本机 936/GBK），而 Python 写进去的是 UTF-8 → 中文全被念成乱码 ✗。
+    英文照常正确（ASCII 两种编码一样），所以这个坑**只在中文出现**，
+    而机器量的是"时长合理、有声音"，人耳才听得出来 —— **整片旁白都是废话** ✗✗。
+
+    判据不是"听感"，是**回读**：合成 → 转写 → 关键内容必须还在。
+    """
+    from app.pipeline import asr, roughcut as rc
+
+    if not tts.is_available():
+        pytest.skip("本机没有可用 TTS")
+    if not asr.is_available():
+        pytest.skip("本机没有可用 ASR —— 没有回读手段就验不了这条")
+
+    text = "今天聊聊怎么把一篇长文改成五个平台的稿件"
+    wav = tmp_path / "zh.wav"
+    tts.synthesize(text, wav)
+    w16 = tmp_path / "zh16k.wav"
+    rc.extract_wav(wav, w16, 16000)
+    got = asr.transcribe(str(w16)).replace(" ", "")
+
+    # 比"整句一字不差"更稳：抽若干关键词，全都要在（ASR 会把标点抹掉、偶有同音字）
+    for key in ("长文", "五个平台", "稿件"):
+        assert key in got, f"中文被念坏了（回读：{got!r}）—— 检查 SAPI 的 stdin 编码"

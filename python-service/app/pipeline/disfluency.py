@@ -333,6 +333,13 @@ def rule_findings(segments: list[dict], *, fillers=DEFAULT_FILLERS,
                      for f in high)}
 
     out = high + find_similar_repeats(segments, threshold=similarity, skip=taken)
+    # **同一段时间只报一次，高置信的赢**。光靠上面的 `skip` 不够：一段可能
+    # 既"像上一句"（repeat，标在**后**一句）又"是下一句的半句重起"（restart，标在**前**一句）——
+    # 两条覆盖的是**同一段**，理由还不一样 ✗。实测（2026-10-30）：
+    # 「今天我们聊的是怎么把长文改成五个平台。」配着前后两句，报告里同一段出现两遍。
+    seen = {(round(f.start, 3), round(f.end, 3)) for f in high}
+    out = high + [f for f in out[len(high):]
+                  if (round(f.start, 3), round(f.end, 3)) not in seen]
     return sorted(out, key=lambda f: (f.start, f.kind))
 
 

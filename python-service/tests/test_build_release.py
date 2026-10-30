@@ -74,6 +74,9 @@ def test_find_forbidden_clean_package(tmp_path):
     [
         ("python-service/app/__pycache__", "dir"),
         ("python-service/.venv", "dir"),
+        # **大依赖不进包**（2026-10-30 实测漏过：发布包涨到 887MB ✗）
+        ("python-service/.venv-kokoro", "dir"),
+        ("python-service/kokoro-models", "dir"),
         ("java-backend/target", "dir"),
         (".git", "dir"),
         ("python-service/app/main.pyc", "file"),

@@ -37,7 +37,13 @@ $synth.Rate = {rate}
 $synth.Volume = {volume}
 {voice}
 $synth.SetOutputToWaveFile('{out}')
-$synth.Speak([Console]::In.ReadToEnd())
+# **必须显式按 UTF-8 读 stdin**：`[Console]::In.ReadToEnd()` 用的是**控制台代码页**
+# （本机 936/GBK），而 Python 写进来的字节是 UTF-8 —— 于是中文全变成乱码被"念"出来 ✗。
+# 实测（2026-10-30，ASR 回读）：说「大家好，我是巳月。」→ 转回来是「蟬蓮金任錫假意沉重鬼末」；
+# 英文照常正确（ASCII 两种编码一样），所以这个坑**只在中文出现**，机器量时长发现不了 ✗。
+$__in = New-Object System.IO.StreamReader([Console]::OpenStandardInput(),
+    (New-Object System.Text.UTF8Encoding($false)))
+$synth.Speak($__in.ReadToEnd())
 $synth.Dispose()
 """
 
