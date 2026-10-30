@@ -248,7 +248,11 @@ def main(argv: list[str] | None = None) -> int:
         own = str(sc.get("voice_file", "")).strip()
         if own:
             plugin, voice = "own-audio", "own"
-            pparams = {"file": own}
+            # **必须转成绝对路径再交给插件**：插件进程的 cwd 是**插件自己的目录**
+            # （`_spawn(cwd=self.dir)`），相对路径会在那儿解析 → "没有可用的音频文件" ✗。
+            # 实测踩过：同一个 plan，`image`（主程序自己解析）好好的，`voice_file` 却报找不到；
+            # 用绝对路径就没事 —— 这不是用户的错，是调用方该给的保证。
+            pparams = {"file": str(Path(own).expanduser().resolve())}
         else:
             plugin = str(sc.get("plugin") or args.plugin or "windows-sapi").strip()
             voice = str(sc.get("voice") or voice_used or "").strip() or None
@@ -476,6 +480,20 @@ def _subtitle_lines(text: str) -> str:
     return t.strip()
 
 
+def _resample_wav(src: Path, rate: int, dst: Path) -> Path:
+    """把一段 wav 重采样到 `rate`。**只动采样点，不改时长、不变调。**
+
+    失败就抛 —— 拼接阶段宁可明确失败，也不能悄悄把两段不同采样率的 PCM 拼在一起
+    （那才是真的变调 + 时长错乱，实测过：1.38 倍速、高一个八度、后面还被截掉）。
+    """
+    code, err = rc._run_ffmpeg([rc._ffmpeg_bin("ffmpeg"), "-y", "-v", "error",
+                                "-i", str(src), "-ar", str(rate), "-ac", "1",
+                                "-c:a", "pcm_s16le", str(dst)])
+    if code != 0 or not dst.is_file():
+        raise V.VideoError(f"配音重采样失败（{src.name} → {rate}Hz）：{err[-300:]}")
+    return dst
+
+
 def _hint_seconds(sc: dict, default: float) -> float:
     """没有配音时用 `duration_hint` 兜底（如 "3s" / "3.5秒" / 3）。"""
     raw = str(sc.get("duration_hint") or "").strip()
@@ -501,9 +519,16 @@ def _concat_wavs(parts: list[Path], durations: list[float], out: Path, total: fl
     for q in parts:
         with wave.open(str(q), "rb") as r:
             rates.append(r.getframerate())
-    rate = rates[0]
+    # **采样率不一致就重采样，不是整片失败**（2026-10-30 改）。
+    # 契约只写了"插件负责把 WAV 写到 out"，**没规定采样率** —— 所以一个
+    # *完全按契约写的* 第三方插件（比如输出 16kHz）能把整片弄崩 ✗。
+    # 实测：混用 SAPI(22050) + 一个 16kHz 的 Node 插件 → `[16000, 22050] 不静默拼` 直接退出。
+    # 重采样**不变调、不改时长**（它是按比例换算采样点），所以守卫原本担心的"变调"并没有发生。
+    # 取**出现最多**的那个；平票取**第一段**的 —— 别用 `max(set(...))`，
+    # 平票时它取的是集合里任意一个（实测：两个只出现一次的，拿到的是 16000 不是 22050 ✗）。
+    rate = max(dict.fromkeys(rates), key=rates.count)
     if any(x != rate for x in rates):
-        raise V.VideoError(f"配音片段采样率不一致：{sorted(set(rates))} —— 不静默拼，会变调")
+        parts = [_resample_wav(q, rate, out.with_name(f"{q.stem}--{rate}.wav")) for q in parts]
     with wave.open(str(out), "wb") as w:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
         for q, d in zip(parts, durations):

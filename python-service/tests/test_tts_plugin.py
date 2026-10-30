@@ -166,26 +166,78 @@ def test_timeout_is_reported(plugdir, tmp_path):
 
 # ---------------- 非 Python 的插件（契约的全部理由）----------------
 
-@pytest.mark.skip(reason=(
-    "**已知环境阻碍，不是契约问题**：这个环境里 Git Bash 打不开 `C:/...` 形式的重定向，"
-    "转成 MSYS 的 `/c/...` 也仍然 No such file or directory（实测多轮）。"
-    "契约本身（stdin/stdout JSON）由本文件其余 13 条测试覆盖 —— 包括"
-    "「非零退出要带 stderr」「说 ok 却没产出不算成功」「坏插件被跳过」。"
-    "**这条没验到的是「非 Python 语言写的插件」**，如实记着。"))
-def test_a_shell_plugin_works(plugdir, tmp_path):
-    """**用 shell 写的插件也能用** —— 这是选 stdin/stdout JSON 这个契约的全部理由。
+NODE = shutil.which("node")
+
+# **非 Python 的插件**：Node 写一个 440Hz 提示音。
+# 为什么要换掉 shell 那版：本机 Git Bash 打不开 `C:/...` 形式的重定向
+# （转成 MSYS 的 `/c/...` 也仍然 No such file or directory，多轮实测），
+# 那一版只能天天 skip —— **skip 掉的断言等于没有**。Node 在本机稳，能真跑。
+_NODE_PLUGIN = r"""
+const fs = require("fs");
+const readline = require("readline");
+const rl = readline.createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  const req = JSON.parse(line);
+  const rate = 16000, secs = 1.0, n = Math.floor(rate * secs);
+  const data = Buffer.alloc(n * 2);
+  for (let i = 0; i < n; i++) {
+    data.writeInt16LE(Math.round(8000 * Math.sin(2 * Math.PI * 440 * i / rate)), i * 2);
+  }
+  const h = Buffer.alloc(44);
+  h.write("RIFF", 0); h.writeUInt32LE(36 + data.length, 4); h.write("WAVE", 8);
+  h.write("fmt ", 12); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22);
+  h.writeUInt32LE(rate, 24); h.writeUInt32LE(rate * 2, 28); h.writeUInt16LE(2, 32);
+  h.writeUInt16LE(16, 34); h.write("data", 36); h.writeUInt32LE(data.length, 40);
+  fs.writeFileSync(req.out, Buffer.concat([h, data]));
+  process.stdout.write(JSON.stringify({ ok: true, seconds: secs }) + "\n");
+});
+"""
+
+
+@pytest.mark.skipif(NODE is None, reason="本机没有 node —— 换任何别的非 Python 解释器同理")
+def test_a_non_python_plugin_works(plugdir, tmp_path):
+    """**用 Node 写的插件也能用** —— 这是选 stdin/stdout JSON 这个契约的**全部理由**。
 
     它不做真合成，只按约定产出一个 WAV（证明"任意语言"不是空话）。
-    解释器路径通过 `{python}` 占位符传进去 —— 插件不必假设环境里有什么。
+    和内置的那两个走的是**同一条 `_Worker` 路径** —— 这正是契约要证明的事。
     """
-    _plugin(plugdir, "shell-echo",
-            {"id": "shell-echo", "name": "shell 插件", "kind": "tts", "network": False,
-             "note": "非 Python 插件", "run": {"command": ["bash", "run.sh"]}},
-            "run.sh", _SHELL_PLUGIN)
-    c = tp.catalog()
-    assert [x["id"] for x in c["items"]] == ["shell-echo"]
-    assert tp.synthesize("shell-echo", "你好", tmp_path / "o.wav") == pytest.approx(1.0)
-    assert (tmp_path / "o.wav").stat().size > 512
+    _plugin(plugdir, "node-tone",
+            {"id": "node-tone", "name": "Node 提示音", "kind": "tts", "network": False,
+             "note": "非 Python 插件", "run": {"command": ["node", "run.js"]}},
+            "run.js", _NODE_PLUGIN)
+    assert [x["id"] for x in tp.catalog()["items"]] == ["node-tone"]
+    assert tp.synthesize("node-tone", "你好", tmp_path / "o.wav") == pytest.approx(1.0)
+    assert (tmp_path / "o.wav").stat().st_size > 512
+    tp.shutdown()
+
+
+def test_timeout_message_names_non_json_output(plugdir, tmp_path):
+    """**别把"答非所问"报成"卡死"**。
+
+    插件打印一句普通文本（不以 `{` 开头）→ 加载器把它当**日志**跳过（设计如此），
+    于是等不到回复、最后超时。但只说"超时"会把人带偏：它**早就回过话**了。
+    实测踩过：报"超时（5s）"，去查了半天"为什么挂住"。
+    """
+    _plugin(plugdir, "garbage", {"id": "garbage", "name": "只吐垃圾", "kind": "tts",
+                                 "run": {"command": ["{python}", "run.py"], "timeout_sec": 1}},
+            "run.py", "import sys, time\nsys.stdin.readline()\n"
+                      "print('随便打点东西', flush=True)\ntime.sleep(5)\n")
+    with pytest.raises(tp.PluginError) as e:
+        tp.synthesize("garbage", "你好", tmp_path / "o.wav")
+    msg = str(e.value)
+    assert "超时" in msg and "随便打点东西" in msg, f"要说清它回过话：{msg}"
+    tp.shutdown()
+
+
+def test_real_slow_timeout_has_no_noise_note(plugdir, tmp_path):
+    """真·慢的时候**不该**冒出"有输出但不是 JSON"—— 两种失败要能分开。"""
+    _plugin(plugdir, "silent", {"id": "silent", "name": "真慢", "kind": "tts",
+                                "run": {"command": ["{python}", "run.py"], "timeout_sec": 1}},
+            "run.py", "import time\ntime.sleep(5)\n")
+    with pytest.raises(tp.PluginError) as e:
+        tp.synthesize("silent", "你好", tmp_path / "o.wav")
+    assert "不是 JSON" not in str(e.value)
+    tp.shutdown()
 
 
 # ---------------- network 标记（数据边界）----------------

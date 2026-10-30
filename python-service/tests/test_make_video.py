@@ -283,18 +283,68 @@ def test_concat_keeps_the_real_sample_rate(tmp_path):
         assert w.getnframes() / w.getframerate() == pytest.approx(2.0, abs=0.02)
 
 
-def test_concat_rejects_mixed_rates(tmp_path):
-    """采样率不一致时**不静默拼** —— 拼出来的必然有一个是变调的。"""
+def test_relative_voice_file_works(tmp_path, monkeypatch):
+    """`voice_file` 写**相对路径**也得能用（插件进程的 cwd 不是调用方的 cwd）。
+
+    实测踩过：同一个 plan，`image`（主程序自己解析）好好的，`voice_file` 却报
+    「没有可用的音频文件」✗ —— 因为插件是 `cwd=<插件目录>` 起的，相对路径在那儿解析。
+    这不是用户的错，是**调用方该给的保证**：交给插件的路径一律绝对。
+    判据：这一镜**有旁白**（走到插件），且时长就是那个文件的实际时长。
+    """
+    import wave as _wave
+
+    def make(p: Path, sec: float, rate: int = 22050) -> Path:
+        with _wave.open(str(p), "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+            w.writeframes(b"\x00\x01" * int(rate * sec))
+        return p
+
+    make(tmp_path / "mine.wav", 1.5)
+    plan = {"scenes": [{"seq": 1, "script": "自己的录音", "subtitle": "自己的录音",
+                        "image": str(_img(tmp_path / "i.png", "testsrc2=s=640x1136")),
+                        "voice_file": "mine.wav"}]}          # ← **相对路径**，故意的
+    p = tmp_path / "plan.json"
+    p.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)                             # cwd 之外的地方没有 mine.wav
+    out = tmp_path / "film.mp4"
+    assert MV.main([str(p), "-o", str(out), "--workdir", str(tmp_path / "w"),
+                    "--width", "180", "--height", "320", "--fps", "12", "--level", "quiet"]) == 0
+
+    rec = json.loads(out.with_suffix(".plan.json").read_text(encoding="utf-8"))
+    sc = rec["scenes"][0]
+    assert sc["has_voice"] is True, f"相对路径的 voice_file 没生效：{rec['tts'].get('failed')}"
+    assert sc["seconds"] == pytest.approx(1.5, abs=0.05), "时长要是那个文件的实际时长"
+
+
+def test_concat_resamples_mixed_rates_without_changing_duration(tmp_path):
+    """采样率不一致 → **重采样**，不是整片失败（2026-10-30 改的判据）。
+
+    原来的行为是直接拒（"不静默拼，会变调"）。但那条守卫盯错了对象：
+    **契约只写了"插件负责写 WAV"，没规定采样率** —— 于是一个*完全按契约写的*
+    第三方插件（比如输出 16kHz）能把整片弄崩 ✗。实测：混用 SAPI(22050) + 一个
+    16kHz 的 Node 插件 → `[16000, 22050] 不静默拼` 直接退出，整片白跑。
+
+    **重采样不变调、不改时长**，所以守卫原本担心的"变调"根本没发生 —— 真正会变调的
+    是"把不同采样率的 PCM 直接拼起来"，那件事依然不做 ✓。
+    判据因此改成：**时长对得上 = 没变速**（变调必然伴随时长错）。
+    """
     def wav(p: Path, sec: float, rate: int):
         with wave.open(str(p), "wb") as w:
             w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
             w.writeframes(b"\x00\x00" * int(rate * sec))
         return p
 
-    a = wav(tmp_path / "a.wav", 0.5, 16000)
+    a = wav(tmp_path / "a.wav", 0.5, 22050)
     b = wav(tmp_path / "b.wav", 0.5, 22050)
-    with pytest.raises(Exception, match="采样率"):
-        MV._concat_wavs([a, b], [0.5, 0.5], tmp_path / "o.wav", 1.0)
+    odd = wav(tmp_path / "odd.wav", 0.5, 16000)     # 少数派：一个 16kHz 的第三方插件
+    out = tmp_path / "o.wav"
+    MV._concat_wavs([a, b, odd], [0.5, 0.5, 0.5], out, 1.5)
+
+    with wave.open(str(out), "rb") as w:
+        assert w.getframerate() == 22050, "要统一到**出现最多**的那个采样率"
+        got = w.getnframes() / w.getframerate()
+    assert got == pytest.approx(1.5, abs=0.03), f"重采样不能改时长（改了就说明变速变调了）：{got}"
 
 
 # ---------------- 音色选择 / 导入自己的配音 ----------------

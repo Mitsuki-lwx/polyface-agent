@@ -141,11 +141,16 @@ class _Worker:
                 f"插件 {self.id} 写不进去（可能已退出）：{e}") from None
 
         deadline = time.monotonic() + self.timeout
+        noise: list[str] = []                        # 跳过掉的 stdout 噪音（超时时拿来说清情况）
         while True:
             remain = deadline - time.monotonic()
             if remain <= 0:
                 self.kill()
-                raise PluginError(f"插件 {self.id} 超时（{self.timeout}s）")
+                # **别说"超时"就完事**：插件可能早就回过话，只是不回 JSON。
+                # 不带出这些行的话，用户会去查"为什么卡住"，而真相是"它答非所问" ✗
+                # （实测：插件打印一句普通文本，5s 后报"超时"，看着像挂死）。
+                tail = f"；它的 stdout 有输出但不是 JSON：{' / '.join(noise[-3:])[:200]}" if noise else ""
+                raise PluginError(f"插件 {self.id} 超时（{self.timeout}s）{tail}")
             try:
                 line = self.queue.get(timeout=min(remain, 5.0))
             except queue.Empty:
@@ -154,7 +159,9 @@ class _Worker:
                 raise BrokenPipeError("插件进程已退出")
             s = line.strip()
             if not s.startswith("{"):
-                continue                                 # 插件打的日志，跳过
+                noise.append(s[:80])                     # 插件打的日志，跳过（但留个底）
+                del noise[:-3]
+                continue
             try:
                 return json.loads(s)
             except Exception:                            # noqa: BLE001
