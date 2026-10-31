@@ -17,3 +17,14 @@ os.environ.setdefault(
     "POLYFACE_USAGE_FILE",
     os.path.join(tempfile.gettempdir(), "polyface-test-llm-usage.jsonl"),
 )
+
+
+def pytest_configure(config):
+    """注册 `real` 标记 —— 真实模式测试默认**不选**，用 `-m real` 显式跑。
+
+    为什么不设 `--strict-markers`：这个项目还没有 pytest 配置文件，
+    加一个只为了一个标记不值得；在这里注册同样能消掉 "Unknown mark" 的警告。
+    """
+    config.addinivalue_line(
+        "markers",
+        "real: 真的调外部 LLM（慢、耗额度、结果不确定）。默认跳过；用 `pytest -m real` 跑。")

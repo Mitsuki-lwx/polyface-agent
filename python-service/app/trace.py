@@ -3,11 +3,12 @@
 - Java 通过 `X-Trace-Id` header 传入；无则自动生成（不报错）
 - 用 `contextvars` 存储，兼容 asyncio
 - ⚠️ **ThreadPoolExecutor 不会自动继承 contextvars** —— 提交任务时必须用
-  `run_in_context()` 显式携带上下文，否则子线程内 trace_id 丢失（会各自新生成）
+  `bind_in_context()` 显式携带上下文，否则子线程内 trace_id 丢失（会各自新生成）
 """
 from __future__ import annotations
 
 import contextvars
+import functools
 import uuid
 
 HEADER = "X-Trace-Id"
@@ -34,10 +35,16 @@ def current_trace_id() -> str:
     return tid
 
 
-def run_in_context(fn, *args, **kwargs):
-    """在**当前上下文快照**中执行 fn —— 供 ThreadPoolExecutor 提交使用。
+def bind_in_context(fn, *args, **kwargs):
+    """把 fn 绑到**当前**上下文快照上，返回一个可在任意线程执行的可调用。
 
     用法：
-        pool.submit(trace.run_in_context, _gen_one, platform)
+        pool.submit(trace.bind_in_context, _gen_one, platform)
+
+    ⚠️ **不能**写成 `pool.submit(trace.run_in_context, fn, ...)` ——
+    那样 `copy_context()` 是在**子线程**里执行的，拷到的是**子线程的空上下文** ✗，
+    trace_id 照样丢（实测 2026-10-30：子线程里 `current_trace_id()` 直接现生成一个新的）。
+    区别就一个字：**在哪复制**。必须在这里（调用方线程）复制好再交出去。
     """
-    return contextvars.copy_context().run(fn, *args, **kwargs)
+    ctx = contextvars.copy_context()
+    return functools.partial(ctx.run, fn, *args, **kwargs)

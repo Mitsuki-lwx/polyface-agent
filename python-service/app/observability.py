@@ -101,7 +101,7 @@ def trace_span(name: str, trace_id: str | None = None, **attrs):
 
     - `trace_id` 非空 → **root 模式**：以该 id 加入 trace（入口用，决定 trace 名）
     - `trace_id` 为空 → **child 模式**：继承当前 OTel 上下文，成为父 span 的子节点
-      （配合 `trace.run_in_context` 在线程池中传播，即可让并发生成正确嵌套）
+      （配合 `trace.bind_in_context` 在线程池中传播，即可让并发生成正确嵌套）
 
     块内的 LLM 调用（drop-in 自动埋点）会挂在当前 span 下。
     """

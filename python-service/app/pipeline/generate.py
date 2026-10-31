@@ -724,13 +724,22 @@ def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
             except Exception:  # noqa: BLE001 —— 落盘失败不该毁掉本次生成
                 logger.exception("平台 %s 落盘失败（本次结果仍会返回）", code)
 
-    def _submit(code: str):
-        # 显式携带上下文：ThreadPoolExecutor **不会**继承 contextvars，
-        # 不包装则子线程内 trace_id 丢失（各平台各自生成新 trace）
-        return trace.run_in_context(_generate_one, code, structured,
-                                    req.tone_override, req.template,
-                                    req.creator_profile, req.retrospect_hints, log,
-                                    req.raw_text)
+    def _call(code: str):
+        """**串行**调用（同一线程，上下文天然继承，不需要绑定）。"""
+        return _generate_one(code, structured, req.tone_override, req.template,
+                             req.creator_profile, req.retrospect_hints, log, req.raw_text)
+
+    def _bound(code: str):
+        """**并行**用：在调用方线程把上下文绑好，返回可在子线程执行的可调用。
+
+        ⚠️ `ThreadPoolExecutor` 不继承 `contextvars`。而且**绑定必须发生在调用方线程** ——
+        早先写成 `submit(trace.run_in_context, fn, …)` 是在**子线程**里 `copy_context()`，
+        拷到的是子线程的空上下文，trace_id 照样丢 ✗（实测 2026-10-30）。
+        """
+        return trace.bind_in_context(_generate_one, code, structured,
+                                     req.tone_override, req.template,
+                                     req.creator_profile, req.retrospect_hints, log,
+                                     req.raw_text)
 
     def _record_failure(code: str, exc: Exception) -> None:
         """单平台失败不致命：记录原因后继续，已完成平台的产物必须交付。"""
@@ -743,7 +752,8 @@ def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
     if cfg.llm_parallel and len(todo) > 1:
         # 并行：快，但需上游额度宽裕（默认关闭，理由见 config）
         with ThreadPoolExecutor(max_workers=min(4, len(todo))) as ex:
-            futures = {ex.submit(_submit, code): code for code in todo}
+            # `bind_in_context` **返回可调用** —— 必须在**调用方线程**里先绑好再交出去
+            futures = {ex.submit(_bound(code)): code for code in todo}
             for f, code in futures.items():
                 try:
                     _remember(code, f.result())
@@ -756,7 +766,7 @@ def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
             if i > 0 and interval > 0:
                 time.sleep(interval)
             try:
-                _remember(code, _submit(code))
+                _remember(code, _call(code))
             except Exception as e:  # noqa: BLE001 — 部分失败可容忍
                 _record_failure(code, e)
 
