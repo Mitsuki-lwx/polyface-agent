@@ -396,3 +396,75 @@ def test_two_stage_off_when_verifier_same_as_generator(monkeypatch):
                      verify={"passed": True})
     gen._llm_qa(_dna(), DraftPayload(titles=["t"], body="b", tags=["x"]), _mat(), [], [], "src")
     assert calls == ["same-x"], "只该调一次"
+
+
+# ---------------------------------------------------------------- 参数可改（checklist §2）
+
+def _draft_ok() -> DraftPayload:
+    return DraftPayload(titles=["测试标题"], body="正文内容，不包含素材里没有的东西。",
+                        tags=["标签"], facts_used=[1])
+
+
+def _qa_fail_then_pass(calls: list):
+    """第 1 次判失败、第 2 次判通过 —— 用来数"到底重写了几轮"。"""
+    def fake(dna, draft, mat, source_text=""):
+        calls.append(1)
+        ok = len(calls) > 2            # 前两次都判失败，才看得到"两轮重写"
+        return QaReport(passed=ok, issues=[] if ok else ["编造"], warnings=[])
+    return fake
+
+
+def test_rewrite_rounds_two_runs_twice(monkeypatch):
+    """`FACTGUARD_REWRITE_ROUNDS=2` → 日志里能看到**两轮**重写（原本只一轮）。"""
+    calls: list = []
+    monkeypatch.setattr(gen, "run_draft", lambda *a, **k: (_draft_ok(), []))
+    monkeypatch.setattr(gen, "run_qa", _qa_fail_then_pass(calls))
+    monkeypatch.setattr(gen.llm, "is_mock", lambda: False)
+    monkeypatch.setenv("FACTGUARD_REWRITE_ROUNDS", "2")
+    from app.config import get_settings
+    get_settings.cache_clear()
+
+    gen._generate_one("xhs", _mat(), None)
+    # 1 次初检 + 2 次重写后的复检
+    assert len(calls) == 1 + 2, f"应当跑两轮重写（初检 + 2 次复检）：{len(calls)}"
+
+
+def test_rewrite_rounds_zero_skips_rewrite(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(gen, "run_draft", lambda *a, **k: (_draft_ok(), []))
+    monkeypatch.setattr(gen, "run_qa", _qa_fail_then_pass(calls))
+    monkeypatch.setattr(gen.llm, "is_mock", lambda: False)
+    monkeypatch.setenv("FACTGUARD_REWRITE_ROUNDS", "0")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    gen._generate_one("xhs", _mat(), None)
+    assert len(calls) == 1, "0 轮 = 只初检，不重写"
+
+
+def test_loose_downgrades_issues_to_warnings(monkeypatch):
+    """`loose` → 同样的问题只进 warnings，`passed` 仍为 true（只报不拦）。"""
+    monkeypatch.setattr(gen.llm, "is_mock", lambda: True)
+    monkeypatch.setenv("FACTGUARD_STRICTNESS", "loose")
+    from app.config import get_settings
+    get_settings.cache_clear()
+
+    bad = DraftPayload(titles=["t"], body="", tags=["a"])     # 空正文 = 必然阻断
+    dna = {"limits": {}, "tags": {}}
+    rep = gen.run_qa(dna, bad, _mat(), "素材原文")
+    assert rep.passed is True, "loose 下不该拦住"
+    assert any("仅提醒" in w for w in rep.warnings)
+    assert rep.issues == []
+
+
+def test_strict_skips_rewrite_and_reports_failure(monkeypatch):
+    """`strict` → 不进入重写，直接判失败。"""
+    calls: list = []
+    monkeypatch.setattr(gen, "run_draft", lambda *a, **k: (_draft_ok(), []))
+    monkeypatch.setattr(gen, "run_qa", _qa_fail_then_pass(calls))
+    monkeypatch.setattr(gen.llm, "is_mock", lambda: False)
+    monkeypatch.setenv("FACTGUARD_STRICTNESS", "strict")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    pd = gen._generate_one("xhs", _mat(), None)
+    assert len(calls) == 1, "strict 下不该重写"
+    assert pd.qa.passed is False
