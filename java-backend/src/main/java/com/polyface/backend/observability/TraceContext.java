@@ -1,6 +1,7 @@
 package com.polyface.backend.observability;
 
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
 
 /**
  * 链路标识上下文（FR-71）。
@@ -45,5 +46,72 @@ public final class TraceContext {
     /** 清理（必须放在 finally）。 */
     public static void clear() {
         CURRENT.remove();
+    }
+
+    /**
+     * 把当前线程的 trace_id 带进任务；任务线程用完还原（线程池会复用线程）。
+     *
+     * <p><b>为什么必须做</b>：`/api/jobs` 是**异步**的 —— 响应头里的 trace_id 由
+     * {@link TraceFilter} 在 **HTTP 线程**上生成，而真正的生成/粗剪跑在**任务线程**里。
+     * `ThreadLocal` 不跨线程，于是任务线程里 {@link #getOrCreate()} 会**再生成一个**，
+     * 导致「响应里的 trace_id」和「Langfuse 里那条 trace」**不是同一个** ✗
+     * （实测 2026-10-31：响应头 `91b6c49c…`，Langfuse 上 `c0cf063a…`）。
+     */
+    public static Runnable inherit(Runnable task) {
+        String tid = getOrCreate();
+        return () -> {
+            String prev = CURRENT.get();
+            CURRENT.set(tid);
+            try {
+                task.run();
+            } finally {
+                if (prev == null) {
+                    CURRENT.remove();
+                } else {
+                    CURRENT.set(prev);
+                }
+            }
+        };
+    }
+
+    /**
+     * 包一层 {@link ExecutorService}：**提交时的上下文**跟着任务走。
+     *
+     * <p>用它替换四个 Runner 里的 {@code Executors.newSingleThreadExecutor(...)} 即可 ——
+     * 不用去改每一处 {@code pool.submit(...)}，将来新加的提交点也自动被覆盖。
+     */
+    public static ExecutorService tracing(ExecutorService inner) {
+        return new java.util.concurrent.AbstractExecutorService() {
+            @Override
+            public void execute(Runnable command) {
+                inner.execute(inherit(command));
+            }
+
+            @Override
+            public void shutdown() {
+                inner.shutdown();
+            }
+
+            @Override
+            public java.util.List<Runnable> shutdownNow() {
+                return inner.shutdownNow();
+            }
+
+            @Override
+            public boolean isShutdown() {
+                return inner.isShutdown();
+            }
+
+            @Override
+            public boolean isTerminated() {
+                return inner.isTerminated();
+            }
+
+            @Override
+            public boolean awaitTermination(long timeout, java.util.concurrent.TimeUnit unit)
+                    throws InterruptedException {
+                return inner.awaitTermination(timeout, unit);
+            }
+        };
     }
 }

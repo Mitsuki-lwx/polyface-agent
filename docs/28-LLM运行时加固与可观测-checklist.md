@@ -72,8 +72,10 @@
       ⚠️ 一直没暴露是因为 `llm_parallel` **默认 false**（串行不走线程）✓
 - [x] C6 响应体含 trace_id
       e2e 记录 ✓：`PASS 2 响应含 trace_id`
-- [x] C7 全局一致
-      e2e 记录 ✓：`PASS 2 trace_id 前后一致`（响应体、响应头、用量记录三处相同 ✓）
+- [x] C7 全局一致 —— **原先只对了一半** ✗→✓
+      **2026-10-31 实测**：响应头、**用量记录**、**Langfuse 的 trace id** 三处现在**相同** ✓。
+      修之前是：响应头 `91b6c49c…`，而用量与 Langfuse 都是 `c0cf063a…` ✗ ——
+      **响应头撒谎**（任务线程拿到的是另一个 id）。见文末复盘。
 - [x] C8 无 header → 自行生成
       `test_missing_header_generates_one_instead_of_failing` ✓（32 位 hex ✓）
       `test_set_and_read_roundtrip` ✓
@@ -108,19 +110,23 @@
       `test_langfuse_disabled_means_enabled_is_false` ✓ +
       `test_openai_client_returns_plain_client_when_disabled` ✓
       （拿到的是**普通 `OpenAI` 客户端**，不是 Langfuse 包装 ✓）+ 缺一个 key 也算关闭 ✓
-- [x] E2 Python 侧能上报（**2026-10-20 实测**，本轮 Langfuse 不可达 ✗ 未复验）
-      记录：一次生成在 Langfuse 里有 **13 个 observation**，含
-      `GENERATION OpenAI-generation`、`SPAN qa`、`SPAN draft` ✓
+- [x] E2 Python 侧能上报 —— **2026-10-31 重新实测** ✓
+      `GET /api/public/traces/5bfd56c9…` → **200**，**11 个 observation**：
+      `SPAN generate:xhs` → `SPAN brief` / `draft` / `qa` + `GENERATION OpenAI-generation`×5 ✓
 - [x] E3 Java 侧能上报
-      同上记录 ✓（`SPAN generate:xhs` 是 Java 建的 root ✓）
-- [x] E4 同一 traceId
-      同上记录 ✓（用 e2e 的 trace_id 去 `GET /api/public/traces/{id}` 查到了整棵树 ✓）
+      **2026-10-31 实测**：Java 启动日志 `Langfuse 上报已启动：host=http://localhost:3000` ✓；
+      根 span `generate:xhs` 由 Java 建的 trace 承载 ✓（见 E4）
+- [x] E4 同一 traceId —— **原先不成立** ✗→✓（2026-10-31 修好并实测）
+      **修之前**：响应头是 `91b6c49c…`，Langfuse 上是 `c0cf063a…` ✗ —— 两个 id。
+      **修之后**：响应头 `5bfd56c9…` → `GET /traces/5bfd56c9…` **200**、整棵树都在 ✓✓
+      见文末「2026-10-31 数据丢失复盘」
 - [x] E5 上报失败不影响业务 —— **本轮实测到了** ✓
       **2026-10-30**：Langfuse 没起（`连接被拒`），每次跑分只打一行
       `Langfuse 不可达（<urlopen error …>）：观测本次运行降级为关闭` ✓，
       评测照跑完、结果正常 ✓✓ —— 这就是 E5 的活证据
-- [x] E6 链路在 Langfuse 里可见（2026-10-20 实测，本轮不可达未复验）
-      同上记录 ✓
+- [x] E6 链路在 Langfuse 里可见
+      **2026-10-31 实测**：一条 trace 里 11 个 observation 全部嵌套正确 ✓
+      （`generate:xhs` 为根，brief/draft/qa 是子 span，5 次 LLM 调用是它的 generation ✓）
 - [x] E7 不含 API Key
       上报走 SDK 的公开参数（trace/observation 的 name/input/output），**不传 key** ✓；
       `usage` 那条脱敏红线另有测试 ✓
@@ -303,3 +309,62 @@ Langfuse 在 2026-10-30 **不可达**（连接被拒）—— 每次跑分只打
 实现是「**默认串行 + 可配的最小间隔**」——
 两者**不同**，而且现有实现是**实测后改的**（并行会被大面积 429）。
 **没有**为了让判据变绿去加"自适应降级"（那是新功能，不是补丁）。
+
+---
+
+## 2026-10-31 数据丢失复盘（Langfuse 里是空的）
+
+### 现象
+
+Langfuse（v3.225.15）**起着**、项目 `polyface` 在，但 **traces 0 / observations 0** ✗。
+
+### 三个原因，逐个修掉
+
+**① `.env` 里的 key 是**另一套**（跟正在跑的那个 Langfuse 对不上）**
+改成对的那一组后，探针立刻落进去了 ✓。
+
+**② `scripts/start.sh` 从不把 `LANGFUSE_*` 交给 Java** ✗
+`.env` 是 **Python 侧**的配置（`app/config.py` 读它），而 Java 读的是**环境变量**
+（`application.yml: langfuse.enabled: ${LANGFUSE_ENABLED:false}`）。
+于是"在 `.env` 里配了 Langfuse"这条路径**对 Java 完全无效** ✗ —— Java 永远不建根 trace。
+**修**：`start.sh` 启动 Java 前从 `.env` 导出这四项（外部已显式设置时以外部为准，不覆盖）。
+
+**③ trace_id 在**任务线程**里会丢 —— 这是本次最要命的一条** ✗✗
+
+`TraceContext` 用 `ThreadLocal` 存 ✓，而 `/api/jobs` 是**异步**的：
+HTTP 线程（`TraceFilter` 生成 id → 写响应头）与**任务线程**（真正跑生成）是两个线程 ✗。
+不显式继承 → 任务线程 `getOrCreate()` **再生成一个** ✗。
+
+实测对照（同一次请求）：
+
+```
+响应头      X-Trace-Id: 91b6c49cb1ce481baace0dab0c1aa5e8
+用量记录    trace_id  : c0cf063ab84d41d7ba6412b2a93b714f   ← 任务线程现生成的
+Langfuse    trace id  : c0cf063ab84d41d7ba6412b2a93b714f
+```
+
+**症状**：从日志/响应里的 trace_id 去 Langfuse **查不到** ✗ —— FR-71 的全部价值归零。
+而且**不报错**，只是两个 id 静静地不一样。
+
+**修**：`TraceContext.tracing(ExecutorService)` —— 包一层执行器，
+**提交时**抓住当前线程的 id、任务线程里设置并在结束时还原 ✓。
+四个 Runner（generate / roughcut / scene-split / split）各改**一行** ✓，
+将来新增的提交点也自动覆盖 ✓。
+
+回归测试：`TraceContextTest`（4 条，含反证"裸线程池确实会丢" ✓）
++ `test_trace_asgi.py`（2 条，钉住 ASGI 中间件 → 线程池这道墙 ✓）。
+
+**修后实测**：响应头 `5bfd56c9…` → `GET /traces/5bfd56c9…` **200**、
+11 个 observation 全部嵌套正确 ✓✓。
+
+### 顺带确认的一件事
+
+`TraceContext` 那条坑与 Python 侧 `run_in_context`（子线程 `copy_context`）**是同一类错**：
+**"上下文在哪复制"**。两边都栽了一次 —— 说明这个项目里凡是跨线程传上下文，
+都应该有一条**用反证钉住**的测试。
+
+### 仍然没勾的 E8，现在**更有理由**不勾了
+
+E8 要求"实现前已按 langfuse skill 要求查阅官方文档确认 SDK 形态"。
+上面 ③（Java 侧）**和** `start.sh` 不导出（②）都说明：**这层从来没被真正验过** ✗ ——
+验过的话，两个 id 不一致这件事当天就会露出来。

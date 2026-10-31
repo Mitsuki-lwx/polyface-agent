@@ -24,6 +24,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.polyface.backend.asset.AssetService;
+import com.polyface.backend.observability.TraceContext;
 import com.polyface.backend.media.MediaDir;
 import com.polyface.backend.store.Store;
 
@@ -60,11 +61,11 @@ public class SceneSplitRunner {
     private final ObjectMapper mapper = new ObjectMapper();
 
     /** 单线程：单机单用户，切段要解码整条视频，本来就吃满 CPU。 */
-    private final ExecutorService pool = Executors.newSingleThreadExecutor(r -> {
+    private final ExecutorService pool = TraceContext.tracing(Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "scene-split-job");
         t.setDaemon(true);
         return t;
-    });
+    }));
 
     private final Map<Long, Process> running = new ConcurrentHashMap<>();
 

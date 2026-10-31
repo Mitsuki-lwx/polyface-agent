@@ -131,6 +131,21 @@ export POLYFACE_DATA_DIR="$(native_path "$ROOT/data")"
 ) >"$LOG_DIR/python-service.log" 2>&1 &
 PIDS+=($!)
 
+# Langfuse：`.env` 是 **Python 侧**的配置，Java 读的是**环境变量**（application.yml 里
+# `langfuse.enabled: ${LANGFUSE_ENABLED:false}`）。不在这里导出的话，
+# `.env` 里配了也白配 —— Java 永远不建根 trace，Python 的子 span 就没有父节点，
+# 一个请求会在 Langfuse 里裂成好几条互不相干的 trace ✗（实测 2026-10-30）。
+# 只导这四项、且**已被外部显式设置时以外部为准**（不覆盖用户的选择）。
+if [ -f "$ROOT/python-service/.env" ]; then
+  for _k in LANGFUSE_ENABLED LANGFUSE_HOST LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY; do
+    if [ -z "$(printenv "$_k" 2>/dev/null)" ]; then
+      _v="$(sed -n "s/^[[:space:]]*${_k}[[:space:]]*=[[:space:]]*//p" "$ROOT/python-service/.env" | tail -1 | tr -d '\r"')"
+      [ -n "$_v" ] && export "$_k=$_v"
+    fi
+  done
+  unset _k _v
+fi
+
 # Java 后端 —— java -jar，cwd 设为 jar 所在目录
 # 必须显式传两个端口：Java 的 server.port 决定 Web 端口，
 # polyface.llm.base-url 决定它去哪里找 Python（不传就还是默认 8000）。

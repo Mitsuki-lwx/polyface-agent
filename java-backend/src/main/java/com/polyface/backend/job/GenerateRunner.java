@@ -25,6 +25,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.polyface.backend.observability.TraceContext;
 import com.polyface.backend.client.PythonClient;
 import com.polyface.backend.store.Store;
 
@@ -52,11 +53,11 @@ public class GenerateRunner {
     private final int stallSec;
     private final int keepJobs;
 
-    private final ExecutorService pool = Executors.newSingleThreadExecutor(r -> {
+    private final ExecutorService pool = TraceContext.tracing(Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "generate-job");
         t.setDaemon(true);
         return t;
-    });
+    }));
 
     /** 取消是**协作式**的：没有子进程可杀，只能在下个平台前停手（在途的那次 HTTP 调用拦不住）。 */
     private final Set<Long> cancelRequested = Collections.synchronizedSet(new LinkedHashSet<>());

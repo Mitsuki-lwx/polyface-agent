@@ -22,6 +22,7 @@ import org.springframework.stereotype.Component;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.polyface.backend.asset.AssetService;
+import com.polyface.backend.observability.TraceContext;
 import com.polyface.backend.media.MediaDir;
 import com.polyface.backend.store.Store;
 
@@ -51,11 +52,11 @@ public class RoughcutRunner {
     private final int keepJobs;
 
     /** 单线程：单机单用户，且视频转码本来就吃满 CPU（spec §1 默认值表）。 */
-    private final ExecutorService pool = Executors.newSingleThreadExecutor(r -> {
+    private final ExecutorService pool = TraceContext.tracing(Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "roughcut-job");
         t.setDaemon(true);
         return t;
-    });
+    }));
 
     private final Map<Long, Process> running = new ConcurrentHashMap<>();
 

@@ -21,6 +21,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.polyface.backend.observability.TraceContext;
 import com.polyface.backend.client.PythonClient;
 import com.polyface.backend.store.Store;
 
@@ -50,11 +51,11 @@ public class SplitRunner {
     private final Path jobsDir;
     private final int keepJobs;
 
-    private final ExecutorService pool = Executors.newSingleThreadExecutor(r -> {
+    private final ExecutorService pool = TraceContext.tracing(Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "split-job");
         t.setDaemon(true);
         return t;
-    });
+    }));
 
     /** 取消是协作式的：在途的那次 LLM 调用拦不住，只能在发起前停手。 */
     private final Set<Long> cancelRequested = Collections.synchronizedSet(new LinkedHashSet<>());
