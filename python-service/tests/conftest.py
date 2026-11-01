@@ -11,6 +11,10 @@ import tempfile
 
 # 必须在任何 app 模块被导入前设置 —— pytest 会先加载 conftest.py
 os.environ["LLM_MOCK"] = "true"
+# 请求来源准入（openspec: local-service-request-guard）：`TestClient` 发的 Host 是
+# `testserver`，会被闸门 403。**测试里显式关掉**，闸门本身由 test_request_guard.py
+# 单独打开来测 —— 关是显式的，不是把功能测没了。
+os.environ["POLYFACE_GUARD_DISABLED"] = "1"
 os.environ["LANGFUSE_ENABLED"] = "false"
 # 用量写入独立临时文件，避免污染真实统计
 os.environ.setdefault(

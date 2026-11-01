@@ -240,6 +240,17 @@ polyface/
 > （Windows 上可 `netsh int ipv4 show excludedportrange protocol=tcp` 查看），
 > 或者是某个程序已 bind 但还没开始监听 —— 这两种情况换端口最快。
 
+**Q：工作台反代到别的域名后报 403「请求来源不被允许」？**
+这是**故意**的（`docs/08` ADR-027）。本地服务只监听回环、**没有鉴权**，
+所以加了一道准入：`Host` 必须是回环（挡 DNS rebinding），`Origin` 必须在允许集合里（挡跨站）。
+把域名加进去即可，**不用改代码**：
+
+```bash
+POLYFACE_ALLOWED_ORIGINS=https://my.example.com bash scripts/start.sh
+```
+
+（逗号分隔可写多个。命令行 `curl` 与 Java↔Python 的服务间调用**不带 `Origin`**，不受影响。）
+
 **Q：没填 Key 能体验吗？**
 能。默认离线演示模式，秒级返回、完全不出网，但产出是**演示结果**（模板填充），不是真实生成。UI 上的运行模式徽章会标明当前是哪种。
 

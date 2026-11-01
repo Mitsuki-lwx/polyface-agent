@@ -4,7 +4,8 @@ import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import dna, llm, observability, trace, usage
+from . import dna, guard, llm, observability, trace, usage
+from .guard import RequestGuard
 from .config import get_settings, parse_cors_origins, service_version
 from .pipeline.cover import CoverInvalid, CoverToolMissing, compose_cover
 from .pipeline.generate import generate
@@ -76,6 +77,9 @@ app = FastAPI(title="Polyface LLM Service", version=service_version(),
 # 需要本地前端直连调试时，在 `python-service/.env` 里显式配置（逗号分隔）：
 #   CORS_ORIGINS=http://127.0.0.1:8080,http://localhost:5173
 install_cors(app, settings.cors_origins)
+# 来源准入：**最后注册 = 最外层 = 最先执行**（Starlette 的 add_middleware 是前置插入）
+# 放在读正文之前拒绝，避免"请求已经产生副作用"
+app.add_middleware(RequestGuard)
 
 
 @app.middleware("http")

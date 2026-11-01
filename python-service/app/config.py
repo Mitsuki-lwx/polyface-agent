@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     #（连续两次调用即可能 429），4 并发会被大面积拒绝；串行 + 间隔才跑得完
     llm_parallel: bool = False
 
+    # ===== 请求来源准入（openspec: local-service-request-guard）=====
+    # 默认允许本机回环的**任意端口**；这里填的是**追加项**（反代到别的域名时才需要）
+    allowed_origins: str = ""
+
     # ===== 事实约束加固（factguard，docs/spec_factguard.md）=====
     # 总开关：关掉即退回加固前的行为（只留最基本的规则校验）
     factguard_enabled: bool = True

@@ -45,6 +45,11 @@ polyface:
     # gimpish 入口；留空则依次看 POLYFACE_GIMPISH、PATH（docs/68 §7）。
     # 刻意不在 yml 里绑环境变量：定位优先级由 EditorProcess 一处实现，避免两处规则打架
     path: ""
+  # 请求来源准入（openspec: local-service-request-guard）：挡 DNS rebinding 与跨站
+  # 默认**开**。only-off 的场景：单测里 MockMvc 的 Host 不是回环。
+  guard:
+    enabled: ${POLYFACE_GUARD_ENABLED:true}
+    allowed-origins: ${POLYFACE_ALLOWED_ORIGINS:}
   # Langfuse 可观测（FR-71）：默认关闭，密钥一律环境变量注入、不落仓库
   langfuse:
     enabled: ${LANGFUSE_ENABLED:false}

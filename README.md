@@ -270,6 +270,17 @@ polyface/
 
 ## FAQ
 
+**Q: The workbench is behind a reverse proxy and now gets 403 "request origin not allowed"?**
+That is intentional (`docs/08` ADR-027). The local services listen on loopback with **no auth**,
+so they reject requests whose `Host` is not loopback (defeats DNS rebinding) and whose `Origin`
+is outside the allow-list (defeats cross-site requests). Add your origin — no code change:
+
+```bash
+POLYFACE_ALLOWED_ORIGINS=https://my.example.com bash scripts/start.sh
+```
+
+(Comma-separated. `curl` and the Java↔Python server-to-server calls carry no `Origin`, so they are unaffected.)
+
 **Q: The browser won't open / the page is blank after starting?**
 Run `python scripts\doctor.py` first (on macOS/Linux use `python3 scripts/doctor.py`). The most common
 cause is port 8080 or 8000 being taken by another program; the self-check reports it and offers two ways out:

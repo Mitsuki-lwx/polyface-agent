@@ -68,3 +68,6 @@ outputs/b1-demo/
 # ===== Kokoro 模型与它自己的 Python 3.12 环境（体积大，不进仓库）=====
 python-service/kokoro-models/
 python-service/.venv-kokoro/
+
+# ===== agent tooling artifacts (not project source) =====
+.omp/
