@@ -26,11 +26,23 @@ logger = logging.getLogger("e2e-diff")
 
 def main():
     material_file = ROOT / "data" / "material-1900.txt"
-    if not material_file.exists():
-        logger.error("素材文件不存在: %s", material_file)
-        sys.exit(1)
-
-    raw_text = material_file.read_text(encoding="utf-8")
+    if material_file.exists():
+        raw_text = material_file.read_text(encoding="utf-8")
+    else:
+        db_path = ROOT / "data" / "polyface.db"
+        if not db_path.exists():
+            logger.error("素材文件不存在且数据库不存在: %s", material_file)
+            sys.exit(1)
+        import sqlite3
+        with sqlite3.connect(db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT raw_text FROM material WHERE id = 9")
+            row = cur.fetchone()
+            if not row or not row[0]:
+                logger.error("数据库中未找到 id=9 素材")
+                sys.exit(1)
+            raw_text = row[0]
+            logger.info("从数据库读取素材 id=9（共 %d 字）", len(raw_text))
     settings = get_settings()
     logger.info("开始端到端真实生成测试...")
     logger.info("LLM Mock 模式: %s (需为 False)", settings.llm_mock)

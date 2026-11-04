@@ -812,9 +812,14 @@ def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
                                   max_overlap=cfg.diff_max_overlap,
                                   length_ratio=cfg.diff_length_ratio)
         if diff["issues"]:
-            msgs = [f"【跨平台】{i}" for i in diff["issues"]]
-            results = [d.model_copy(update={"qa": d.qa.model_copy(
-                update={"warnings": list(d.qa.warnings) + msgs})}) for d in results]
+            p_issues = diff.get("platform_issues") or {}
+            results = [
+                d.model_copy(update={"qa": d.qa.model_copy(
+                    update={"warnings": list(d.qa.warnings) + [
+                        f"【跨平台】{i}" for i in p_issues.get(d.platform_code, diff["issues"])
+                    ]})})
+                for d in results
+            ]
         logger.info("跨平台差异化：重合=%s 字数=%s 问题=%d",
                     diff["overlap"], diff["length"], len(diff["issues"]))
         # 落盘那份也要带上，否则续跑读回来的没有这些警告 ✗

@@ -254,3 +254,24 @@ def test_draft_prompt_carries_format_requirements():
     zhihu_prompt = prompts.build_draft_skeleton_prompt(zhihu_dna, mat, brief)
     assert "结论先行" in zhihu_prompt and "60" in zhihu_prompt
 
+
+def test_platform_issues_are_routed_to_target_platforms():
+    """整批评估中的平台专属问题（篇幅、格式必备项）应分发到专属字典，避免交叉污染。"""
+    res = dc.evaluate(BASELINE)
+    assert "platform_issues" in res
+    p_issues = res["platform_issues"]
+    assert "xhs" in p_issues and "gzh" in p_issues and "zhihu" in p_issues
+
+    # 小红书专属问题不该出现在公众号列表中
+    xhs_joined = " ".join(p_issues["xhs"])
+    gzh_joined = " ".join(p_issues["gzh"])
+    assert "小红书话题标签" in xhs_joined
+    assert "小红书话题标签" not in gzh_joined
+    assert "公众号分段小标题" in gzh_joined
+    assert "公众号分段小标题" not in xhs_joined
+
+    # 跨平台共有问题两边都有
+    assert "同时出现" in xhs_joined
+    assert "同时出现" in gzh_joined
+
+

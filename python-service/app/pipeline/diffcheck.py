@@ -221,17 +221,29 @@ def evaluate(drafts: dict[str, str], codes: dict[str, list[str]] | None = None,
         "shared_by_all": shared_by_all(drafts),
         "length": {k: body_chars(v) for k, v in drafts.items()},
         "issues": [],
+        "platform_issues": {k: [] for k in drafts},
         "max_overlap": max_overlap,
     }
 
     for k, ratio in result["overlap"].items():
         if ratio > max_overlap:
-            result["issues"].append(f"跨平台逐字重合过高：{k} = {ratio:.0%}（上限 {max_overlap:.0%}）")
+            ov_sents = result.get("overlap_sentences", {}).get(k, [])
+            ex = f"（如: 「{ov_sents[0][:24]}」）" if ov_sents else ""
+            msg = f"跨平台逐字重合过高：{k} = {ratio:.0%}（上限 {max_overlap:.0%}）{ex}"
+            result["issues"].append(msg)
+            parts = k.split("∩")
+            for p in parts:
+                if p in result["platform_issues"]:
+                    result["platform_issues"][p].append(msg)
+
     if result["shared_by_all"]:
-        result["issues"].append(
+        msg = (
             "有句子在多篇中同时出现："
             + "；".join(s[:28] for s in result["shared_by_all"][:3])
         )
+        result["issues"].append(msg)
+        for p in result["platform_issues"]:
+            result["platform_issues"][p].append(msg)
 
     # 篇幅倒挂检查（openspec: platform-differentiation §1.3）：
     # 长文平台（公众号等）篇幅不应低于短图文（小红书/抖音等）× length_ratio
@@ -245,6 +257,10 @@ def evaluate(drafts: dict[str, str], codes: dict[str, list[str]] | None = None,
                                       ratio=length_ratio)
                 if inv:
                     result["issues"].append(inv)
+                    if long_code in result["platform_issues"]:
+                        result["platform_issues"][long_code].append(inv)
+                    if short_code in result["platform_issues"]:
+                        result["platform_issues"][short_code].append(inv)
 
     for code, text in drafts.items():
         canon = _PLATFORM_ALIASES.get((code or "").lower(), (code or "").lower())
@@ -255,7 +271,11 @@ def evaluate(drafts: dict[str, str], codes: dict[str, list[str]] | None = None,
         issue = length_issue(code, text, dna)
         if issue:
             result["issues"].append(issue)
+            if code in result["platform_issues"]:
+                result["platform_issues"][code].append(issue)
         for fi in format_issues(code, text, codes.get(code)):
             result["issues"].append(fi)
+            if code in result["platform_issues"]:
+                result["platform_issues"][code].append(fi)
 
     return result
