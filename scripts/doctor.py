@@ -171,13 +171,37 @@ def port_in_use(port: int, host: str = "127.0.0.1") -> bool:
     于是体检放行、start.sh 却卡满 120 秒才报错 —— 体检的意义就没了。
 
     bind 到 127.0.0.1 是可用的最强判据：能绑上就是真能用。
+
+    ⚠️ **必须连通配地址一起试**（实测 2026-11-01）：`grant-dev.exe` 占着
+    `0.0.0.0:8080` 时，`bind(("127.0.0.1", 8080))` 在 Windows 上**会成功** ✗，
+    于是体检报「空闲」、`start.sh` 放行，紧接着 Java 因 "Port 8080 was already in use"
+    退出 —— 体检的意义又没了。所以通配与回环**都**试，任一绑不上就算占用。
     """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        try:
-            s.bind((host, port))
-            return False
-        except OSError:
+    # Windows 默认允许多个进程绑同一端口（没有 SO_EXCLUSIVEADDRUSE 时），
+    # 所以"能 bind 上"在这里**不代表空闲** ✗（实测：给 0.0.0.0 也照样绑成功）。
+    # 因此两条判据任一命中就算占用：
+    #   ① 独占 bind 失败  ② 连得上（说明有活跃监听者）
+    exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+    for addr in (("0.0.0.0", port), (host, port)):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if exclusive is not None:
+                try:
+                    s.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+                except OSError:
+                    pass
+            try:
+                s.bind(addr)
+            except OSError:
+                return True
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.settimeout(0.3)
+    try:
+        if probe.connect_ex((host, port)) == 0:
             return True
+    finally:
+        probe.close()
+    return False
 
 
 def check_java() -> Check:
@@ -443,11 +467,70 @@ def dna_max_age_days() -> int:
         return DEFAULT_DNA_MAX_AGE_DAYS
 
 
+def _probe(url: str, host_header: str | None = None, timeout: float = 2.0) -> tuple[bool, str]:
+    """**真的打一次请求**。返回 (可达, 说明)。
+
+    为什么不看进程名/端口：同名进程会误判；端口有监听也不代表有人应答 ✗。
+    只打 GET，且两个目标都无副作用（`/health`、`materials?limit=1`）。
+    """
+    import urllib.error
+    import urllib.request
+
+    headers = {"Host": host_header} if host_header else {}
+    req = urllib.request.Request(url, method="GET", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return True, f"HTTP {r.status}"
+    except urllib.error.HTTPError as e:
+        # 有响应就算"活着"（4xx/5xx 是业务或闸门问题，不是进程死了）
+        return True, f"HTTP {e.code}（有响应，服务在线）"
+    except Exception as e:  # noqa: BLE001
+        return False, f"{type(e).__name__}"
+
+
+def check_services_alive(java_port: int = DEFAULT_JAVA_PORT,
+                         py_port: int = DEFAULT_PY_PORT,
+                         root: Path | None = None) -> list[Check]:
+    """服务**现在**活着吗？（openspec: service-crash-forensics）
+
+    非阻塞提示：启动前体检时两个服务本来就该是没起的，这不是错误。
+    启动之后它才是"是不是半死"的判断依据。
+    """
+    root = root or project_root()
+    logs = root / "logs"
+    out: list[Check] = []
+
+    py_ok, py_detail = _probe(f"http://127.0.0.1:{py_port}/health",
+                              host_header=f"127.0.0.1:{py_port}")
+    out.append(Check(
+        "Python LLM 服务（存活）", py_ok,
+        (f"响应正常（{py_detail}）" if py_ok
+         else f"未运行 / 不可达（{py_detail}）—— 启动前体检时这是正常的；"
+              f"启动后若变这里，看 {logs / 'python-service.log'} 与 "
+              f"{logs / 'crash-python.log'}（崩溃栈）"),
+        hint="" if py_ok else "重启：scripts/start.sh（或 scripts\\start.bat）",
+        blocking=False,
+    ))
+
+    j_ok, j_detail = _probe(f"http://127.0.0.1:{java_port}/api/materials?limit=1",
+                            host_header=f"127.0.0.1:{java_port}")
+    out.append(Check(
+        "Java 后端（存活）", j_ok,
+        (f"响应正常（{j_detail}）" if j_ok
+         else f"未运行 / 不可达（{j_detail}）—— 启动前体检时这是正常的；"
+              f"启动后若变这里，看 {logs / 'java-backend.log'}"),
+        hint="" if j_ok else "重启：scripts/start.sh（或 scripts\\start.bat）",
+        blocking=False,
+    ))
+    return out
+
+
 def run_all(root: Path | None = None, java_port: int = DEFAULT_JAVA_PORT,
             py_port: int = DEFAULT_PY_PORT) -> list[Check]:
     root = root or project_root()
     checks = [check_java(), check_python(), check_venv(root), check_jar(root)]
     checks += check_ports(java_port, py_port)
+    checks += check_services_alive(java_port=java_port, py_port=py_port, root=root)
     checks += [check_data_dir(root), check_llm_mode(root), check_editor(root),
                check_langfuse(root),
                check_platform_dna(root, dna_max_age_days())]

@@ -404,3 +404,109 @@ def test_dna_max_age_is_configurable(monkeypatch):
     assert doctor.dna_max_age_days() == doctor.DEFAULT_DNA_MAX_AGE_DAYS
     monkeypatch.setenv("POLYFACE_DNA_MAX_AGE_DAYS", "0")     # 非正数退回 1
     assert doctor.dna_max_age_days() == 1
+
+
+# ---------------------------------------------------------------- 服务存活（崩溃可观测）
+
+def _serve(port: int = 0, status: int = 200):
+    """起一个一次性的本地 HTTP 服务，返回 (port, shutdown_fn)。"""
+    import http.server
+    import threading
+
+    class _H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(status)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *a):  # 安静
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", port), _H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    def close():
+        srv.shutdown()
+        srv.server_close()
+
+    return srv.server_address[1], close
+
+
+def _free_port() -> int:
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def test_services_alive_both_up(tmp_path):
+    py_port, close_py = _serve()
+    j_port, close_j = _serve()
+    try:
+        checks = doctor.check_services_alive(java_port=j_port, py_port=py_port, root=tmp_path)
+        assert [c.ok for c in checks] == [True, True]
+        assert all("响应正常" in c.detail for c in checks)
+        assert all(not c.blocking for c in checks), "存活检查不能阻塞启动"
+    finally:
+        close_py()
+        close_j()
+
+
+def test_services_alive_one_down_names_log_and_restart(tmp_path):
+    py_port, close_py = _serve()
+    try:
+        checks = doctor.check_services_alive(java_port=_free_port(), py_port=py_port, root=tmp_path)
+        assert [c.ok for c in checks] == [True, False]
+        down = checks[1]
+        assert "java-backend.log" in down.detail, "必须指到日志，用户才知道去哪看"
+        assert "start.sh" in down.hint and not down.blocking
+    finally:
+        close_py()
+
+
+def test_services_alive_both_down(tmp_path):
+    checks = doctor.check_services_alive(java_port=_free_port(), py_port=_free_port(), root=tmp_path)
+    assert [c.ok for c in checks] == [False, False]
+    assert "crash-python.log" in checks[0].detail, "Python 侧必须指到崩溃栈文件"
+
+
+def test_services_alive_treats_http_error_as_alive(tmp_path):
+    """4xx/5xx = 有响应 = 进程活着（不该把业务错误报成"服务死了"）。"""
+    py_port, close_py = _serve(status=500)
+    j_port, close_j = _serve(status=403)
+    try:
+        checks = doctor.check_services_alive(java_port=j_port, py_port=py_port, root=tmp_path)
+        assert [c.ok for c in checks] == [True, True]
+        assert all("有响应" in c.detail for c in checks)
+    finally:
+        close_py()
+        close_j()
+
+
+def test_port_in_use_true_when_other_socket_bound_on_wildcard():
+    """别人的 socket 绑在 `0.0.0.0:<port>` 上时，必须报"占用"。
+
+    回归 2026-11-01：`grant-dev.exe` 占着 0.0.0.0:8080，doctor 却报"空闲" ——
+    因为它只 `bind` 了 127.0.0.1，而 Windows 默认允许多个进程绑同一端口。
+    结果体检放行，Java 起不来退出 1，用户看到的是"已就绪（0s）"紧跟"已退出"。
+    """
+    other = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    other.bind(("0.0.0.0", 0))
+    other.listen(1)
+    port = other.getsockname()[1]
+    try:
+        assert doctor.port_in_use(port) is True, "通配绑定时被误判为空闲"
+    finally:
+        other.close()
+
+
+def test_port_in_use_true_when_bound_but_not_listening_on_wildcard():
+    """只 bind 不 listen 也算占用（原始设计意图，换到通配地址后仍须成立）。"""
+    other = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    other.bind(("0.0.0.0", 0))
+    port = other.getsockname()[1]
+    try:
+        assert doctor.port_in_use(port) is True
+    finally:
+        other.close()

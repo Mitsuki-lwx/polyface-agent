@@ -393,6 +393,13 @@ anyone who can reach the port.
 Edit `platform-dna/<platform>.yaml` (style, structural templates, title rules, tags and red-line words
 all live there) and restart the Python service.
 
+**Q: It suddenly stopped responding (a generation hangs, the page shows a network error)?**
+Check the services are still **alive** before blaming your key or network: `python scripts/doctor.py`
+reports「Python LLM 服务（存活）」and「Java 后端（存活）」by actually issuing a request (not by
+looking at process names), and points at the logs. With `scripts/start.sh`, whichever service exits
+is reported **immediately** with its exit code and log path; services are **never auto-restarted** —
+a crash should be seen, not papered over. Fatal-signal traces land in `logs/crash-python.log`.
+
 ## Roadmap
 
 - [x] M0 Solution and blueprint

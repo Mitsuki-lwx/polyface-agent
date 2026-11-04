@@ -98,6 +98,14 @@ PATH_VAR_ARG_RE = re.compile(
     r'"\$\{?([A-Za-z_]*'
     r'(?:DIR|PATH|FILE|JAR|HOME|ROOT|VENV)'
     r'[A-Za-z_]*)\}?[^"]*"')
+# S8 的**真危险形态**：路径变量必须**紧跟**在原生程序后面（`$PY "$ROOT/x.py"`）。
+# 曾经只看「同一行里两者都出现」，于是 `[ ! -f "$ROOT/polyface.jar" ]` 撞上
+# 同一行的 `$PY` 就误报 ✗ —— 而那里是 shell 内建在用 POSIX 路径，本来就对。
+# 判据是「**同一条简单命令内**」而不是「紧跟」：`"$PY" -m venv "$VENV_DIR"` 中间
+# 隔着 -m 和子命令，路径照样是交给 python 的 ✓；而 `[ -x "$PY" ] || [ -f "$ROOT/x" ]`
+# 里 `$PY` 属于 `[` 这条命令，`$ROOT` 属于另一条 ✗。所以按 shell 分隔符切段再看。
+S8_SEGMENT_SPLIT_RE = re.compile(r'&&|\|\||[;|]')
+
 # S9：原生 Windows 程序的**斜杠参数**（`/FI` `/FO` `/NH` …）会被 Git Bash
 # 当成**路径**转换掉（`/FI` → `D:/Git/FI`），程序随即报「无效参数/选项」。
 # 与 S8 同源（都是 MSYS 路径转换），区别是：S8 管"路径参数"，S9 管"斜杠参数"。
@@ -450,7 +458,10 @@ def check_sh(path: Path, code: set[int]) -> list[Issue]:
         if "native_path" not in c:
             unsafe = [v for v in PATH_VAR_ARG_RE.findall(c) if v not in converted]
             why = ""
-            if unsafe and NATIVE_CMD_RE.search(c):
+            if unsafe and any(
+                    PATH_VAR_ARG_RE.search(S8_SEGMENT_SPLIT_RE.split(c[m.end():], 1)[0])
+                    for m in NATIVE_CMD_RE.finditer(c)
+            ):
                 why = f"原生程序（java/python）的路径参数 ${unsafe[0]}"
             elif unsafe and NATIVE_ENVVAR_RE.search(c):
                 why = f"会被原生程序读取的环境变量（值来自 ${unsafe[0]}）"

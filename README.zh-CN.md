@@ -240,6 +240,25 @@ polyface/
 > （Windows 上可 `netsh int ipv4 show excludedportrange protocol=tcp` 查看），
 > 或者是某个程序已 bind 但还没开始监听 —— 这两种情况换端口最快。
 
+**Q：用着用着突然没反应了（生成卡住、页面报网络错误）？**
+先确认**服务还活着**，别急着怀疑 Key 或网络：
+
+```bash
+python scripts/doctor.py          # 看「Python LLM 服务（存活）」「Java 后端（存活）」两行
+```
+
+它会**真的打一次请求**（不是看进程名），并指出日志位置。三份日志：
+
+| 文件 | 里面有什么 |
+|---|---|
+| `logs/python-service.log` | Python 服务的正常输出 |
+| `logs/java-backend.log` | Java 后端的正常输出 |
+| `logs/crash-python.log` | **崩溃栈**（致命信号时会写在这里，平时可能是空的） |
+
+用 `scripts/start.sh` 启动时，**任一服务退出会当场报出**是哪个、退出码、日志路径，并停掉另一个。
+用 `scripts/start.bat`（Windows）时，两个服务各自在自己的窗口里跑 —— **哪个窗口出现 traceback 并停住，就是哪个服务停了**。
+服务**不会**被自动重启：重启是你的显式动作，这样问题不会被悄悄掩盖。
+
 **Q：工作台反代到别的域名后报 403「请求来源不被允许」？**
 这是**故意**的（`docs/08` ADR-027）。本地服务只监听回环、**没有鉴权**，
 所以加了一道准入：`Host` 必须是回环（挡 DNS rebinding），`Origin` 必须在允许集合里（挡跨站）。

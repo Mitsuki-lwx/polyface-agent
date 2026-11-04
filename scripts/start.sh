@@ -71,7 +71,10 @@ if ! "$PY" "$(native_path "$ROOT/scripts/doctor.py")" --quiet \
      --java-port "$JAVA_PORT" --py-port "$PY_PORT"; then
   echo
   echo "存在阻塞项，已中止启动。请按上方提示处理后重试。"
-  echo "首次使用请先运行 scripts/setup.sh"
+  # 只有"环境还没建"时才提 setup —— 端口被占之类的问题跑 setup 也解决不了 ✗
+  if [ ! -x "$PY" ] || { [ ! -f "$ROOT/polyface.jar" ] && [ ! -f "$ROOT/java-backend/target/polyface.jar" ]; }; then
+    echo "若这是第一次运行，请先执行 scripts/setup.sh"
+  fi
   exit 1
 fi
 
@@ -86,9 +89,16 @@ fi
 # ---------------------------------------------------------- 就绪探测
 # 注意：Java 的 /health 在 Python 不可达时**仍返回 200**（内部吞掉异常），
 # 所以必须分别探测两个端口，不能只看 Java。
+# 等端口就绪。第三个参数是**我们自己的子进程 pid** ——
+# 只看端口是错的：别人（如 grant-dev.exe）占着 8080 时，旧版会立刻报
+# "已就绪（0s）"，紧接着自己那个却绑不上端口退出了 ✗（实测 2026-11-01）。
+# 所以先确认"我们的进程还活着"，死了就立刻返回 2，不装作就绪。
 wait_port() {
-  local port="$1" label="$2" limit=120 waited=0
+  local port="$1" label="$2" pid="$3" limit=120 waited=0
   while [ "$waited" -lt "$limit" ]; do
+    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+      return 2
+    fi
     if "$PY" -c "import socket,sys; s=socket.socket(); s.settimeout(0.5); sys.exit(0 if s.connect_ex(('127.0.0.1',$port))==0 else 1)" 2>/dev/null; then
       echo "  $label :$port 已就绪（${waited}s）"
       return 0
@@ -101,6 +111,7 @@ wait_port() {
 
 # ---------------------------------------------------------- 启动
 PIDS=()
+PIDS_NAME=()   # 与 PIDS 同序：哪个进程是哪个服务（openspec: service-crash-forensics）
 cleanup() {
   echo
   echo "正在停止服务..."
@@ -129,7 +140,7 @@ export POLYFACE_DATA_DIR="$(native_path "$ROOT/data")"
   cd "$ROOT/python-service"
   exec "$PY" -m uvicorn app.main:app --host 127.0.0.1 --port "$PY_PORT"
 ) >"$LOG_DIR/python-service.log" 2>&1 &
-PIDS+=($!)
+PIDS+=($!); PIDS_NAME+=("Python LLM 服务")
 
 # Langfuse：`.env` 是 **Python 侧**的配置，Java 读的是**环境变量**（application.yml 里
 # `langfuse.enabled: ${LANGFUSE_ENABLED:false}`）。不在这里导出的话，
@@ -155,18 +166,37 @@ fi
     "--server.port=$JAVA_PORT" \
     "--polyface.llm.base-url=http://127.0.0.1:$PY_PORT"
 ) >"$LOG_DIR/java-backend.log" 2>&1 &
-PIDS+=($!)
+PIDS+=($!); PIDS_NAME+=("Java 后端")
 
 # ---------------------------------------------------------- 等就绪
 echo "等待服务就绪（最多 120 秒 / 个）..."
-if ! wait_port "$PY_PORT" "Python LLM 服务"; then
+rc=0
+wait_port "$PY_PORT" "Python LLM 服务" "${PIDS[0]}" || rc=$?
+if [ "$rc" -ne 0 ]; then
   echo
-  echo "[警告] Python 服务 120 秒内未就绪。请查看 $LOG_DIR/python-service.log"
+  if [ "$rc" -eq 2 ]; then
+    echo "[警告] Python LLM 服务**没能启动**（进程已退出）。"
+  else
+    echo "[警告] Python 服务 120 秒内未就绪。"
+  fi
+  echo "       日志：$LOG_DIR/python-service.log"
+  echo "       常见原因：端口 $PY_PORT 被别的程序占用（换端口：POLYFACE_PY_PORT=<端口>）。"
   exit 1
 fi
-if ! wait_port "$JAVA_PORT" "Java 后端"; then
+
+rc=0
+wait_port "$JAVA_PORT" "Java 后端" "${PIDS[1]}" || rc=$?
+if [ "$rc" -ne 0 ]; then
   echo
-  echo "[警告] Java 后端 120 秒内未就绪。请查看 $LOG_DIR/java-backend.log"
+  if [ "$rc" -eq 2 ]; then
+    echo "[警告] Java 后端**没能启动**（进程已退出）。"
+  else
+    echo "[警告] Java 后端 120 秒内未就绪。"
+  fi
+  echo "       日志：$LOG_DIR/java-backend.log"
+  echo "       最常见原因：端口 $JAVA_PORT 已被别的程序占用 —— 先查是谁："
+  echo "         powershell -c \"Get-NetTCPConnection -LocalPort $JAVA_PORT -State Listen | Select-Object OwningProcess\""
+  echo "       换端口启动：POLYFACE_JAVA_PORT=18080 POLYFACE_PY_PORT=18000 bash scripts/start.sh"
   exit 1
 fi
 
@@ -188,4 +218,46 @@ echo "============================================================"
 echo " Polyface 运行中：$URL"
 echo " 按 Ctrl-C 停止两个服务。"
 echo "============================================================"
-wait
+
+# ---------------------------------------------------------- 监管子进程
+# 以前这里是一句裸 `wait` —— 它等的是**全部**子进程，所以"Python 死了、Java 还活着"
+# 这种半死状态，脚本会一直安静地等下去 ✗（openspec: service-crash-forensics）。
+# 现在：任一退出 → 立刻指名道姓报出来（含退出码与日志路径）→ 收掉其余 → 非零退出。
+# **故意不自动重启**：崩溃要被看见，不能被重启掩盖。
+LOG_FOR=("$LOG_DIR/python-service.log" "$LOG_DIR/java-backend.log")
+
+have_wait_n=0
+if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3) )); then
+  have_wait_n=1
+fi
+
+if (( have_wait_n )); then
+  # `wait -n` 在子进程异常退出时返回非零 —— 本脚本开着 `set -e`，必须吞掉它，
+  # 否则会**直接跳出脚本**、连"是哪个退了"都来不及打（实测 2026-11-01）。
+  wait -n "${PIDS[@]}" 2>/dev/null || true
+else
+  # 老 bash 没有 `wait -n`：轮询 + 尽力拿退出码
+  echo "（本 bash 不支持 wait -n，改用轮询监管）"
+  while :; do
+    for _pid in "${PIDS[@]}"; do
+      kill -0 "$_pid" 2>/dev/null || break 2
+    done
+    sleep 2
+  done
+fi
+
+rc=0
+for _i in "${!PIDS[@]}"; do
+  if ! kill -0 "${PIDS[$_i]}" 2>/dev/null; then
+    rc=0
+    wait "${PIDS[$_i]}" 2>/dev/null || rc=$?   # 同样是 set -e：非零必须显式接住
+    echo
+    echo "============================================================"
+    echo " [已退出] ${PIDS_NAME[$_i]}（退出码 $rc）"
+    echo " 日志：${LOG_FOR[$_i]}"
+    echo " 其余服务将被停止。请查看日志定位，再用 start.sh 显式重启。"
+    echo "============================================================"
+    break
+  fi
+done
+exit "${rc:-1}"

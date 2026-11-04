@@ -4,7 +4,7 @@ import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import dna, guard, llm, observability, trace, usage
+from . import dna, guard, lifecycle as _lifecycle, llm, observability, trace, usage
 from .guard import RequestGuard
 from .config import get_settings, parse_cors_origins, service_version
 from .pipeline.cover import CoverInvalid, CoverToolMissing, compose_cover
@@ -62,6 +62,14 @@ def install_cors(target: FastAPI, raw_origins: str) -> list[str]:
 
 
 settings = get_settings()
+# 崩溃取证（openspec: service-crash-forensics）：**必须在 app 创建前就挂上** ——
+# 之后任何时刻的致命信号（SIGSEGV/SIGABRT/SIGFPE…）都会把 Python 栈写进文件。
+# 失败只告警，绝不影响服务启动。
+_lifecycle.crash_log_path()  # noqa: B018 —— 让 POLYFACE_CRASH_LOG 的解析发生在导入期
+_lifecycle.enable_crash_log()
+_lifecycle.log_startup()
+_lifecycle.install_atexit()
+
 app = FastAPI(title="Polyface LLM Service", version=service_version(),
               description="素材解析 / 平台策略 / 成稿 / QA / 音视频入料 / 示例学习")
 

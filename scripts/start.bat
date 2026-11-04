@@ -93,6 +93,15 @@ goto :wait_java_loop
 
 :open
 echo 服务已就绪，打开浏览器...
+echo.
+rem 崩溃取证（openspec: service-crash-forensics）——
+rem 本脚本用两个独立窗口跑服务，所以"谁死了"由**它自己的窗口**当场显示：
+rem 窗口里出现 traceback 并停住 = 那个服务停了。这里把日志位置说清楚，
+rem 让用户不必猜。Python 侧另有一份 crash-python.log（致命信号写栈）。
+echo  日志：%ROOT%\logs\python-service.log
+echo        %ROOT%\logs\java-backend.log
+echo        %ROOT%\logs\crash-python.log（崩溃栈）
+echo  看管：两个服务窗口请勿关闭；哪个窗口报错/关闭，就是哪个服务停了。
 start "" "http://127.0.0.1:8080"
 exit /b 0
 
