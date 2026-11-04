@@ -73,10 +73,13 @@ def main():
                                    max_overlap=settings.diff_max_overlap,
                                    length_ratio=settings.diff_length_ratio)
 
+    facts_list = structured.get("facts", []) if isinstance(structured, dict) else getattr(structured, "facts", [])
     out_file = ROOT / "data" / "e2e-diff-result.json"
     result_data = {
         "elapsed_sec": round(elapsed, 1),
         "used_mock": used_mock,
+        "facts_count": len(facts_list),
+        "facts": [f.model_dump() if hasattr(f, "model_dump") else f for f in facts_list],
         "failures": [f.model_dump() for f in failures],
         "diff_eval": diff_eval,
         "drafts": {
@@ -98,6 +101,7 @@ def main():
     print("\n" + "=" * 60)
     print("【端到端复算结果】")
     print(f"总耗时: {elapsed:.1f}s")
+    print(f"提取事实条数: {len(facts_list)}")
     print(f"两两重合率: {diff_eval['overlap']}")
     print(f"三篇共用句数: {len(diff_eval['shared_by_all'])}")
     if diff_eval["shared_by_all"]:
