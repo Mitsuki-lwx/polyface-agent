@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .. import dna as dna_lib
+from ..pipeline import diffcheck
 from .. import llm, trace
 from ..config import get_settings
 from ..pipeline.understand import run_understand
@@ -224,6 +225,7 @@ def run_draft(
     template: UserTemplate | None = None,
     creator_profile: dict | None = None,
     retrospect_hints: list[str] | None = None,
+    avoid: list[str] | None = None,
 ) -> tuple[DraftPayload, list[str]]:
     """成稿 = 骨架 → 装配 → 机械门（ADR-025）。返回 `(成稿, 软违规)`。
 
@@ -247,7 +249,8 @@ def run_draft(
     def _call_once(fb: str | None) -> AssembleResult:
         data = llm.chat_json(
             build_draft_skeleton_prompt(dna, mat, brief, fb, tpl,
-                                        creator_profile, retrospect_hints),
+                                        creator_profile, retrospect_hints,
+                                        avoid_sentences=avoid),
             system=DRAFT_SYSTEM, temperature=0.8,
             scene="draft", platform=dna.get("code"),
         )
@@ -614,7 +617,8 @@ def _generate_one(code: str, mat: StructuredMaterial, tone_override: str | None,
                   template: UserTemplate | None = None,
                   creator_profile: dict | None = None,
                   retrospect_hints: list[str] | None = None,
-                  log=None, source_text: str = "") -> PlatformDraft:
+                  log=None, source_text: str = "",
+                  avoid: list[str] | None = None) -> PlatformDraft:
     dna = dna_lib.load_dna(code)
     with _stage(log, f"平台:{code}:策略") as r:
         brief = run_brief(code, dna, mat, tone_override, template, creator_profile, retrospect_hints)
@@ -623,7 +627,7 @@ def _generate_one(code: str, mat: StructuredMaterial, tone_override: str | None,
     with _stage(log, f"平台:{code}:成稿") as r:
         draft, gate_soft = run_draft(code, dna, mat, brief, template=template,
                                      creator_profile=creator_profile,
-                                     retrospect_hints=retrospect_hints)
+                                     retrospect_hints=retrospect_hints, avoid=avoid)
         r.done("成稿完成" if not gate_soft else f"成稿完成（{len(gate_soft)} 项软提醒）")
     with _stage(log, f"平台:{code}:质检") as r:
         qa = run_qa(dna, draft, mat, source_text)
@@ -662,6 +666,10 @@ def _generate_one(code: str, mat: StructuredMaterial, tone_override: str | None,
         draft=draft,
         qa=qa,
     )
+
+
+# 传给模型"已用过的句子"上限：只带长句，避免 prompt 膨胀
+MAX_AVOID_SENTENCES = 60
 
 
 def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
@@ -724,10 +732,28 @@ def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
             except Exception:  # noqa: BLE001 —— 落盘失败不该毁掉本次生成
                 logger.exception("平台 %s 落盘失败（本次结果仍会返回）", code)
 
+    def _used_sentences() -> list[str] | None:
+        """已完成的平台用过的句子（去重、截断）。
+
+        截断是为了控制 prompt 体积：只带**最容易被照抄**的那些（长句优先），
+        最多 `MAX_AVOID_SENTENCES` 条。
+        """
+        if len(req.platforms) < 2:
+            return None
+        seen: dict[str, str] = {}
+        for d in done_by_code.values():
+            for s in diffcheck.sentences(d.draft.body):
+                seen.setdefault(diffcheck.normalize(s), s)
+        if not seen:
+            return None
+        ordered = sorted(seen.values(), key=len, reverse=True)
+        return ordered[:MAX_AVOID_SENTENCES]
+
     def _call(code: str):
         """**串行**调用（同一线程，上下文天然继承，不需要绑定）。"""
         return _generate_one(code, structured, req.tone_override, req.template,
-                             req.creator_profile, req.retrospect_hints, log, req.raw_text)
+                             req.creator_profile, req.retrospect_hints, log, req.raw_text,
+                             avoid=_used_sentences())
 
     def _bound(code: str):
         """**并行**用：在调用方线程把上下文绑好，返回可在子线程执行的可调用。
@@ -736,10 +762,12 @@ def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
         早先写成 `submit(trace.run_in_context, fn, …)` 是在**子线程**里 `copy_context()`，
         拷到的是子线程的空上下文，trace_id 照样丢 ✗（实测 2026-10-30）。
         """
+        # 并行时**没有**前序产出可参考（各平台同时开跑），所以不给 avoid ——
+        # 此时跨平台去重只能事后检查（`evaluate`），不能事前约束。如实记录，不假装。
         return trace.bind_in_context(_generate_one, code, structured,
                                      req.tone_override, req.template,
                                      req.creator_profile, req.retrospect_hints, log,
-                                     req.raw_text)
+                                     req.raw_text, None)
 
     def _record_failure(code: str, exc: Exception) -> None:
         """单平台失败不致命：记录原因后继续，已完成平台的产物必须交付。"""
@@ -772,5 +800,31 @@ def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
 
     # 按请求顺序返回**完整**集合（已完成 + 本次新跑）——调用方分不出续跑与一次跑完
     results = [done_by_code[c] for c in req.platforms if c in done_by_code]
+
+    # ---- 跨平台差异化检查（openspec: platform-differentiation）----
+    # 只在**多平台**时做（单篇没有可比对象，不制造无谓的改写 ✗）。
+    # 结果并进每个平台的 qa.warnings：这样 UI 的「③ 成稿审阅」**不用改**就能看见，
+    # 也不需要改 Java 侧契约 ✓。消息带「【跨平台】」前缀，避免和单平台问题混淆。
+    if len(results) > 1:
+        bodies = {d.platform_code: d.draft.body for d in results}
+        tags = {d.platform_code: d.draft.tags for d in results}
+        diff = diffcheck.evaluate(bodies, tags,
+                                  max_overlap=cfg.diff_max_overlap,
+                                  length_ratio=cfg.diff_length_ratio)
+        if diff["issues"]:
+            msgs = [f"【跨平台】{i}" for i in diff["issues"]]
+            results = [d.model_copy(update={"qa": d.qa.model_copy(
+                update={"warnings": list(d.qa.warnings) + msgs})}) for d in results]
+        logger.info("跨平台差异化：重合=%s 字数=%s 问题=%d",
+                    diff["overlap"], diff["length"], len(diff["issues"]))
+        # 落盘那份也要带上，否则续跑读回来的没有这些警告 ✗
+        for d in results:
+            if workdir:
+                try:
+                    ck.write_unit(workdir, "platform", d.platform_code,
+                                  json.loads(d.model_dump_json()))
+                except Exception:  # noqa: BLE001
+                    logger.warning("差异化结果落盘失败：%s", d.platform_code)
+
     structured_dict = json.loads(structured.model_dump_json())
     return structured_dict, results, used_mock, failures

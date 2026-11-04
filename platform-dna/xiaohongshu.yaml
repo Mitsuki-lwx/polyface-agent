@@ -124,3 +124,10 @@ verify:
       note: "普通用户视频时长上限随账号等级变化，300s 为保守值，待官方确认"
     - field: images_max
       note: "18 张为常见上限，未在官方文档中直接确认"
+
+# ============================================================ 正文篇幅窗口
+# 供跨平台差异化检查（openspec: platform-differentiation）使用：
+# 篇幅按平台分配，且禁止"长文平台反而最短"（跨篇约束见 diffcheck.inversion_issue）。
+body_chars:
+  min: 300
+  max: 800

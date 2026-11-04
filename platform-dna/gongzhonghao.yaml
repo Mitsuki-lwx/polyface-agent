@@ -117,3 +117,10 @@ verify:
       note: "120 字为经验值"
     - field: tags.count_max
       note: "公众号无官方标签数上限概念，3 为经验建议"
+
+# ============================================================ 正文篇幅窗口
+# 供跨平台差异化检查（openspec: platform-differentiation）使用：
+# 篇幅按平台分配，且禁止"长文平台反而最短"（跨篇约束见 diffcheck.inversion_issue）。
+body_chars:
+  min: 800
+  max: 3000

@@ -75,6 +75,13 @@ class Settings(BaseSettings):
     factguard_check_claims: bool = True      # 新增断言（靠 LLM QA）
     # 定向重写轮数上限。默认 1（沿用加固前），调大要有可观测的多一轮
     factguard_rewrite_rounds: int = 1
+
+    # ---- 跨平台差异化（openspec: platform-differentiation）----
+    # 阈值**必须可调**：10% 是 2026-11-01 那次真实产出（30%~33%）定下的默认值，
+    # 在真实素材上可能要校准 ✓。设为 1.0 等于只报不拦（"提醒模式"）。
+    diff_max_overlap: float = 0.10
+    # 长文平台与短图文的最小字数比（防"长文反而最短"）
+    diff_length_ratio: float = 1.5
     # 严格程度：
     #   loose    = 只报不拦（问题进 warnings，passed 仍为 true）
     #   standard = 不过则重写（默认）

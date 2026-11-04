@@ -151,7 +151,8 @@ DRAFT_SYSTEM = (
 def build_draft_skeleton_prompt(dna: dict, structured, brief, feedback: str | None = None,
                                 template: dict | None = None,
                                 creator_profile: dict | None = None,
-                                retrospect_hints: list[str] | None = None) -> str:
+                                retrospect_hints: list[str] | None = None,
+                                avoid_sentences: list[str] | None = None) -> str:
     payload = {
         "platform": {"code": dna["code"], "name": dna["name"]},
         "platform_dna": {
@@ -170,6 +171,8 @@ def build_draft_skeleton_prompt(dna: dict, structured, brief, feedback: str | No
             # 而 `title_rules` 是散文（"多用数字+结果"），不含长度 —— 不传的话模型压根不知道
             # 小红书标题要 ≤20 字（实测：xhs 标题系统性超限，加固后更严重）。
             "title_chars_max": dna.get("specs", {}).get("title_chars_max"),
+            # 正文篇幅窗口（openspec: platform-differentiation）
+            "body_chars": dna.get("body_chars", {}),
         },
         "brief": {
             "angle": brief.angle,
@@ -187,6 +190,29 @@ def build_draft_skeleton_prompt(dna: dict, structured, brief, feedback: str | No
         payload["creator_profile"] = _profile_dict(creator_profile)
     if retrospect_hints:
         payload["retrospect_hints"] = list(retrospect_hints)
+    # 写作规则必须放进 **JSON 内部**（`writing_rules`）：prompt 在无 feedback 时
+    # 是纯 JSON，既有测试与调试工具都直接 `json.loads(prompt)` —— 在尾部追加散文
+    # 会破坏这个契约 ✗（实测：test_title_limit 立刻红）。
+    rules = ["平台篇幅按 `platform_dna.body_chars` 的窗口来写（低于下限或超出上限都算不合格）。"]
+    code = (dna.get("code") or dna.get("platform") or "").lower()
+    if code in ("xhs", "xiaohongshu"):
+        rules.append("【平台格式必备】小红书正文或 tags 必须包含至少 5 个话题标签（如 `#话题`）。表达短小精炼，多用 emoji 分点清单（如「📌 步骤名：说明」），避免书面长句铺陈。")
+    elif code in ("gzh", "gongzhonghao"):
+        rules.append("【平台格式必备】公众号正文必须使用至少 3 个分段小标题（使用 markdown `## 标题` 或独占一行的加粗小标题、或【小标题】），层级清晰。素材中的方法、步骤、公式或案例清单应完整展开，承载深度干货（确保篇幅达到 800~3000 字窗口，避免过于简略）。")
+    elif code in ("zhihu",):
+        rules.append("【平台格式必备】知乎首句必须结论先行：开头 60 字内直接亮出核心观点/结论，严禁以「首先/其实/说起来/话说/最近/这几年/随着」等铺垫词开头。论证侧重底层逻辑反思与利弊分析。")
+    if avoid_sentences:
+        # 多平台同发时，把**别的平台已经用过的句子**交给模型，要求换说法。
+        # 为什么必须显式给：模型看不到别的平台的产出，只靠"要差异化"这种空话
+        # 会把同一句金句原样搬过去 ✗（2026-11-01 实测：三篇逐字重合 30%~33%）。
+        payload["already_used_sentences"] = list(avoid_sentences)
+        rules.append(
+            "【跨平台去重】`already_used_sentences` 是同一批里其它平台已经用过的句子；"
+            "表达同样的意思必须换词、换句式、换切入角度，不得逐字复用；"
+            "即使是同一事实或金句，各平台切入视角也须契合本平台定位（小红书侧重避雷清单、知乎侧重底层逻辑、公众号侧重实操全景）；"
+            "**事实与数据要保留**（数字、步骤、结论不能因为去重而丢），变的是表达与组织结构。"
+        )
+    payload["writing_rules"] = rules
     prompt = json.dumps(payload, ensure_ascii=False, indent=1)
     if feedback:
         prompt += f"\n\n【上一轮产出未通过校验，请针对性修复后重新输出完整骨架 JSON】\n{feedback}"

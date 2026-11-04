@@ -122,3 +122,10 @@ verify:
       note: "2200 字为经验值，待官方确认"
     - field: specs.video_sec_max
       note: "普通用户通常 15 分钟，认证/粉丝量高者更长；900s 为保守值"
+
+# ============================================================ 正文篇幅窗口
+# 供跨平台差异化检查（openspec: platform-differentiation）使用：
+# 篇幅按平台分配，且禁止"长文平台反而最短"（跨篇约束见 diffcheck.inversion_issue）。
+body_chars:
+  min: 150
+  max: 500
