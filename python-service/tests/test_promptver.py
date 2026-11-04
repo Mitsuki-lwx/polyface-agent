@@ -48,7 +48,8 @@ def test_same_source_gives_same_hash_across_processes():
         [sys.executable, "-c",
          "import sys; sys.path.insert(0,'python-service');"
          "from app.pipeline import prompts; print(prompts.fingerprint_for_scene('draft'))"],
-        capture_output=True, text=True, cwd=str(__import__("pathlib").Path(__file__).resolve().parents[2]))
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=str(__import__("pathlib").Path(__file__).resolve().parents[2]))
     assert (out.stdout or "").strip() == here, f"子进程算出 {out.stdout!r}，本进程 {here!r}"
 
 
@@ -132,7 +133,8 @@ def _cli(*args, cwd=None, usage_file=None):
     if usage_file is not None:
         env["POLYFACE_USAGE_FILE"] = str(usage_file)
     return subprocess.run([sys.executable, str(root / "scripts" / "prompt_versions.py"), *args],
-                          capture_output=True, text=True, cwd=str(cwd or root), env=env)
+                          capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          cwd=str(cwd or root), env=env)
 
 
 def test_cli_current_lists_every_scene():

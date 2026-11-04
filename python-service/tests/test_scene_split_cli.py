@@ -90,7 +90,8 @@ def test_probe_duration(video):
 
 def _run(args, cwd=None):
     return subprocess.run([sys.executable, str(SCRIPTS / "scene_split.py"), *args],
-                          capture_output=True, text=True, cwd=cwd or str(SCRIPTS.parents[0]))
+                          capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          cwd=cwd or str(SCRIPTS.parents[0]))
 
 
 def test_dry_run_produces_no_video(video, tmp_path):

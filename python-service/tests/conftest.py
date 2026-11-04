@@ -11,6 +11,8 @@ import tempfile
 
 # 必须在任何 app 模块被导入前设置 —— pytest 会先加载 conftest.py
 os.environ["LLM_MOCK"] = "true"
+# Windows 下子进程 CLI 测试（如 scene_split_cli、tts_plugin）输出中文/特殊字符需要 UTF-8 编码
+os.environ.setdefault("PYTHONUTF8", "1")
 # 请求来源准入（openspec: local-service-request-guard）：`TestClient` 发的 Host 是
 # `testserver`，会被闸门 403。**测试里显式关掉**，闸门本身由 test_request_guard.py
 # 单独打开来测 —— 关是显式的，不是把功能测没了。
