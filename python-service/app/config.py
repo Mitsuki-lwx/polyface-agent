@@ -82,6 +82,10 @@ class Settings(BaseSettings):
     diff_max_overlap: float = 0.10
     # 长文平台与短图文的最小字数比（防"长文反而最短"）
     diff_length_ratio: float = 1.5
+    # 重合超标是否触发自动去重改写（openspec: diffcheck-auto-rewrite）
+    diff_auto_rewrite_enabled: bool = True
+    # 去重改写轮数上限（默认 1 轮，仅重写最高重合后发平台）
+    diff_max_rewrite_rounds: int = 1
     # 严格程度：
     #   loose    = 只报不拦（问题进 warnings，passed 仍为 true）
     #   standard = 不过则重写（默认）

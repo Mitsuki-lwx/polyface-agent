@@ -811,6 +811,82 @@ def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
         diff = diffcheck.evaluate(bodies, tags,
                                   max_overlap=cfg.diff_max_overlap,
                                   length_ratio=cfg.diff_length_ratio)
+
+        # ---- 跨平台去重自动改写闭环（openspec: diffcheck-auto-rewrite）----
+        max_rounds = max(0, int(cfg.diff_max_rewrite_rounds))
+        if cfg.diff_auto_rewrite_enabled and not llm.is_mock() and max_rounds > 0:
+            platforms_order = [d.platform_code for d in results]
+            for attempt in range(1, max_rounds + 1):
+                candidate = diffcheck.select_rewrite_candidate(
+                    platforms_order, diff.get("overlap") or {}, max_overlap=cfg.diff_max_overlap
+                )
+                if not candidate:
+                    break
+                target_code, other_code, ratio = candidate
+                overlap_sents_dict = diff.get("overlap_sentences") or {}
+                pair_key1 = f"{target_code}∩{other_code}"
+                pair_key2 = f"{other_code}∩{target_code}"
+                conflict_sentences = overlap_sents_dict.get(pair_key1) or overlap_sents_dict.get(pair_key2) or []
+
+                feedback = diffcheck.build_diff_rewrite_feedback(
+                    target_code, other_code, conflict_sentences, ratio=ratio
+                )
+
+                # 收集除 target 外所有已生成平台的句子作为 avoid
+                avoid_for_rewrite: list[str] = []
+                seen_sentences: set[str] = set()
+                for d in results:
+                    if d.platform_code != target_code:
+                        for s in diffcheck.sentences(d.draft.body):
+                            norm = diffcheck.normalize(s)
+                            if norm not in seen_sentences:
+                                seen_sentences.add(norm)
+                                avoid_for_rewrite.append(s)
+
+                with _stage(log, f"平台:{target_code}:去重改写{attempt}" if max_rounds > 1 else f"平台:{target_code}:去重改写") as r:
+                    logger.info("触发平台 %s 去重改写（与 %s 重合 %.1f%%）",
+                                target_code, other_code, ratio * 100)
+                    dna = dna_lib.load_dna(target_code)
+                    brief = run_brief(target_code, dna, structured, req.tone_override,
+                                      req.template, req.creator_profile, req.retrospect_hints)
+                    rewritten_draft, gate_soft = run_draft(
+                        target_code, dna, structured, brief,
+                        feedback=feedback, template=req.template,
+                        creator_profile=req.creator_profile,
+                        retrospect_hints=req.retrospect_hints,
+                        avoid=avoid_for_rewrite,
+                    )
+                    qa = run_qa(dna, rewritten_draft, structured, req.raw_text)
+                    if gate_soft:
+                        qa = qa.model_copy(update={"warnings": list(qa.warnings) + list(gate_soft)})
+
+                    clip = run_clip_sheet(dna, structured, rewritten_draft, req.template)
+                    if clip is not None:
+                        rewritten_draft = rewritten_draft.model_copy(update={"clip_sheet": clip})
+
+                    new_p_draft = PlatformDraft(
+                        platform_code=target_code,
+                        platform_name=dna.get("name", target_code),
+                        brief=brief,
+                        draft=rewritten_draft,
+                        qa=qa,
+                    )
+
+                    candidate_bodies = {d.platform_code: (new_p_draft.draft.body if d.platform_code == target_code else d.draft.body) for d in results}
+                    candidate_tags = {d.platform_code: (new_p_draft.draft.tags if d.platform_code == target_code else d.draft.tags) for d in results}
+                    candidate_diff = diffcheck.evaluate(candidate_bodies, candidate_tags,
+                                                        max_overlap=cfg.diff_max_overlap,
+                                                        length_ratio=cfg.diff_length_ratio)
+
+                    old_pair_ratio = ratio
+                    new_pair_ratio = candidate_diff.get("overlap", {}).get(pair_key1) or candidate_diff.get("overlap", {}).get(pair_key2) or 0.0
+                    if new_pair_ratio < old_pair_ratio and qa.passed:
+                        results = [new_p_draft if d.platform_code == target_code else d for d in results]
+                        done_by_code[target_code] = new_p_draft
+                        diff = candidate_diff
+                        r.done(f"去重改写成功（重合 {old_pair_ratio:.1%} → {new_pair_ratio:.1%}）")
+                    else:
+                        r.done(f"去重改写未改善（原 {old_pair_ratio:.1%} vs 新 {new_pair_ratio:.1%}，保留原稿）")
         if diff["issues"]:
             p_issues = diff.get("platform_issues") or {}
             results = [

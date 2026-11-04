@@ -279,3 +279,74 @@ def evaluate(drafts: dict[str, str], codes: dict[str, list[str]] | None = None,
                 result["platform_issues"][code].append(fi)
 
     return result
+
+
+# ---------------------------------------------------------------- 改写目标选择与反馈 (openspec: diffcheck-auto-rewrite)
+
+def select_rewrite_candidate(
+    platforms_order: list[str],
+    overlaps: dict[str, float],
+    max_overlap: float = 0.10,
+) -> tuple[str, str, float] | None:
+    """从超标的平台对中选出应当发起去重改写的后发平台。
+
+    返回 `(target_code, conflicting_with_code, ratio)`，若无超标则返回 None。
+    规则：
+      1. 找出所有 `ratio > max_overlap` 的冲突对；
+      2. 每一对中，在 `platforms_order` 里出现较晚的作为改写目标（先生成的为主稿/锚点，后生成的做分化）；
+      3. 多对超标时，优先选择重合率最高的对。
+    """
+    candidates = []
+    order_map = {c: i for i, c in enumerate(platforms_order)}
+
+    for pair_key, ratio in (overlaps or {}).items():
+        if ratio <= max_overlap:
+            continue
+        parts = pair_key.split("∩")
+        if len(parts) != 2:
+            continue
+        p1, p2 = parts[0].strip(), parts[1].strip()
+        idx1 = order_map.get(p1, -1)
+        idx2 = order_map.get(p2, -1)
+        if idx1 >= idx2:
+            target, other = p1, p2
+        else:
+            target, other = p2, p1
+        candidates.append((ratio, target, other))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    highest_ratio, target, other = candidates[0]
+    return target, other, highest_ratio
+
+
+def build_diff_rewrite_feedback(
+    target_code: str,
+    other_code: str,
+    conflict_sentences: list[str] | None = None,
+    ratio: float = 0.0,
+) -> str:
+    """构建针对冲突后发平台的定向去重改写提示词。"""
+    sentences = conflict_sentences or []
+    lines = [
+        f"【跨平台去重定向改写】本稿与平台「{other_code}」逐字重合过高（{ratio:.0%} > 允许上限）。"
+    ]
+    if sentences:
+        lines.append("以下句子被判定为与另一平台严重重合，严禁整句照搬，必须彻底换词、换句式、从本平台专属视角重构：")
+        for s in sentences[:6]:
+            lines.append(f"- 「{s}」")
+    else:
+        lines.append("两平台存在过多相同表达，请更换句式切入角度，严禁套用相同句型。")
+
+    canon = _PLATFORM_ALIASES.get((target_code or "").lower(), (target_code or "").lower())
+    if canon in ("xhs", "xiaohongshu"):
+        lines.append("小红书视角要求：突出痛点清单、踩坑避雷、快节奏分点卡片，多用场景化短句与 emoji。")
+    elif canon == "zhihu":
+        lines.append("知乎视角要求：结论先行，聚焦底层逻辑推导与利弊深思，避免直接使用口语金句作为论据。")
+    elif canon in ("gzh", "gongzhonghao"):
+        lines.append("公众号视角要求：分段小标题展开全景实操，承载完整方法步骤与案例细节。")
+
+    lines.append("【硬性要求】素材中的核心事实与数据（数字、专名、步骤逻辑）必须保留，变的是语言表层与论述结构。")
+    return "\n".join(lines)

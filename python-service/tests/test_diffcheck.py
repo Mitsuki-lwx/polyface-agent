@@ -275,3 +275,30 @@ def test_platform_issues_are_routed_to_target_platforms():
     assert "同时出现" in gzh_joined
 
 
+def test_select_rewrite_candidate():
+    order = ["gzh", "xhs", "zhihu"]
+    # 场景1：全达标 -> None
+    assert dc.select_rewrite_candidate(order, {"gzh∩xhs": 0.05, "gzh∩zhihu": 0.08}, max_overlap=0.10) is None
+
+    # 场景2：gzh∩zhihu 超标 (16.7%) -> 选排序靠后的 zhihu 作为改写目标
+    res = dc.select_rewrite_candidate(order, {"gzh∩xhs": 0.06, "gzh∩zhihu": 0.167}, max_overlap=0.10)
+    assert res == ("zhihu", "gzh", 0.167)
+
+    # 场景3：多个对超标 -> 挑重合率最高的
+    res2 = dc.select_rewrite_candidate(order, {
+        "gzh∩xhs": 0.25,
+        "gzh∩zhihu": 0.18,
+    }, max_overlap=0.10)
+    assert res2 == ("xhs", "gzh", 0.25)
+
+
+def test_build_diff_rewrite_feedback():
+    fb = dc.build_diff_rewrite_feedback("zhihu", "gzh", ["同一段话发5个平台"], ratio=0.167)
+    assert "gzh" in fb
+    assert "17%" in fb
+    assert "同一段话发5个平台" in fb
+    assert "知乎视角要求" in fb
+    assert "核心事实与数据" in fb
+
+
+
