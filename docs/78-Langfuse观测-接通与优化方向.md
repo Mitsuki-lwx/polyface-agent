@@ -17,7 +17,7 @@
 1. `GET /api/public/projects` → 200，返回项目 `polyface`（key 有效）
 2. 跑一次 `llm.chat(scene="langfuse.flush-probe")` → SDK 无报错，`flush()` 成功
 3. ClickHouse `events_core` 里出现该 trace（`trace_id=c5b1f6f9…`），并带 **GENERATION** 子节点
-4. UI `http://localhost:3050` 登录页正常（邮箱 `2961053856@qq.com`，密码在用户手里，**未代填**）
+4. UI `http://localhost:3050` 登录页正常（本机配置的账号，密码只在用户手里，**未代填**）
 
 > ⚠️ **坑**：v4 events_only 模式下 `/api/public/traces` 返回
 > 「not available on deployments running in v4 events_only mode」，`/api/public/v2/traces` 也是 404。

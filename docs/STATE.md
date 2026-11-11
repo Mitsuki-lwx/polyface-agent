@@ -53,7 +53,7 @@
 - 项目 `polyface`，key 在 `python-service/.env`，`.env` 已是 `LANGFUSE_ENABLED=true`
 - v4 **events_only** 模式：老接口 `/api/public/traces` 不可用；数据落在 ClickHouse `events_core`
 - 查最近调用：`docker exec langfuse-clickhouse-1 clickhouse-client --query "select ... from events_core where project_id='cmvw5kt21000gky07kbjmb87j'"`
-- UI 登录邮箱 `2961053856@qq.com`（密码在用户手里）
+- UI 登录账号来自本机配置（密码只在用户手里）
 
 ## 五、必须遵守的规则（用户明确要求）
 

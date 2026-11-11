@@ -13,7 +13,7 @@
 
     <groupId>com.polyface</groupId>
     <artifactId>java-backend</artifactId>
-    <version>0.4.0</version>
+    <version>0.5.0</version>
     <name>polyface-java-backend</name>
     <description>Polyface 同源万面 - Java 后端（业务编排 + 本地存储 + Web 托管）</description>
 

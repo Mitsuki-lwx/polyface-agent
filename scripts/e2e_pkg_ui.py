@@ -159,7 +159,13 @@ async def main():
             rows = await cdp.ev("document.querySelectorAll('#factsEditor .fact').length")
             check("C2 解析后出现事实编辑器且行数≥1", rows >= 1, f"rows={rows}")
 
-            # ---------- C3 编辑 + 添加 ----------
+            # ---------- C3 先落库，再编辑 + 添加 ----------
+            # 2026-11 界面改版：新素材必须先点「确认并保存为素材」，
+            # 之后才渲染编辑/追加/确认按钮（旧脚本直接找 btnAddFact → null）。
+            await cdp.ev("""(()=>{const b=document.getElementById('btnCreateMaterial');
+              if(b) b.click();})()""")
+            await cdp.wait_for("!!document.getElementById('btnAddFact')",
+                               label="素材落库后可编辑")
             await cdp.ev("""(()=>{
               const t=document.querySelector('#factsEditor .fText');
               t.value='人工修改后的事实文本'; t.dispatchEvent(new Event('input',{bubbles:true}));
