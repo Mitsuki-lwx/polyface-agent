@@ -5,91 +5,260 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Polyface · 同源万面</title>
 <style>
-  :root{
-    --bg:#f6f7fb; --card:#fff; --line:#e6e8f0; --ink:#1f2430; --sub:#6b7280;
-    --brand:#e74c3c; --brand2:#c0392b; --ok:#2ecc71; --warn:#f39c12; --chip:#fef3f2;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;background:var(--bg);color:var(--ink)}
-  header{background:linear-gradient(120deg,#1f2430,#2c3e50);color:#fff;padding:14px 28px;display:flex;align-items:center;gap:14px}
-  header .logo{font-weight:800;font-size:20px}
-  header .logo span{color:#ff6b5e}
-  header .sub{opacity:.7;font-size:12px}
-  .mock-badge{margin-left:auto;background:#ff6b5e33;border:1px solid #ff6b5e;color:#ffd0cc;padding:3px 10px;border-radius:20px;font-size:12px}
-  main{display:grid;grid-template-columns:360px 1fr;gap:18px;padding:18px;max-width:1400px;margin:0 auto}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;box-shadow:0 1px 3px #0000000d}
-  h2{font-size:15px;margin:0 0 10px;color:var(--sub);font-weight:600}
-  textarea,input,select{width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 10px;font-size:14px;font-family:inherit;background:#fff}
-  textarea{resize:vertical;min-height:130px;line-height:1.6}
-  .row{display:flex;gap:8px;margin-top:8px}
-  .row>*{flex:1}
-  button{background:var(--brand);color:#fff;border:0;border-radius:8px;padding:9px 14px;font-size:14px;cursor:pointer;font-weight:600}
-  button:hover{background:var(--brand2)}
-  button.ghost{background:#fff;color:var(--brand);border:1px solid var(--brand)}
-  button.ghost:hover{background:#fef3f2}
-  button.sm{padding:4px 10px;font-size:12px}
-  button:disabled{opacity:.5;cursor:not-allowed}
-  .plats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px}
-  .plat{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:8px;padding:7px 10px;cursor:pointer;background:#fff;font-size:13px}
-  .plat input{width:auto}
-  .plat.checked{border-color:var(--brand);background:#fef3f2}
-  .status-line{font-size:12px;color:var(--sub);margin-top:8px;min-height:16px}
-  .facts{margin-top:8px;display:flex;flex-direction:column;gap:6px}
-  .fact{display:flex;align-items:flex-start;gap:8px;background:#fafbfe;border:1px solid var(--line);border-radius:8px;padding:7px 9px;font-size:12.5px;line-height:1.5}
-  .fact .ty{flex-shrink:0;font-size:10.5px;padding:1px 7px;border-radius:10px;margin-top:2px}
-  .ty.data{background:#e8f6ef;color:#1e8e4e}.ty.story{background:#e8f0fe;color:#2b5fd9}.ty.opinion{background:#fdf0e7;color:#c96a1a}
-  .core{background:#fef3f2;border:1px solid #f5c6c0;border-radius:8px;padding:8px 10px;font-size:13px;color:#7b241c}
-  .tmpl-box{margin-top:10px}
-  .tmpl-box summary{cursor:pointer;font-size:13px;color:var(--brand);font-weight:600}
-  .tmpl-box .inner{margin-top:8px;display:flex;flex-direction:column;gap:8px}
-  .res{margin-top:14px}
-  .plat-tab{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
-  .plat-tab button{border-radius:20px;padding:5px 14px;font-size:13px;background:#eef0f6;color:#374151;border:0;font-weight:500}
-  .plat-tab button.on{background:var(--brand);color:#fff}
-  .draft-block h3{margin:0 0 6px;display:flex;align-items:center;gap:8px;font-size:15px}
-  .qa-badge{font-size:11px;padding:2px 8px;border-radius:10px}
-  .qa-pass{background:#e8f6ef;color:#1e8e4e}.qa-fail{background:#fef3f2;color:#c0392b}
-  .draft-block{margin-bottom:18px}
-  .preview{background:#0f1420;color:#e8ecf4;border-radius:10px;padding:12px;font-size:13.5px;line-height:1.8;white-space:pre-wrap;font-family:inherit}
-  .titles li{font-size:13.5px;margin-bottom:4px}
-  .tags{margin:6px 0}
-  .tag{display:inline-block;background:var(--chip);color:#b03a2e;border-radius:12px;padding:2px 9px;font-size:12px;margin:2px 4px 2px 0}
-  .meta{font-size:12px;color:var(--sub)}
-  .meta b{color:var(--ink)}
-  .qa-warn{background:#fff8e6;border:1px solid #f0dfae;color:#8a6d1a;border-radius:8px;padding:7px 9px;font-size:12px;margin-top:8px}
-  /* 事实确认与稿件编辑（FR-34/FR-42）：可编辑区样式 */
-  .ed-label{font-size:11px;color:var(--sub);margin:9px 0 4px}
-  #edTitles input{width:100%;margin-bottom:5px;font-size:12.5px;padding:5px 8px;border:1px solid var(--line);border-radius:7px}
-  #edBody{width:100%;min-height:230px;font-size:13px;line-height:1.75;padding:10px;border:1px solid var(--line);border-radius:9px;font-family:inherit;resize:vertical}
-  #edTags{width:100%;font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:7px}
-  #factsEditor .fact input,#factsEditor .fact select{border:1px solid var(--line);border-radius:6px;padding:3px 6px}
-  .clip{margin-top:10px;border:1px dashed #d5a3a3;border-radius:10px;padding:10px;background:#fffaf9}
-  .clip h4{margin:0 0 8px;color:#a93226;font-size:13px}
-  .scene{border-left:3px solid var(--brand);padding:4px 10px;margin-bottom:8px;font-size:12.5px;background:#fff}
-  .scene .sc-script{font-weight:600}
-  .scene .sc-meta{color:#8a6d1a;font-size:11.5px;margin-top:3px}
-  .copy-ok{color:var(--ok);font-size:12px;margin-left:6px}
-  .side-list{margin-top:8px}
-  .side-item{border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;margin-bottom:6px;cursor:pointer}
-  .side-item:hover{border-color:var(--brand)}
-  .empty{color:#9ca3af;font-size:13px;text-align:center;padding:40px 0}
-  .spinner{display:inline-block;width:12px;height:12px;border:2px solid #fff;border-top-color:transparent;border-radius:50%;animation:sp 0.7s linear infinite}
-  @keyframes sp{to{transform:rotate(360deg)}}
-  /* 复盘报告 */
-  .retro-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:6px}
-  .retro-card{border:1px solid var(--line);border-radius:10px;padding:10px;background:#fafbfe}
-  .retro-card h4{margin:0 0 4px;font-size:12px;color:var(--sub);font-weight:600}
-  .retro-card .big{font-size:22px;font-weight:700;color:var(--brand)}
-  .retro-card .sub{font-size:12px;color:var(--sub)}
-  .retro-rank{display:flex;flex-direction:column;gap:6px;margin-top:6px}
-  .retro-rank .row{display:flex;justify-content:space-between;padding:6px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff}
-  .retro-rank .row b{color:var(--brand)}
-  .retro-insights{margin-top:10px;display:flex;flex-direction:column;gap:6px}
-  .retro-insights .ins{font-size:13px;padding:8px 10px;border-radius:8px;border-left:3px solid var(--brand);background:#fff8e6;color:#7b241c}
-  .retro-insights .ins.bad{border-left-color:#c0392b;background:#fef3f2;color:#7b241c}
-  .retro-insights .ins.good{border-left-color:#2ecc71;background:#e8f6ef;color:#1e8e4e}
-  .retro-insights .ins.neutral{border-left-color:var(--sub);background:#eef0f6;color:#374151}
-  .plat-tab button.rec{background:#fef3f2;color:var(--brand)}
+:root{
+  /* ---- 纸与墨（open 取 oklch，冷启动也没问题）---- */
+  --paper:#faf8f4; --paper-2:#f3efe8; --ink:#1e1b17; --ink-2:#4a443c;
+  --rule:#dcd5c9; --rule-soft:#eae5db; --muted:#7a7266;
+  --accent:#b3402f;            /* 朱红：只用在一处 */
+  --accent-soft:#f4e6e2;
+  --ok:#3f6b4a; --warn:#8a5a12;
+  /* ---- 兼容旧变量名（JS 里仍引用）---- */
+  --bg:var(--paper); --card:var(--paper); --line:var(--rule);
+  --sub:var(--muted); --brand:var(--accent); --brand2:#8f3225; --chip:var(--accent-soft);
+  /* ---- 字号阶梯：只有一个比例 ---- */
+  --t-xs:12px; --t-s:13.5px; --t-m:15px; --t-l:19px; --t-xl:26px; --t-2xl:38px;
+  /* ---- 间距 ---- */
+  --s1:8px; --s2:12px; --s3:18px; --s4:28px; --s5:44px;
+  --ease:cubic-bezier(.16,1,.3,1);
+  --serif:"Source Han Serif SC","Noto Serif SC","Songti SC","SimSun",Georgia,serif;
+  --sans:"Source Han Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --mono:"JetBrains Mono","Cascadia Mono",Consolas,monospace;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;background:var(--paper);color:var(--ink);
+  font-family:var(--sans);font-size:var(--t-m);line-height:1.65;
+  font-feature-settings:"kern" 1;text-rendering:optimizeLegibility;
+}
+/* ---- 报头：一个 masthead，不是"导航栏" ---- */
+header{
+  background:var(--paper);color:var(--ink);
+  padding:var(--s3) 34px var(--s2);
+  border-bottom:1px solid var(--ink);
+  display:flex;align-items:baseline;gap:var(--s2);
+}
+header .logo{
+  font-family:var(--serif);font-weight:700;font-size:var(--t-l);
+  letter-spacing:.01em;
+}
+header .logo span{color:var(--accent)}
+header .sub{
+  color:var(--muted);font-size:var(--t-xs);
+  font-family:var(--mono);letter-spacing:.02em;
+}
+.mock-badge{
+  margin-left:auto;background:transparent;border:1px solid var(--rule);
+  color:var(--muted);padding:2px 10px;border-radius:0;
+  font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;
+}
+/* ---- 版心 ---- */
+main{
+  display:grid;grid-template-columns:minmax(300px,360px) 1fr;
+  gap:0;padding:0;max-width:none;margin:0;
+  min-height:calc(100vh - 58px);
+}
+main > div:first-child{border-right:1px solid var(--rule);padding:var(--s4) 26px var(--s5)}
+main > div:nth-child(2){padding:var(--s4) 34px var(--s5);background:var(--paper)}
+/* ---- 栏目：竖线分隔，不是卡片 ---- */
+.card{
+  background:transparent;border:0;border-top:1px solid var(--rule);
+  border-radius:0;padding:var(--s3) 0 var(--s4);box-shadow:none;
+}
+.card:first-child{border-top:0;padding-top:0}
+.card h2{
+  font-family:var(--mono);font-size:11px;font-weight:600;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--muted);
+  margin:0 0 var(--s2);
+}
+.card h3{font-family:var(--serif);font-size:var(--t-l);margin:var(--s3) 0 var(--s1)}
+/* ---- 控件 ---- */
+input,select,textarea{
+  width:100%;border:0;border-bottom:1px solid var(--rule);border-radius:0;
+  background:transparent;color:var(--ink);padding:7px 2px;
+  font-family:var(--sans);font-size:var(--t-s);
+  transition:border-color .15s var(--ease);
+}
+input:focus,select:focus,textarea:focus{
+  outline:none;border-bottom-color:var(--ink);
+}
+textarea{min-height:96px;resize:vertical;line-height:1.6}
+select{border-bottom:1px solid var(--rule);cursor:pointer}
+button{
+  font-family:var(--sans);font-size:var(--t-s);font-weight:600;
+  background:var(--ink);color:var(--paper);border:1px solid var(--ink);
+  border-radius:0;padding:7px 16px;cursor:pointer;
+  transition:transform .12s var(--ease),opacity .12s var(--ease);
+}
+button:hover{opacity:.86}
+button:active{transform:translateY(1px)}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.ghost{
+  background:transparent;color:var(--ink);border:0;
+  border-bottom:1px solid var(--rule);padding:6px 0;
+}
+button.ghost:hover{border-bottom-color:var(--accent);color:var(--accent)}
+button.sm{font-size:var(--t-xs);padding:5px 12px}
+/* ---- 列表 ---- */
+.side-list{display:flex;flex-direction:column}
+.side-item{
+  display:block;padding:var(--s2) 0;border:0;border-bottom:1px solid var(--rule-soft);
+  border-radius:0;background:transparent;cursor:pointer;
+  transition:background .12s var(--ease);
+}
+.side-item:hover{background:var(--paper-2)}
+.empty{color:var(--muted);font-size:var(--t-s);padding:var(--s3) 0;font-style:italic}
+.status-line{font-family:var(--mono);font-size:var(--t-xs);color:var(--muted)}
+/* ---- 正文：真的一篇稿子 ---- */
+.core{font-family:var(--serif);font-size:var(--t-l);line-height:1.5}
+.facts{display:flex;flex-direction:column;gap:var(--s1)}
+
+/* ---- 标签栏：把一个长列拆成四件事 ---- */
+#tabBar{
+  display:flex;gap:var(--s4);padding:0 34px;
+  border-bottom:1px solid var(--rule);background:var(--paper);
+  position:sticky;top:0;z-index:20;
+}
+#tabBar button{
+  background:none;border:0;border-bottom:2px solid transparent;border-radius:0;
+  color:var(--muted);padding:13px 0 11px;font-size:var(--t-s);font-weight:600;
+  letter-spacing:.01em;
+}
+#tabBar button:hover{color:var(--ink);opacity:1}
+#tabBar button.on{color:var(--ink);border-bottom-color:var(--accent)}
+/* 按当前标签显隐分组 */
+body[data-tab] .card[data-tab]{display:none}
+body[data-tab="write"] .card[data-tab="write"],
+body[data-tab="library"] .card[data-tab="library"],
+body[data-tab="post"] .card[data-tab="post"],
+body[data-tab="prefs"] .card[data-tab="prefs"]{display:block}
+body[data-tab] main > section[data-tab]{display:none}
+body[data-tab="write"] main > section[data-tab="write"]{display:block}
+/* 非"写稿"页：单栏满宽（不需要结果窗） */
+body:not([data-tab="write"]) main{grid-template-columns:1fr;min-height:auto}
+body:not([data-tab="write"]) main > div:first-child{
+  border-right:0;padding:var(--s4) 34px var(--s5);
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));
+  gap:0 var(--s5);align-items:start;
+}
+/* 复选框/单选框跟随配色（原生蓝会直接跳戏 ✗） */
+input[type=checkbox],input[type=radio]{accent-color:var(--accent);width:auto;border:0}
+
+/* ============================================================
+   第二稿：从"后台面板"改成"一张稿纸"
+   右半屏 60% 空白是最大的破绽 ✗ —— 不是为了好看，是因为
+   这个产品的主线是"写一篇稿"，不是"同时看两块面板"。
+   ============================================================ */
+body{
+  /* 极轻的纸纹：两个几乎看不见的渐变，不引入任何外部请求 */
+  background-image:
+    radial-gradient(circle at 18% 12%, #b3402f05 0, transparent 42%),
+    repeating-linear-gradient(0deg, #00000005 0 1px, transparent 1px 3px);
+  background-attachment:fixed;
+}
+/* ---- 报头：放大到真正的刊头 ---- */
+header{
+  padding:var(--s4) 0 var(--s3);
+  border-bottom:0;
+  flex-direction:column;align-items:center;gap:6px;
+  position:relative;
+}
+header::after{
+  content:"";position:absolute;left:0;right:0;bottom:0;height:3px;
+  border-top:1px solid var(--ink);border-bottom:1px solid var(--ink);
+}
+header .logo{
+  font-family:var(--serif);font-size:var(--t-2xl);font-weight:700;
+  letter-spacing:-.01em;line-height:1.1;
+}
+header .sub{
+  font-family:var(--mono);font-size:11px;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--muted);
+}
+.mock-badge{
+  position:absolute;right:0;top:var(--s3);
+  border:1px solid var(--rule);padding:2px 8px;
+}
+/* ---- 标签栏居中 ---- */
+#tabBar{justify-content:center;gap:var(--s5);padding:0;margin-top:6px;border-bottom:1px solid var(--rule-soft)}
+#tabBar button{font-size:var(--t-s);letter-spacing:.04em}
+/* ---- 版心：一列，760px，居中的稿纸 ---- */
+main{
+  display:block;max-width:780px;margin:0 auto;padding:0 32px var(--s5);
+  min-height:auto;
+}
+main > div:first-child{border-right:0;padding:var(--s4) 0 0}
+main > section{border-top:1px solid var(--rule);margin-top:var(--s4);padding-top:var(--s3)}
+main > div:first-child .card{padding:var(--s3) 0 var(--s4)}
+/* 非写稿页放宽（素材库/后期需要两列） */
+body:not([data-tab="write"]) main{max-width:1120px}
+body:not([data-tab="write"]) main > div:first-child{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));
+  gap:0 var(--s5);align-items:start;padding:var(--s4) 0 0;
+}
+/* ---- 控件更"印刷" ---- */
+input,select,textarea{font-size:var(--t-m);padding:9px 2px}
+.card h2{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.2em;
+  color:var(--muted);margin-bottom:var(--s2);
+}
+.card h2::before{content:"—";margin-right:8px;color:var(--accent)}
+/* 主按钮：字距 + 细边框，不用大色块 */
+button{font-weight:600;letter-spacing:.02em;padding:9px 20px}
+button.sm{padding:6px 14px}
+/* 空状态：给方向，不给"✨" */
+#resultArea .empty{
+  font-family:var(--serif);font-size:var(--t-l);line-height:1.6;
+  color:var(--ink-2);font-style:normal;text-align:center;padding:var(--s5) 0;
+}
+
+/* ============================================================
+   第三稿：章节标题要"看得见"
+   之前 .card h2 是 10.5px 灰色 mono —— 那是"eyebrow"，不是标题 ✗。
+   编辑部做法：编号留在页边，标题用宋体立起来。
+   ============================================================ */
+.card h2{
+  font-family:var(--serif);font-size:var(--t-l);font-weight:600;
+  letter-spacing:0;text-transform:none;color:var(--ink);
+  margin:0 0 var(--s2);line-height:1.35;
+  display:flex;align-items:baseline;gap:10px;
+}
+.card h2::before{
+  content:"";flex:0 0 22px;height:1px;background:var(--accent);
+  transform:translateY(-5px);
+}
+/* 章节里的小标题（模板库等）保持克制 */
+.card h3{font-family:var(--sans);font-size:var(--t-s);font-weight:600;color:var(--ink-2)}
+/* ---- 平台：做成可选的标签，而不是一排小方块 ---- */
+label:has(input[type=checkbox]){
+  display:inline-flex;align-items:center;gap:7px;
+  padding:7px 14px;border:1px solid var(--rule);border-radius:0;
+  font-size:var(--t-s);cursor:pointer;background:transparent;
+  transition:border-color .15s var(--ease),background .15s var(--ease);
+}
+label:has(input[type=checkbox]):hover{border-color:var(--ink)}
+label:has(input[type=checkbox]):has(input:checked){
+  border-color:var(--accent);background:var(--accent-soft);color:var(--accent);
+}
+label:has(input[type=checkbox]) input{
+  width:auto;border:0;margin:0;padding:0;accent-color:var(--accent);
+}
+/* ---- 主操作按钮：宽一点，别缩在角落 ---- */
+#btnAnalyze,#btnGen{min-width:168px}
+/* ---- 注释文字统一 --- */
+.card .empty,.status-line{font-size:var(--t-xs)}
+
+details.tmpl-box > summary{
+  cursor:pointer;font-family:var(--mono);font-size:11px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--muted);padding:6px 0;
+  list-style:none;
+}
+details.tmpl-box > summary::-webkit-details-marker{display:none}
+details.tmpl-box > summary::before{
+  content:"+";display:inline-block;width:14px;color:var(--accent);font-family:var(--mono);
+}
+details.tmpl-box[open] > summary::before{content:"–"}
+details.tmpl-box[open] > summary{color:var(--ink);margin-bottom:8px}
 </style>
 </head>
 <body>
@@ -99,17 +268,29 @@
   <div class="mock-badge" id="modeBadge">检测中…</div>
 </header>
 
+<nav id="tabBar" role="tablist">
+  <button data-goto="write" class="on">写稿</button>
+  <button data-goto="library">素材库</button>
+  <button data-goto="post">后期</button>
+  <button data-goto="prefs">画像与模板</button>
+</nav>
 <main>
   <!-- ============ 左栏：输入 ============ -->
   <section>
-    <div class="card">
-      <h2>① 素材</h2>
+    <div class="card" data-tab="write"><h2>① 素材</h2>
       <select id="kind">
         <option value="长文">长文</option><option value="口播稿">口播稿</option>
         <option value="大纲">大纲</option><option value="笔记">笔记</option><option value="general">其他</option>
       </select>
       <input id="title" placeholder="标题（可选）" style="margin-top:8px">
-      <textarea id="raw" placeholder="粘贴你的素材文本：一篇文章 / 口播稿 / 大纲 …"></textarea>
+      <textarea id="raw" placeholder="粘贴素材文本，或点下面的「选择文件」读一个 .txt / .md"></textarea>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap">
+        <label class="ghost sm" for="rawFile" style="cursor:pointer;border-bottom:1px solid var(--rule)">
+          选择文本文件（.txt / .md）
+        </label>
+        <input id="rawFile" type="file" accept=".txt,.md,.markdown,text/plain" style="display:none">
+        <span class="status-line" id="rawFileStatus"></span>
+      </div>
       <div style="margin-top:10px">
         <button id="btnAnalyze">解析素材</button>
         <span class="status-line" id="analyzeStatus"></span>
@@ -117,8 +298,8 @@
       <div id="analyzeResult"></div>
 
       <details class="tmpl-box" style="margin-top:12px" id="splitBox">
-        <summary>🧩 素材拆分（一个素材 → 多个素材源）</summary>
-        <div style="font-size:12px;color:var(--sub);margin:8px 0">
+        <summary>素材拆分（一个素材 → 多个素材源）</summary>
+        <div style="color:var(--sub);margin:8px 0">
           把一份素材拆成<b>几条各自能独立发布的选题</b>（或同一内容的多种形态）。
           拆出来的每条都是<b>真正的素材</b> —— 能再走一遍生成，出多平台稿、出成片。
         </div>
@@ -135,23 +316,25 @@
         <div id="spResult" style="margin-top:8px"></div>
       </details>
 
-      <details class="tmpl-box" style="margin-top:12px">
-        <summary>🎬 从音视频导入（本地转文字）</summary>
+      <details class="tmpl-box" style="margin-top:12px" open>
+        <summary>从音视频 / 图片导入</summary>
         <div class="inner">
-          <div style="font-size:11px;color:var(--sub);line-height:1.5;margin-bottom:8px">
+          <div style="color:var(--sub);line-height:1.5;margin-bottom:8px">
             请仅处理自有或已获授权的内容。文件仅存于本机 <code>data/media</code>，全程不上传。
           </div>
-          <input type="file" id="ingFile" accept="video/*,audio/*,.mkv,.flv,.m4v,.ts,.opus,.flac" style="font-size:12px">
-          <div style="font-size:11px;color:var(--sub);margin:8px 0 4px">或粘贴本机文件路径：</div>
+          <input type="file" id="ingFile" accept="video/*,audio/*,.mkv,.flv,.m4v,.ts,.opus,.flac">
+          <div style="color:var(--sub);margin:8px 0 4px">或粘贴本机文件路径：</div>
           <input id="ingPath" placeholder="例如 D:\videos\口播.mp4">
           <div style="margin-top:8px">
-            <button class="ghost sm" id="btnIngest">探测并转写</button>
+            <button class="ghost sm" id="btnIngest">导入（转写 / 看图）</button>
+            <button class="ghost sm" id="btnFrames">重抽画面</button>
             <span class="status-line" id="ingStatus"></span>
           </div>
-          <div id="ingInfo" style="font-size:11px;color:var(--sub);margin-top:6px"></div>
-          <div id="ingHint" style="font-size:11px;color:#854f0b;margin-top:6px;line-height:1.5;display:none"></div>
+          <div id="ingInfo" style="color:var(--sub);margin-top:6px"></div>
+          <div id="ingHint" style="color:#854f0b;margin-top:6px;line-height:1.5;display:none"></div>
+          <div id="framesBox" style="display:none;margin-top:10px"></div>
           <div id="ingTextWrap" style="display:none;margin-top:8px">
-            <div style="font-size:11px;color:var(--sub);margin-bottom:4px">转录文本（可编辑后再解析）：</div>
+            <div style="color:var(--sub);margin-bottom:4px">转录文本（可编辑后再解析）：</div>
             <textarea id="ingText" style="min-height:110px"></textarea>
             <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
               <button class="sm" id="btnIngConfirm">确认并解析为素材</button>
@@ -163,11 +346,10 @@
       </details>
     </div>
 
-    <div class="card" style="margin-top:14px">
-      <h2>② 选择平台</h2>
+    <div class="card" data-tab="write" style="margin-top:14px"><h2>② 选择平台</h2>
       <div class="plats" id="platList"></div>
       <div style="margin-top:10px">
-        <div style="font-size:12px;color:var(--sub);margin-bottom:4px">内容模板（来自模板库）</div>
+        <div style="color:var(--sub);margin-bottom:4px">内容模板（来自模板库）</div>
         <select id="tplSelect"><option value="">不使用模板（仅平台 DNA）</option></select>
       </div>
       <details class="tmpl-box">
@@ -180,23 +362,31 @@
         </div>
       </details>
       <div style="margin-top:12px">
-        <button id="btnGenerate" disabled>🚀 一键生成多平台稿件</button>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:14px;font-size:var(--t-s);cursor:pointer">
+          <input type="checkbox" id="useLibrary" style="width:auto;margin:0">
+          关联本地素材库
+          <span style="color:var(--muted);font-size:var(--t-xs)">（只传 3 条，仅借鉴角度；事实仍来自本次素材）</span>
+        </label>
+        <button id="btnGenerate" disabled>一键生成多平台稿件</button>
         <span class="status-line" id="genStatus"></span>
+        <div id="genPlatforms" style="margin-top:6px;line-height:1.7"></div>
       </div>
-      <div id="traceLine" style="font-size:11px;color:var(--sub);margin-top:6px;line-height:1.5"></div>
+      <div id="traceLine" style="color:var(--sub);margin-top:6px;line-height:1.5"></div>
       <div id="failLine" style="display:none;margin-top:6px;line-height:1.6"></div>
     </div>
 
-    <div class="card" style="margin-top:14px">
-      <h2>素材历史</h2>
+    <div class="card" data-tab="library" style="margin-top:14px"><h2>文本素材</h2>
+      <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+        <input id="historyQ" placeholder="搜正文…（记得大意忘了词）" style="flex:1;min-width:110px">
+        <input id="historyTag" placeholder="关键词，逗号分隔" style="width:120px">
+      </div>
       <div class="side-list" id="history"><div class="empty">暂无素材</div></div>
     </div>
 
-    <div class="card" style="margin-top:14px">
-      <h2>📚 素材库 <span style="font-weight:400;color:var(--sub);font-size:11px" id="assetMeta"></span></h2>
-      <div style="font-size:12px;color:var(--sub);margin-bottom:8px">
-        图片 / 音频 / 视频等<b>资产</b>，供稿件与成片引用。<br>
-        ⓘ 与上面的「素材历史」不同：那里是<b>文本素材</b>（用于再次生成稿件），这里是<b>资产</b>。
+    <div class="card" data-tab="library" style="margin-top:14px"><h2>图片 · 音频 · 视频 <span style="font-weight:400;color:var(--sub)" id="assetMeta"></span></h2>
+      <div style="color:var(--sub);margin-bottom:8px">
+        图片 / 音频 / 视频等<b>资产</b>，供稿件与成片引用。<b>要传图或视频就点这里的「+ 上传」</b> ✓<br>
+        ⓘ 上面是<b>文字</b>（能做稿件母体）✓ 这里是<b>文件</b>（供封面/成片引用）✓ 两边的「复用」入口不同 ✗
       </div>
       <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
         <input id="assetQ" placeholder="搜索名称…" style="flex:1;min-width:110px">
@@ -213,13 +403,12 @@
       <div class="side-list" id="assetList"><div class="empty">加载中…</div></div>
     </div>
 
-    <div class="card" style="margin-top:14px">
-      <h2>✂️ 粗剪 <span style="font-weight:400;color:var(--sub);font-size:11px" id="rcMeta"></span></h2>
-      <div style="font-size:12px;color:var(--sub);margin-bottom:8px">
+    <div class="card" data-tab="post" style="margin-top:14px"><h2>️ 粗剪 <span style="font-weight:400;color:var(--sub)" id="rcMeta"></span></h2>
+      <div style="color:var(--sub);margin-bottom:8px">
         在素材库里点视频行的「✂️ 粗剪」发起。任务在后台跑，这里能看到进度；跑完产物自动回素材库。
       </div>
-      <div id="rcForm" style="display:none;border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:10px">
-        <div id="rcFormTitle" style="font-size:12px;font-weight:600;margin-bottom:8px"></div>
+      <div id="rcForm" style="display:none;border:1px solid var(--line);padding:10px;margin-bottom:10px">
+        <div id="rcFormTitle" style="font-weight:600;margin-bottom:8px"></div>
         <div id="rcParams" style="display:flex;gap:8px;flex-wrap:wrap"></div>
         <div style="margin-top:10px">
           <button id="rcStart" class="sm">开始粗剪</button>
@@ -231,19 +420,26 @@
       <div class="side-list" id="rcJobs"><div class="empty">还没有粗剪任务</div></div>
     </div>
 
-    <div class="card" style="margin-top:14px">
-      <h2>🎞 按场景切段 <span style="font-weight:400;color:var(--sub);font-size:11px" id="sceneMeta"></span></h2>
-      <div style="font-size:12px;color:var(--sub);margin-bottom:8px">
+    <div class="card" data-tab="post" style="margin-top:14px"><h2>📖 参考视频分析 <span style="font-weight:400;color:var(--sub)" id="refMeta"></span></h2>
+      <div style="color:var(--sub);margin-bottom:8px">
+        在素材库里点视频行的「📖 参考分析」—— 看别人的片子：钩子、分段、节奏、可直接抄的做法。
+        只读，不落库。约 40–60 秒（转写 + 抽帧 + 一次模型判断）。
+      </div>
+      <div id="refBody"><div class="empty">还没有分析结果</div></div>
+    </div>
+
+    <div class="card" data-tab="post" style="margin-top:14px"><h2>按场景切段 <span style="font-weight:400;color:var(--sub)" id="sceneMeta"></span></h2>
+      <div style="color:var(--sub);margin-bottom:8px">
         在素材库里点视频行的「✂️ 切场景」发起。两步走：① 出方案（缩略图网格）→ 人工勾选 → ② 切选中的段，自动入素材库。
       </div>
-      <div id="sceneForm" style="display:none;border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:10px">
-        <div id="sceneFormTitle" style="font-size:12px;font-weight:600;margin-bottom:8px"></div>
+      <div id="sceneForm" style="display:none;border:1px solid var(--line);padding:10px;margin-bottom:10px">
+        <div id="sceneFormTitle" style="font-weight:600;margin-bottom:8px"></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-          <label style="font-size:11px;color:var(--sub)">阈值（越大越不敏感）<br>
+          <label style="color:var(--sub)">阈值（越大越不敏感）<br>
             <input data-scene-p="threshold" value="27.0" style="width:80px"></label>
-          <label style="font-size:11px;color:var(--sub)">最短段长(秒)<br>
+          <label style="color:var(--sub)">最短段长(秒)<br>
             <input data-scene-p="min_sec" value="3.0" style="width:80px"></label>
-          <label style="font-size:11px;color:var(--sub);display:flex;align-items:center;gap:4px">
+          <label style="color:var(--sub);display:flex;align-items:center;gap:4px">
             <input type="checkbox" data-scene-p="no_snap"> 吸附语音边界（关掉更快，但可能把话切断）</label>
           <button id="scenePlanBtn" class="sm">① 出方案</button>
           <button id="sceneFormCancel" class="ghost sm">取消</button>
@@ -254,18 +450,17 @@
       <div id="sceneActive"></div>
     </div>
 
-    <div class="card" style="margin-top:14px">
-      <h2>🎞 时间线 <span style="font-weight:400;color:var(--sub);font-size:11px" id="tlMeta"></span></h2>
-      <div style="font-size:12px;color:var(--sub);margin-bottom:8px">
+    <div class="card" data-tab="post" style="margin-top:14px"><h2>时间线 <span style="font-weight:400;color:var(--sub)" id="tlMeta"></span></h2>
+      <div style="color:var(--sub);margin-bottom:8px">
         <b>改数据就是改剪辑</b>：调保留区间的起止、删段、合并，然后重渲染出新片。
         字幕跟着剪点走（删掉一段，落在里面的字幕自动不出现）。
       </div>
       <div id="tlPanel" style="display:none">
-        <div id="tlHead" style="font-size:12px;margin-bottom:8px"></div>
+        <div id="tlHead" style="margin-bottom:8px"></div>
         <div id="tlRows"></div>
         <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
           <button id="tlSave" class="sm">保存</button>
-          <button id="tlRender" class="ghost sm">🎬 重渲染成片</button>
+          <button id="tlRender" class="ghost sm">重渲染成片</button>
           <button id="tlClose" class="ghost sm">关闭</button>
           <span class="status-line" id="tlStatus"></span>
         </div>
@@ -273,9 +468,8 @@
       <div class="side-list" id="tlList"><div class="empty">加载中…</div></div>
     </div>
 
-    <div class="card" style="margin-top:14px">
-      <h2>🎬 图文成片 <span style="font-weight:400;color:var(--sub);font-size:11px" id="mvMeta"></span></h2>
-      <div style="font-size:12px;color:var(--sub);margin-bottom:8px">
+    <div class="card" data-tab="post" style="margin-top:14px"><h2>图文成片 <span style="font-weight:400;color:var(--sub)" id="mvMeta"></span></h2>
+      <div style="color:var(--sub);margin-bottom:8px">
         从成稿的<b>剪辑单</b>起步：每个分镜配一张图 + 一首 BGM → 出片。
         <b>数据不出本机</b>（配音与节拍检测都是本地跑）。产物是<b>初剪</b>，人工定稿后再发。
       </div>
@@ -288,26 +482,25 @@
       <div id="mvPanel" style="display:none">
         <div id="mvScenes"></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
-          <label style="font-size:12px;color:var(--sub)">配音</label>
+          <label style="color:var(--sub)">配音</label>
           <select id="mvPlugin" style="width:auto"></select>
           <select id="mvVoice" style="width:auto;max-width:200px"></select>
-          <label style="font-size:12px;color:var(--sub)">BGM</label>
+          <label style="color:var(--sub)">BGM</label>
           <select id="mvBgm" style="width:auto"><option value="">（不加背景音乐）</option></select>
-          <label style="font-size:12px;color:var(--sub)">对齐</label>
+          <label style="color:var(--sub)">对齐</label>
           <select id="mvStrategy" style="width:auto">
             <option value="voice_first">配音优先（脚本不动，推荐）</option>
             <option value="beat_first">卡点优先（会改分镜时长）</option>
           </select>
-          <button id="mvStart" class="sm">🎬 出片</button>
+          <button id="mvStart" class="sm">出片</button>
           <span class="status-line" id="mvStatus"></span>
         </div>
-        <div id="mvVoiceNote" style="font-size:11.5px;color:var(--sub);margin-top:6px"></div>
+        <div id="mvVoiceNote" style="color:var(--sub);margin-top:6px"></div>
       </div>
     </div>
 
-    <div class="card" style="margin-top:14px">
-      <h2>④ 创作者画像 <span style="font-weight:400;color:var(--sub);font-size:11px" id="profMeta"></span></h2>
-      <div style="font-size:12px;color:var(--sub);margin-bottom:8px">为 AI 提供"我是谁 / 我做什么 / 给谁看 / 不要什么"，影响 brief 与成稿风格</div>
+    <div class="card" data-tab="prefs" style="margin-top:14px"><h2>④ 创作者画像 <span style="font-weight:400;color:var(--sub)" id="profMeta"></span></h2>
+      <div style="color:var(--sub);margin-bottom:8px">为 AI 提供"我是谁 / 我做什么 / 给谁看 / 不要什么"，影响 brief 与成稿风格</div>
       <input id="profVoice" placeholder="品牌声音（理性干货 / 真诚种草 / 犀利观点 …）">
       <input id="profDomain" placeholder="领域（自由职业 / 母婴 / 数码 …）" style="margin-top:6px">
       <input id="profAudience" placeholder="目标受众（职场新人 / 宝妈 / 大学生 …）" style="margin-top:6px">
@@ -315,10 +508,9 @@
       <div style="margin-top:8px"><button id="btnProfileSave" class="ghost sm">保存画像</button> <span class="status-line" id="profStatus"></span></div>
     </div>
 
-    <div class="card" style="margin-top:14px">
-      <h2>⑤ 模板库 <span style="font-weight:400;color:var(--sub);font-size:11px" id="tplMeta"></span></h2>
+    <div class="card" data-tab="prefs" style="margin-top:14px"><h2>⑤ 模板库 <span style="font-weight:400;color:var(--sub)" id="tplMeta"></span></h2>
       <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
-        <button class="ghost sm" id="btnTplLearn">✨ 从示例学习</button>
+        <button class="ghost sm" id="btnTplLearn">从示例学习</button>
         <button class="ghost sm" id="btnTplNew">+ 新建模板</button>
         <button class="ghost sm" id="btnTplExport">导出 JSON</button>
         <button class="ghost sm" id="btnTplImport">导入 JSON</button>
@@ -329,14 +521,14 @@
   </section>
 
   <!-- ============ 右栏：结果 ============ -->
-  <section>
+  <section data-tab="write">
     <div class="card res">
       <div style="display:flex;gap:8px;margin-bottom:10px">
         <button id="tabReview" class="ghost sm on">③ 成稿审阅</button>
-        <button id="tabRetro" class="ghost sm">📊 复盘报告</button>
-        <button id="btnRecordEffect" class="sm" style="margin-left:auto">📈 录入效果</button>
+        <button id="tabRetro" class="ghost sm">复盘报告</button>
+        <button id="btnRecordEffect" class="sm" style="margin-left:auto">录入效果</button>
       </div>
-      <div id="resultArea"><div class="empty">解析素材并点击生成后，这里会展示各平台成稿 ✨</div></div>
+      <div id="resultArea"><div class="empty">① 贴上素材 → ② 选平台 → ③ 这里出稿<br><span style="font-family:var(--mono);letter-spacing:.14em;text-transform:uppercase">还没有素材时，先在右侧「素材库」里翻一翻</span></div></div>
       <div id="retroArea" style="display:none"></div>
     </div>
   </section>
@@ -344,9 +536,9 @@
 
 <!-- ============ 效果录入弹窗 ============ -->
 <div id="modalEffect" style="display:none;position:fixed;inset:0;background:#00000055;z-index:99">
-  <div style="background:#fff;max-width:520px;margin:60px auto;padding:22px;border-radius:14px;box-shadow:0 8px 24px #00000022">
-    <h3 style="margin:0 0 14px">📈 录入发布效果</h3>
-    <div style="font-size:12px;color:var(--sub);margin-bottom:10px">关联到具体稿件（按 ID）。所有字段除"关联稿件"外可选。</div>
+  <div style="background:#fff;max-width:520px;margin:60px auto;padding:22px">
+    <h3 style="margin:0 0 14px">录入发布效果</h3>
+    <div style="color:var(--sub);margin-bottom:10px">关联到具体稿件（按 ID）。所有字段除"关联稿件"外可选。</div>
     <select id="efDraft"><option value="">选择关联稿件…</option></select>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
       <input id="efViews" type="number" min="0" placeholder="播放量">
@@ -366,7 +558,7 @@
 
 <!-- ============ 模板编辑弹窗 ============ -->
 <div id="modalTpl" style="display:none;position:fixed;inset:0;background:#00000055;z-index:99">
-  <div style="background:#fff;max-width:560px;margin:40px auto;padding:22px;border-radius:14px;box-shadow:0 8px 24px #00000022;max-height:80vh;overflow:auto">
+  <div style="background:#fff;max-width:560px;margin:40px auto;padding:22px;max-height:80vh;overflow:auto">
     <h3 style="margin:0 0 14px" id="tplModalTitle">新建模板</h3>
     <input id="tfName" placeholder="模板名称（必填）">
     <input id="tfVoice" placeholder="语气 / 人设，如：直接、不废话" style="margin-top:6px">
@@ -385,10 +577,10 @@
 
 <!-- ============ 导入冲突弹窗（由用户裁决） ============ -->
 <div id="modalConflict" style="display:none;position:fixed;inset:0;background:#00000055;z-index:100">
-  <div style="background:#fff;max-width:520px;margin:60px auto;padding:22px;border-radius:14px;box-shadow:0 8px 24px #00000022">
-    <h3 style="margin:0 0 10px">⚠️ 存在同名模板</h3>
-    <div style="font-size:13px;color:var(--sub);margin-bottom:10px">以下模板与你的模板库重名，请选择处理方式：</div>
-    <div id="conflictList" style="margin-bottom:14px;font-size:13px"></div>
+  <div style="background:#fff;max-width:520px;margin:60px auto;padding:22px">
+    <h3 style="margin:0 0 10px">️ 存在同名模板</h3>
+    <div style="color:var(--sub);margin-bottom:10px">以下模板与你的模板库重名，请选择处理方式：</div>
+    <div id="conflictList" style="margin-bottom:14px"></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
       <button class="ghost sm" id="btnConflictCancel">取消导入</button>
       <button class="ghost sm" data-strategy="skip">跳过同名</button>
@@ -401,9 +593,9 @@
 
 <!-- ============ 示例学习弹窗（FR-63） ============ -->
 <div id="modalLearn" style="display:none;position:fixed;inset:0;background:#00000055;z-index:100">
-  <div style="background:#fff;max-width:600px;margin:40px auto;padding:22px;border-radius:14px;box-shadow:0 8px 24px #00000022;max-height:82vh;overflow:auto">
-    <h3 style="margin:0 0 10px">✨ 从示例学习模板</h3>
-    <div style="font-size:12px;color:var(--sub);line-height:1.6;margin-bottom:12px">
+  <div style="background:#fff;max-width:600px;margin:40px auto;padding:22px;max-height:82vh;overflow:auto">
+    <h3 style="margin:0 0 10px">从示例学习模板</h3>
+    <div style="color:var(--sub);line-height:1.6;margin-bottom:12px">
       粘贴一篇你自己的爆款 / 范例正文，AI 会拆解它的写作结构，生成一个<b>草稿模板</b>，你核对确认后才可用于生成。
       <br>仅用于归纳结构，<b>不会保存示例原文</b>；请只使用自有或已获授权的示例。
     </div>
@@ -481,15 +673,32 @@ function renderPlats(list){
 function selectedPlats(){ return [...document.querySelectorAll("#platList input:checked")].map(i=>i.value); }
 function updateGenBtn(){ $("btnGenerate").disabled = !(selectedPlats().length && currentMaterialId); }
 
+function debounce(fn, ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; }
+const loadHistoryDebounced = debounce(()=>loadHistory(), 300);
+// 绑定在函数定义之后、首次加载之前：输入即搜（300ms 防抖）
+setTimeout(()=>{
+  $("historyQ")?.addEventListener("input", loadHistoryDebounced);
+  $("historyTag")?.addEventListener("input", loadHistoryDebounced);
+}, 0);
+
 async function loadHistory(){
-  const list = await j("GET","/api/materials").catch(()=>[]);
+  // 检索（openspec: material-keywords-and-search）：q=全文子串，tags=关键词交集
+  const q = ($("historyQ")?.value || "").trim();
+  const tags = ($("historyTag")?.value || "").trim();
+  const qs = [];
+  if (q) qs.push("q=" + encodeURIComponent(q));
+  if (tags) qs.push("tags=" + encodeURIComponent(tags));
+  const url = "/api/materials" + (qs.length ? "?" + qs.join("&") : "");
+  const list = await j("GET", url).catch(()=>[]);
   const box = $("history");
   if(!list.length){ box.innerHTML='<div class="empty">暂无素材</div>'; return; }
   box.innerHTML = "";
   list.forEach(m=>{
     const d = document.createElement("div");
     d.className="side-item";
-    d.innerHTML = `<b>#${m.id}</b> ${esc((m.core_message||"").slice(0,34))}…<br><span style="color:#9ca3af">${esc(m.created_at||"").slice(0,16)} · ${m.draft_count||0} 平台稿</span>`;
+    const tagHtml = (m.tags||[]).map(t=>`<span style="display:inline-block;padding:1px 5px;border:1px solid var(--line);color:var(--sub);margin-right:3px">${esc(t)}</span>`).join("");
+    d.innerHTML = `<b>#${m.id}</b> ${esc((m.core_message||"").slice(0,34))}…<br><span style="color:#9ca3af">${esc(m.created_at||"").slice(0,16)} · ${m.draft_count||0} 平台稿</span>`
+      + (tagHtml ? `<br><span style="display:inline-block;margin-top:4px">${tagHtml}</span>` : "");
     d.onclick = async ()=>{ currentMaterialId=m.id; loadHistoryHighlight(m.id); loadDraftsOfMaterial(m.id); updateGenBtn(); };
     box.appendChild(d);
   });
@@ -523,7 +732,10 @@ async function loadDraftsOfMaterial(id){
     id: id, sumsLen: sums.length, fullLen: full.length,
     bodyLens: full.map(d => ((d.draft || {}).body || "").length) });
   if (m.structured) {
-    renderAnalyzeResult(m.structured, m.facts_confirmed, m.facts_confirmed_at);
+    // 已存在的素材：带上 id，走"编辑已有"分支（而不是"确认并保存"✗）
+    editableTags = (m.tags || []).slice(0, 8);
+    pendingStructured = null;
+    renderAnalyzeResult(m.structured, m.facts_confirmed, m.facts_confirmed_at, m.id);
   }
   renderTabsFromDb(full, m);
 }
@@ -534,11 +746,11 @@ let factsConfirmedState = false;
 
 function factRowHtml(f, i){
   return `<div class="fact" data-i="${i}" style="display:flex;gap:6px;align-items:center;margin-bottom:5px">
-    <select class="fType" style="width:82px;font-size:11px">
+    <select class="fType" style="width:82px">
       ${["data","story","opinion"].map(t=>`<option value="${t}"${(f.type||"data")===t?" selected":""}>${t}</option>`).join("")}
     </select>
-    <input class="fText" value="${esc(f.text)}" style="flex:1;font-size:12px" placeholder="事实内容（留空则该条会被拒绝保存）">
-    <button class="fDel" title="删除" style="padding:2px 7px;font-size:11px">✕</button>
+    <input class="fText" value="${esc(f.text)}" style="flex:1" placeholder="事实内容（留空则该条会被拒绝保存）">
+    <button class="fDel" title="删除" style="padding:2px 7px"></button>
   </div>`;
 }
 
@@ -565,8 +777,8 @@ function renderFactsState(){
   const el = $("factsState");
   if(!el) return;
   el.innerHTML = factsConfirmedState
-    ? '<span style="color:var(--ok);font-size:11px">✅ 已确认（生成时将复用，不再重复解析）</span>'
-    : '<span style="color:var(--sub);font-size:11px">⚠️ 未确认：生成时会由 AI 重新解析（多一次调用，且可能与这里不一致）</span>';
+    ? '<span style="color:var(--ok)">✅ 已确认（生成时将复用，不再重复解析）</span>'
+    : '<span style="color:var(--sub)">⚠️ 未确认：生成时会由 AI 重新解析（多一次调用，且可能与这里不一致）</span>';
 }
 
 async function saveFacts(confirm){
@@ -589,38 +801,118 @@ async function saveFacts(confirm){
   }
 }
 
-function renderAnalyzeResult(s, confirmed, confirmedAt){
+// 待确认的解析结果（openspec: material-keywords-and-search 任务 3）
+// 解析 → 在这里改事实/关键词 → 确认才落库。**未确认不写库**是结构保证，不是纪律 ✗。
+let pendingStructured = null;
+let editableTags = [];
+
+function renderAnalyzeResult(s, confirmed, confirmedAt, materialId){
   factsConfirmedState = !!confirmed;
   editableFacts = (s.facts||[]).map(f=>({type:f.type||"data", text:f.text||""}));
   const when = confirmedAt ? ` · ${esc(String(confirmedAt).slice(0,16))}` : "";
   $("analyzeResult").innerHTML = `
-    <div class="core">💡 核心观点：<input id="fCore" value="${esc(s.core_message||"")}" style="width:70%;font-size:13px"></div>
-    <div style="font-size:12px;color:var(--sub);margin-top:6px">
-      语气：<input id="fTone" value="${esc(s.tone||"")}" style="width:130px;font-size:12px">
-      受众：<input id="fAudience" value="${esc(s.audience||"")}" style="width:150px;font-size:12px">
+    <div class="core">💡 核心观点：<input id="fCore" value="${esc(s.core_message||"")}" style="width:70%"></div>
+    <div style="color:var(--sub);margin-top:6px">
+      语气：<input id="fTone" value="${esc(s.tone||"")}" style="width:130px">
+      受众：<input id="fAudience" value="${esc(s.audience||"")}" style="width:150px">
+    </div>
+    <h2 style="margin-top:10px">索引关键词<span style="font-weight:400;color:var(--sub)">（3~8 个，供以后检索这篇素材；可删可改）</span></h2>
+    <div id="tagsEditor" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px"></div>
+    <div style="display:flex;gap:6px;margin-bottom:10px">
+      <input id="tagInput" placeholder="输入关键词后回车添加" style="width:200px">
+      <button class="ghost sm" id="btnAddTag">+ 添加</button>
     </div>
     <h2 style="margin-top:10px">事实清单（防幻觉依据）<span id="factsState"></span></h2>
     <div class="facts" id="factsEditor"></div>
     <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
-      <button id="btnAddFact" style="font-size:12px">＋ 添加一条</button>
-      <button id="btnSaveFacts" style="font-size:12px">💾 暂存</button>
-      <button id="btnConfirmFacts" style="font-size:12px;font-weight:600">✅ 保存并确认</button>
-      <span style="font-size:11px;color:var(--sub);align-self:center">确认后生成将复用这份事实，<b>少一次 AI 调用</b>${when}</span>
+      ${materialId == null
+        ? `<button id="btnCreateMaterial" style="font-weight:600">确认并保存为素材</button>
+           <span style="color:var(--sub);align-self:center">保存后即可在「素材历史」里按关键词检索到</span>`
+        : `<button id="btnAddFact" >＋ 添加一条</button>
+           <button id="btnSaveFacts" >暂存</button>
+           <button id="btnConfirmFacts" style="font-weight:600">保存并确认</button>
+           <span style="color:var(--sub);align-self:center">确认后生成将复用这份事实，<b>少一次 AI 调用</b>${when}</span>`}
     </div>`;
   renderFactsEditor();
-  $("btnAddFact").onclick = ()=>{ editableFacts.push({type:"data", text:""}); renderFactsEditor(); };
-  $("btnSaveFacts").onclick = ()=>saveFacts(false);
-  $("btnConfirmFacts").onclick = ()=>saveFacts(true);
+  renderTagsEditor();
+  if (materialId == null) {
+    $("btnCreateMaterial").onclick = ()=>commitPendingMaterial();
+  } else {
+    $("btnAddFact").onclick = ()=>{ editableFacts.push({type:"data", text:""}); renderFactsEditor(); };
+    $("btnSaveFacts").onclick = ()=>saveFacts(false);
+    $("btnConfirmFacts").onclick = ()=>saveFacts(true);
+  }
 }
 
+function renderTagsEditor(){
+  const box = $("tagsEditor");
+  if (!box) return;
+  box.innerHTML = editableTags.length
+    ? editableTags.map((t,i)=>`<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border:1px solid var(--line)">
+         ${esc(t)}<a href="#" data-i="${i}" style="color:var(--sub);text-decoration:none">×</a></span>`).join("")
+    : `<span style="color:var(--sub)">（还没有关键词 —— 可留空，但以后就搜不到它 ✗）</span>`;
+  box.querySelectorAll("a[data-i]").forEach(el=>{
+    el.onclick = (e)=>{ e.preventDefault(); editableTags.splice(Number(el.dataset.i),1); renderTagsEditor(); };
+  });
+  const inp = $("tagInput");
+  if (inp) inp.onkeydown = (e)=>{ if (e.key === "Enter") { e.preventDefault(); addTagFromInput(); } };
+  const btn = $("btnAddTag");
+  if (btn) btn.onclick = addTagFromInput;
+}
+
+function addTagFromInput(){
+  const inp = $("tagInput");
+  const v = (inp.value || "").trim().replace(/^#+/, "").trim();
+  if (v && !editableTags.includes(v) && editableTags.length < 8) editableTags.push(v);
+  inp.value = "";
+  renderTagsEditor();
+}
+
+/** 确认保存：用**已解析**的结果落库（不再调一次模型 ✗），带上确认后的关键词。 */
+async function commitPendingMaterial(){
+  if (!pendingStructured) return;
+  try{
+    const m = await j("POST","/api/materials",{
+      raw_text: $("raw").value,
+      source_kind: $("kind").value,
+      title: $("title").value || null,
+      structured: { ...pendingStructured,
+        core_message: $("fCore")?.value ?? pendingStructured.core_message,
+        tone: $("fTone")?.value ?? pendingStructured.tone,
+        audience: $("fAudience")?.value ?? pendingStructured.audience },
+      tags: editableTags,
+      ...(window.__pfImagePath ? { image_path: window.__pfImagePath } : {}),
+    });
+    currentMaterialId = m.id;
+    pendingStructured = null;
+    editableTags = m.tags || [];
+    renderAnalyzeResult(m.structured, m.facts_confirmed, m.facts_confirmed_at, m.id);
+    $("analyzeStatus").textContent = `✅ 已保存（#${m.id}，${editableTags.length} 个关键词）`;
+    $("analyzeStatus").style.color = "var(--sub)";
+    updateGenBtn(); loadHistory();
+  }catch(e){
+    $("analyzeStatus").textContent = "❌ " + e.message;
+    $("analyzeStatus").style.color = "var(--brand)";
+  }
+}
+
+// 解析**不保存**（openspec: material-keywords-and-search 任务 3.1）：
+// 先拿到结构化结果 → 用户在界面上改事实/关键词 → 点「确认并保存为素材」才落库 ✓。
+// 这样"未确认不写库"由**流程结构**保证，而不是靠人记得 ✗。
 $("btnAnalyze").onclick = async ()=>{
   $("analyzeStatus").textContent = "解析中…";
   $("analyzeStatus").style.color = "var(--sub)";
   try{
-    const m = await j("POST","/api/materials",{ raw_text:$("raw").value, source_kind:$("kind").value, title:$("title").value||null });
-    currentMaterialId = m.id;
-    renderAnalyzeResult(m.structured, m.facts_confirmed, m.facts_confirmed_at);
-    updateGenBtn(); loadHistory();
+    const r = await j("POST","/api/analyze",{ raw_text:$("raw").value, source_kind:$("kind").value, title:$("title").value||null });
+    const structured = r.structured || {};
+    currentMaterialId = null;          // 还没落库 ✗
+    pendingStructured = structured;
+    editableTags = (structured.keywords || []).slice(0, 8);
+    editableFacts = (structured.facts || []).map(f=>({type:f.type||"data", text:f.text||""}));
+    renderAnalyzeResult(structured, false, null, null);
+    $("analyzeStatus").textContent = `已解析（${editableTags.length} 个候选关键词，确认后保存）`;
+    $("analyzeStatus").style.color = "var(--sub)";
+    updateGenBtn();
   }catch(e){ $("analyzeStatus").textContent="❌ "+e.message; $("analyzeStatus").style.color="var(--brand)"; }
 };
 
@@ -655,13 +947,31 @@ async function showTraceSummary(genResult){
 }
 
 /** 展示失败平台与原因，并提供「只重试失败平台」（部分成功保留的一部分）。 */
-function renderFailures(list){
+function renderFailures(list, job){
   const el = $("failLine");
   if(!list || !list.length){ el.innerHTML=""; el.style.display="none"; return; }
   el.style.display = "block";
-  el.innerHTML = `<div style="font-size:12px;color:var(--brand);font-weight:600">❌ 失败平台（其余已生成并保存）</div>`
-    + list.map(f=>`<div style="font-size:11.5px;color:var(--brand);margin-left:8px">· <b>${esc(f.platform)}</b>：${esc(String(f.error||"").slice(0,140))}</div>`).join("")
-    + `<button id="btnRetryFail" style="font-size:12px;margin-top:6px">🔁 重试失败平台</button>`;
+  el.innerHTML = `<div style="color:var(--brand);font-weight:600">❌ 失败平台（其余已生成并保存）</div>`
+    + list.map(f=>`<div data-fail-pc="${esc(f.platform)}" style="color:var(--brand);margin-left:8px;padding:2px 0">
+         · <b>${esc(f.platform)}</b>：${esc(String(f.error||"").slice(0,140))}
+         ${job && job.id ? `<button class="ghost sm" data-retry-one="${esc(f.platform)}"
+              style="margin-left:8px;padding:1px 8px">只重试这个</button>` : ""}
+       </div>`).join("")
+    + `<button id="btnRetryFail" style="margin-top:6px">重试失败平台</button>`;
+  // 单平台重试：走 /retry 的 platforms 参数（后端只接受失败列表里的平台）
+  if(job && job.id){
+    el.querySelectorAll("[data-retry-one]").forEach(b=>{
+      b.onclick = async ()=>{
+        const pc = b.dataset.retryOne;
+        b.disabled = true; b.textContent = "重试中…";
+        try{
+          const r = await j("POST", `/api/jobs/${job.id}/retry`, {platforms:[pc]});
+          $("genStatus").textContent = `已发起重试（只跑 ${pc}）…`;
+          pollGenerateJob(r.job_id, 1);
+        }catch(e){ b.disabled = false; b.textContent = "只重试这个"; alertFallback(e.message); }
+      };
+    });
+  }
   $("btnRetryFail").onclick = ()=>{
     const plats = list.map(f=>f.platform).filter(Boolean);
     if(!plats.length) return;
@@ -693,12 +1003,15 @@ $("btnGenerate").onclick = async (opts)=>{
       material_id: currentMaterialId,
       platforms: plats,
       template_id: sel ? +sel : null,
-      template: sel ? null : buildTemplate()
+      template: sel ? null : buildTemplate(),
+      // 未勾选时**不出现** params 键 —— 请求体与改动前一致 ✓
+      ...(document.getElementById("useLibrary")?.checked ? { params: { use_library: true } } : {})
     });
-    pollGenerateJob(r.job_id, plats.length);
+    $("genPlatforms").innerHTML = "";
+  pollGenerateJob(r.job_id, plats.length);
   }catch(e){
     $("genStatus").textContent="❌ "+e.message; $("genStatus").style.color="var(--brand)";
-    btn.disabled=false; btn.innerHTML="🚀 一键生成多平台稿件";
+    btn.disabled=false; btn.innerHTML="一键生成多平台稿件";
   }
 };
 
@@ -713,7 +1026,7 @@ async function pollGenerateJob(jobId, total){
     let job;
     try{ job = await j("GET", `/api/jobs/${jobId}`); }
     catch(e){ stopGenPolling(); $("genStatus").textContent="❌ 任务查询失败："+e.message;
-              btn.disabled=false; btn.innerHTML="🚀 一键生成多平台稿件"; return; }
+              btn.disabled=false; btn.innerHTML="一键生成多平台稿件"; return; }
     const p = job.progress || {};
     // 平台级进度来自 Java 写的「平台」事件（fields.index/total）；阶段级来自 Python 写的阶段事件
     const stage = p.stage || "";
@@ -722,14 +1035,58 @@ async function pollGenerateJob(jobId, total){
       + (p.pct != null ? ` (${p.pct}%)` : "")
       + ` · 已完成 ${(p.done_stages||[]).length} 步`
       + (p.stalled ? " · ⚠️ 疑似卡住" : "");
+    renderGenPlatforms(job);
     if(["succeeded","failed","partial","canceled","interrupted"].includes(job.status)){
       stopGenPolling();
-      btn.disabled=false; btn.innerHTML="🚀 一键生成多平台稿件";
+      btn.disabled=false; btn.innerHTML="一键生成多平台稿件";
       await onGenerateJobDone(job, total);
     }
   };
   await tick();
   genPollTimer = setInterval(tick, 1000);
+}
+
+// 平台级状态：**边跑边显示** —— 让用户先看到"小红书好了"，而不是等 4 分钟一起出。
+// 数据来自 Java 写的「平台」事件（GET /api/jobs/{id} 的 platform_states）。
+const GEN_PLAT_ICON = {pending:"…", running:"⏳", done:"✅", failed:"❌"};
+function renderGenPlatforms(job){
+  const box = $("genPlatforms");
+  if(!box) return;
+  const st = job.platform_states || [];
+  if(!st.length){ box.innerHTML = ""; return; }
+  box.innerHTML = st.map(x=>{
+    const name = platformNames[x.code] || x.code;   // `const` 不挂 window，直接用闭包里的那张表
+    const color = x.state==="failed" ? "var(--brand)"
+                : x.state==="done" ? "var(--ok)" : "var(--sub)";
+    // 失败**当场**把原因放出来（不等到整批结束）；完成的可点，直接切到那份稿
+    const why = x.state==="failed" && x.error
+      ? `（${esc(String(x.error).slice(0, 40))}${String(x.error).length>40?"…":""}）` : "";
+    const click = x.state==="done" || x.state==="failed" ? "cursor:pointer;" : "";
+    const title = x.error ? ` title="${esc(x.error)}"` : "";
+    return `<span data-pc="${esc(x.code)}" data-st="${esc(x.state)}"
+                  style="color:${color};margin-right:12px;${click}"${title}>${esc(name)} ${GEN_PLAT_ICON[x.state]||""}${why}</span>`;
+  }).join("");
+  box.querySelectorAll("[data-pc]").forEach(el=>{
+    el.onclick = ()=>{
+      const st = el.dataset.st;
+      if(st === "failed"){
+        const f = $("failLine");
+        if(f && f.offsetHeight) f.scrollIntoView({block:"center"});
+        const row = f && f.querySelector(`[data-fail-pc="${el.dataset.pc}"]`);
+        if(row){
+          row.style.transition = "background .2s";
+          row.style.background = "#ffe9e5";
+          row.scrollIntoView({block:"center"});
+          setTimeout(()=>{ row.style.background = ""; }, 1200);
+        }
+        return;
+      }
+      if(st !== "done") return;
+      // 完成 → 切到该平台那份稿（草稿列表由 loadDraftsOfMaterial 维护）
+      const tab = document.querySelector(`.plat-tab button[data-code="${el.dataset.pc}"]`);
+      if(tab){ tab.click(); $("resultArea")?.scrollIntoView({block:"start"}); }
+    };
+  });
 }
 
 async function onGenerateJobDone(job, total){
@@ -759,10 +1116,10 @@ async function onGenerateJobDone(job, total){
   }
   // 失败的平台：给原因 + 一键重试（只重跑失败的那些）
   const failed = (res.failed || []);
-  renderFailures(failed.map(f=>({platform:f.platform_code, error:f.error})));
+  renderFailures(failed.map(f=>({platform:f.platform_code, error:f.error})), job);
   if(job.can_resume){
     $("failLine").insertAdjacentHTML("beforeend",
-      `<div style="margin-top:6px"><button class="sm" id="btnResumeGen" style="font-size:12px">
+      `<div style="margin-top:6px"><button class="sm" id="btnResumeGen" >
          ▶ 继续（跳过已跑完的平台）</button></div>`);
     $("btnResumeGen").onclick = async ()=>{
       const b=$("btnResumeGen"); b.disabled=true; b.textContent="正在继续…";
@@ -775,8 +1132,7 @@ async function onGenerateJobDone(job, total){
   }
   if(job.can_retry){
     $("failLine").insertAdjacentHTML("beforeend",
-      `<div style="margin-top:6px"><button class="ghost sm" id="btnRetryFailed" style="font-size:12px">
-         🔁 只重试失败的 ${failed.length} 个平台</button></div>`);
+      `<div style="margin-top:6px"><button class="ghost sm" id="btnRetryFailed" >只重试失败的 ${failed.length} 个平台</button></div>`);
     $("btnRetryFailed").onclick = async ()=>{
       const b=$("btnRetryFailed"); b.disabled=true; b.textContent="正在重试…";
       try{
@@ -817,18 +1173,60 @@ function alertFallback(msg){
   $("genStatus").style.color = "var(--brand)";
 }
 
+// 同一平台可能有多份稿（重跑/重试/修稿都会新增），tab 必须**按平台去重**，
+// 否则会出现一排"小红书 小红书 小红书"，点哪份也说不清。
+// 组内按 id 倒序（自增 = 新的更大）；没有 id 时退回 created_at。
+function groupDrafts(items){
+  const map = new Map();
+  for(const d of items || []){
+    const code = d.platform_code;
+    if(!code) continue;
+    if(!map.has(code)) map.set(code, {code, name: d.platform_name || platformNames[code] || code, versions: []});
+    map.get(code).versions.push(d);
+  }
+  for(const g of map.values()){
+    g.versions.sort((a,b)=>((b.id||0)-(a.id||0))
+      || String(b.created_at||"").localeCompare(String(a.created_at||"")));
+  }
+  return [...map.values()];
+}
+
+let draftGroups = [];
 function renderTabsFromDb(items){
-  activePlat = items.length? items[0].platform_code : null;
+  draftGroups = groupDrafts(items);
   const tabs = $("resultArea");
-  if(!items.length){ tabs.innerHTML='<div class="empty">还没有稿件</div>'; return; }
+  if(!draftGroups.length){ tabs.innerHTML='<div class="empty">还没有稿件</div>'; return; }
+  activePlat = draftGroups[0].code;
   let bar = '<div class="plat-tab">';
-  items.forEach(x=>{ bar += `<button data-code="${esc(x.platform_code)}" class="${x.platform_code===activePlat?'on':''}">${esc(x.platform_name)}</button>`; });
-  bar += '</div><div id="draftPanel"></div>';
+  draftGroups.forEach(g=>{
+    const n = g.versions.length;
+    bar += `<button data-code="${esc(g.code)}" class="${g.code===activePlat?'on':''}">`
+         + `${esc(g.name)}${n>1?` <span style="font-size:11px;color:var(--sub)">${n} 版</span>`:""}</button>`;
+  });
+  bar += '</div><div id="verBar" style="margin:6px 0"></div><div id="draftPanel"></div>';
   tabs.innerHTML = bar;
+
+  const paint = ()=>{
+    const g = draftGroups.find(x=>x.code===activePlat);
+    if(!g) return;
+    const bar2 = $("verBar");
+    if(bar2){
+      bar2.innerHTML = g.versions.length > 1
+        ? `<label style="color:var(--sub);font-size:13px">版本：
+             <select id="verSel" style="font-size:13px">
+               ${g.versions.map((d,i)=>`<option value="${i}">#${esc(d.id)} · ${esc(String(d.created_at||"").slice(0,16))}</option>`).join("")}
+             </select></label>`
+        : "";
+      const sel = $("verSel");
+      if(sel) sel.onchange = ()=> paintDraft(g.versions[Number(sel.value)] || g.versions[0]);
+    }
+    paintDraft(g.versions[0]);          // 默认最新
+  };
+
   tabs.querySelectorAll(".plat-tab button").forEach(b=> b.onclick=()=>{ activePlat=b.dataset.code;
     tabs.querySelectorAll(".plat-tab button").forEach(x=>x.classList.toggle("on",x.dataset.code===activePlat));
-    paintDraft(items.find(x=>x.platform_code===activePlat)); });
-  paintDraft(items.find(x=>x.platform_code===activePlat));
+    paint(); });
+  paint();
 }
 
 function paintDraft(d){
@@ -851,14 +1249,14 @@ function paintDraft(d){
     clipHtml = `<div class="clip"><h4>🎬 剪辑单（AI 剪辑 A 阶段）· ${esc(cs.intro_note||"")}</h4>`;
     cs.scenes.forEach(s=>{ clipHtml += `<div class="scene"><div class="sc-script">${esc(s.seq)}. ${esc(s.script)}</div>
       <div class="sc-meta">⏱ ${esc(s.duration_hint||"-")} · 🖼 ${esc(s.visual||"-")} · 🔠 ${esc(s.subtitle||"-")} · 🔊 ${esc(s.sound||"-")}</div></div>`; });
-    clipHtml += `<div style="font-size:12px;color:#a93226">BGM 建议：${esc(cs.bgm_hint||"-")}</div></div>`;
+    clipHtml += `<div style="color:#a93226">BGM 建议：${esc(cs.bgm_hint||"-")}</div></div>`;
   }
   const fullCopy = `【${d.platform_name}】\n\n标题：${(draft.titles||[])[0]||""}\n\n${draft.body||""}\n\n标签：#${(draft.tags||[]).join(" #")}${draft.cover_suggestion?`\n\n封面文案：${draft.cover_suggestion}`:""}`;
 
   panel.innerHTML = `
     <div class="draft-block">
       <h3>${esc(d.platform_name)} ${statusBadge}
-        ${d.edited_at?`<span style="font-size:11px;color:var(--sub);font-weight:400">✏️ 人工编辑于 ${esc(String(d.edited_at).slice(0,16))}</span>`:""}
+        ${d.edited_at?`<span style="color:var(--sub);font-weight:400">✏️ 人工编辑于 ${esc(String(d.edited_at).slice(0,16))}</span>`:""}
         <button class="ghost sm" style="margin-left:auto" data-copy>复制全文</button>
       </h3>
       <div class="ed-label">标题（可编辑，一行一个）</div>
@@ -874,14 +1272,14 @@ function paintDraft(d){
       ${warns?`<div class="qa-warn">${warns}</div>`:""}
       ${issues?`<div class="qa-warn" style="border-color:#f0b4ab;color:#b03a2e">${issues}</div>`:""}
       <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <button id="btnSaveDraft" style="font-size:12px;font-weight:600">💾 保存修改</button>
-        <button id="btnExpMd" style="font-size:12px">⬇️ 导出 .md</button>
-        <button id="btnExpTxt" style="font-size:12px">⬇️ 导出 .txt</button>
-        <button id="btnCover" style="font-size:12px">🖼 生成封面</button>
-        <span id="edState" style="font-size:11px;color:var(--sub)"></span>
+        <button id="btnSaveDraft" style="font-weight:600">保存修改</button>
+        <button id="btnExpMd" >⬇️ 导出 .md</button>
+        <button id="btnExpTxt" >⬇️ 导出 .txt</button>
+        <button id="btnCover" >生成封面</button>
+        <span id="edState" style="color:var(--sub)"></span>
       </div>
       <div id="coverBox" style="margin-top:10px"></div>
-      <div style="font-size:11px;color:var(--sub);margin-top:8px;line-height:1.6">
+      <div style="color:var(--sub);margin-top:8px;line-height:1.6">
         ⓘ 质检为自动筛查，仅覆盖已知规则与模型自评，<b>不代表事实无误</b>；发布前请人工终审，事实以你的素材为准。
         <br>ⓘ 编辑不会自动重跑质检——改动后请自行核对（尤其数字与事实）。
       </div>
@@ -919,8 +1317,8 @@ function paintDraft(d){
       const r = await j("POST", `/api/drafts/${draftId}/cover`);
       if(r.status === "ok" && r.url){
         box.innerHTML = `<div class="meta">✅ 封面已生成 · ${r.width}×${r.height} · ${r.elapsed_ms}ms</div>
-          <img src="${esc(r.url)}" alt="封面" style="display:block;max-width:100%;margin-top:8px;border:1px solid var(--line);border-radius:10px">
-          <div style="margin-top:6px;font-size:12px">
+          <img src="${esc(r.url)}" alt="封面" style="display:block;max-width:100%;margin-top:8px;border:1px solid var(--line)">
+          <div style="margin-top:6px">
             <a href="${esc(r.url)}" target="_blank" rel="noopener">在新窗口打开 ↗</a>
           </div>`;
       } else {
@@ -930,8 +1328,8 @@ function paintDraft(d){
       // 编辑器入口**与封面成败无关**：失败时也保留入口，点了会把"为什么不能改"讲清楚
       // （与"生成封面"按钮本身始终可见一致 —— 能力缺失不该表现为功能凭空消失）
       box.insertAdjacentHTML("beforeend",
-        `<div style="margin-top:8px;font-size:12px">
-           <button id="btnOpenEditor" style="font-size:12px">✏️ 在编辑器中打开</button>
+        `<div style="margin-top:8px">
+           <button id="btnOpenEditor" >️ 在编辑器中打开</button>
          </div>
          <div id="editorBox" style="margin-top:10px"></div>`);
       wireEditorButton(r.status === "ok" ? r.url : "");
@@ -966,7 +1364,7 @@ function wireEditorButton(coverUrl){
       }
       if(r.status === "ok" && r.url){
         edBox.innerHTML = `<iframe src="${esc(r.url)}" title="封面编辑器"
-          style="width:100%;height:720px;border:1px solid var(--line);border-radius:10px;background:#fff"></iframe>`;
+          style="width:100%;height:720px;border:1px solid var(--line);background:#fff"></iframe>`;
         open = true; btn.textContent = "✖ 收起编辑器";
       }else{
         edBox.innerHTML = `<div class="meta">✏️ 需手动处理：${esc(r.hint || "编辑器不可用")}</div>`;
@@ -1019,7 +1417,7 @@ async function loadAssets(){
     // 图片给真缩略图；其余给图标 + 体积（视频缩略图要 ffmpeg，属后续）
     const thumb = a.kind === "image"
       ? `<img src="${esc(a.url)}" alt="" loading="lazy"
-             style="width:100%;max-height:120px;object-fit:cover;border-radius:6px;margin-bottom:6px;background:#f3f4f6">`
+             style="width:100%;max-height:120px;object-fit:cover;margin-bottom:6px;background:#f3f4f6">`
       : "";
     const dim = a.width && a.height ? ` · ${a.width}×${a.height}` : "";
     const linkTxt = (a.links && a.links.length)
@@ -1031,15 +1429,18 @@ async function loadAssets(){
       <div style="color:#9ca3af">${esc(linkTxt)} · ${esc((a.created_at||"").slice(0,16))}</div>
       <div style="margin-top:6px;display:flex;gap:6px">
         <a class="ghost sm" href="${esc(a.url)}" target="_blank" rel="noopener"
-           style="font-size:11px;padding:2px 8px;border:1px solid var(--line);border-radius:6px;text-decoration:none">查看</a>
-        ${a.kind === "video" ? `<button class="ghost sm" data-cut="${a.id}" style="font-size:11px">✂️ 粗剪</button>` : ""}
-        ${a.kind === "video" ? `<button class="ghost sm" data-scene="${a.id}" style="font-size:11px">✂️ 切场景</button>` : ""}
-        <button class="ghost sm" data-del="${a.id}" style="font-size:11px">删除</button>
+           style="padding:2px 8px;border:1px solid var(--line);text-decoration:none">查看</a>
+        ${a.kind === "video" ? `<button class="ghost sm" data-cut="${a.id}" >️ 粗剪</button>` : ""}
+        ${a.kind === "video" ? `<button class="ghost sm" data-scene="${a.id}" >️ 切场景</button>` : ""}
+        ${a.kind === "video" ? `<button class="ghost sm" data-ref="${a.id}" >📖 参考分析</button>` : ""}
+        <button class="ghost sm" data-del="${a.id}" >删除</button>
       </div>`;
     const cutBtn = d.querySelector("[data-cut]");
     if(cutBtn) cutBtn.onclick = ()=> openRoughcutForm(a);
     const sceneBtn = d.querySelector("[data-scene]");
     if(sceneBtn) sceneBtn.onclick = ()=> openSceneForm(a);
+    const refBtn = d.querySelector("[data-ref]");
+    if(refBtn) refBtn.onclick = ()=> analyzeReferenceAsset(a);
     d.querySelector("[data-del]").onclick = async ()=>{
       if(!confirm(`删除素材「${a.name || a.id}」？\n\n若没有其它稿件在用它，文件也会被删掉。`)) return;
       try{
@@ -1077,6 +1478,69 @@ function bindAssetHandlers(){
   };
 }
 
+// ============ 参考视频分析（reference-video-analysis）：只读，不落库 ============
+// 素材库里点视频行的「📖 参考分析」。结果直接渲染，不存 —— spec 里它是"参考"，不是素材。
+async function analyzeReferenceAsset(asset){
+  const box = $("refBody"); if(!box) return;
+  $("refMeta").textContent = `· ${asset.name || asset.id}`;
+  box.innerHTML = `<div class="empty">⏳ 正在分析（转写 + 抽帧 + 一次模型判断，约 40–60 秒）…</div>`;
+  try{
+    const r = await j("POST", "/api/reference/analyze-asset", { asset_id: asset.id });
+    renderReference(r);
+  }catch(e){
+    box.innerHTML = `<div class="empty" style="color:#b03a2e">分析失败：${esc(e.message)}</div>`;
+  }
+}
+
+function fmtSec(t){
+  const n = Number(t) || 0;
+  return n.toFixed(1);
+}
+
+function renderReference(r){
+  const box = $("refBody"); if(!box) return;
+  const hook = r.hook || {};
+  const nums = r.numbers || {};
+  const vis = r.visual || {};
+  const speech = r.speech || {};
+  const segs = Array.isArray(r.structure) ? r.structure : [];
+  const takes = Array.isArray(r.takeaways) ? r.takeaways : [];
+  const frames = Array.isArray(r.frames) ? r.frames : [];
+
+  const segRows = segs.map(s =>
+    `<div style="display:flex;gap:10px;padding:4px 0;border-bottom:1px solid var(--line)">
+       <div style="white-space:nowrap;color:var(--sub);min-width:104px">${fmtSec(s.start)}–${fmtSec(s.end)}s</div>
+       <div style="min-width:56px"><b>${esc(s.name || "")}</b></div>
+       <div>${esc(s.purpose || "")}</div>
+     </div>`).join("");
+  const takeHtml = takes.map(t => `<li>${esc(t)}</li>`).join("");
+  // 描述可能为空（视觉模型偶尔返回空）—— 空的不占一行，免得看起来像"漏了画面"
+  const frameHtml = frames.filter(f => (f.desc || "").trim()).map(f =>
+    `<div style="color:var(--sub);white-space:pre-line">${fmtSec(f.t_sec)}s：${esc(f.desc)}</div>`).join("");
+
+  box.innerHTML = `
+    <div class="kv" style="margin-bottom:10px">
+      <div class="card"><div class="k">钩子</div>
+        <div class="v"><b>${esc(hook.type || "—")}</b>${hook.quote ? "：「" + esc(hook.quote) + "」" : ""}</div>
+        <div style="color:var(--sub);margin-top:4px">${esc(hook.why || "")}</div></div>
+      <div class="card"><div class="k">节奏（本地算的）</div>
+        <div class="v">${nums.duration_sec ?? "—"}s · 语速 ${nums.chars_per_min ?? "—"} 字/分 ·
+          切镜头 ${nums.scene_switches ?? "—"} 次 · 平均镜头 ${nums.avg_shot_sec ?? "—"}s</div>
+        <div style="color:var(--sub);margin-top:4px">${speech.has_speech === false ? "⚠️ 没有语音，只做了画面与节奏分析" : "语音来源：" + esc(speech.source || "—")}</div></div>
+    </div>
+
+    <h3 style="margin:12px 0 6px">结构</h3>
+    ${segRows || `<div class="empty">结构松散，无明显分段</div>`}
+
+    <h3 style="margin:12px 0 6px">画面</h3>
+    <div><b>${esc(vis.kind || "—")}</b>${vis.evidence ? "：" + esc(vis.evidence) : ""}</div>
+    ${frameHtml ? `<div style="margin-top:6px">${frameHtml}</div>` : ""}
+
+    <h3 style="margin:12px 0 6px">能直接抄的</h3>
+    ${takeHtml ? `<ul style="margin:0;padding-left:20px">${takeHtml}</ul>` : `<div class="empty">（模型没给出可执行的做法）</div>`}
+    ${r.caveat ? `<div style="color:var(--sub);margin-top:10px">⚠️ 局限：${esc(r.caveat)}</div>` : ""}`;
+}
+
 // ============ M8 第一片: 粗剪任务（异步 + 进度）============
 // 进度**不是猜的**：后端从 CLI 写的阶段事件文件里读出来（docs/spec_observability.md）。
 let rcAsset = null;      // 当前在参数弹层里选中的视频
@@ -1097,24 +1561,29 @@ async function openRoughcutForm(asset){
     ["margin_v", "字幕距底(px)", d.margin_v],
   ];
   $("rcParams").innerHTML = fields.map(([k,label,v])=>
-    `<label style="font-size:11px;color:var(--sub)">${esc(label)}<br>
+    `<label style="color:var(--sub)">${esc(label)}<br>
        <input data-p="${k}" value="${esc(v ?? "")}" style="width:96px"></label>`).join("")
-    + `<label style="font-size:11px;color:var(--sub);display:flex;align-items:center;gap:4px">
+    + `<label style="color:var(--sub);display:flex;align-items:center;gap:4px">
          <input type="checkbox" data-p="burn_subs" ${d.burn_subs === false ? "" : "checked"}> 烧字幕</label>`
     // 去冗余（docs/spec_disfluency.md）：四类**各自**可关 ——
     // 有人不在意口头语，有人只想去重复句，所以不做一个总开关了事。
-    + `<div style="width:100%;margin-top:6px;font-size:11px;color:var(--sub)">
+    + `<div style="width:100%;margin-top:6px;color:var(--sub)">
          去冗余（把说错/重复/口头语也剪掉）</div>`
     + [["dedup_enabled","总开关"],["dedup_repeat","重复句（说两遍）"],
        ["dedup_self_correct","自我纠正（说错重说）"],["dedup_restart","半句废弃（起头又重起）"],
        ["dedup_filler","口头语（嗯/啊/那个）"]].map(([k,label])=>
-        `<label style="font-size:11px;color:var(--sub);display:flex;align-items:center;gap:4px">
+        `<label style="color:var(--sub);display:flex;align-items:center;gap:4px">
            <input type="checkbox" data-p="${k}" ${d[k] === false ? "" : "checked"}> ${esc(label)}</label>`
        ).join("")
-    + `<label style="font-size:11px;color:var(--sub);display:flex;align-items:center;gap:4px">
+    + `<label style="color:var(--sub);display:flex;align-items:center;gap:4px">
          <input type="checkbox" data-p="dedup_review" ${d.dedup_review ? "checked" : ""}>
-         让模型复核可疑段<br><span style="font-size:10.5px;color:#b03a2e">
-         ⚠️ 开了会把<b>转写文本</b>发给你配的 LLM（默认关）</span></label>`;
+         让模型复核可疑段<br><span style="color:#b03a2e">
+         ⚠️ 开了会把<b>转写文本</b>发给你配的 LLM（默认关）</span></label>`
+    // 停顿复核（openspec/changes/pause-review-cuts）：规则分不清"留白"和"卡壳"
+    + `<label style="color:var(--sub);display:flex;align-items:center;gap:4px">
+         <input type="checkbox" data-p="pause_review" ${d.pause_review ? "checked" : ""}>
+         让模型判断停顿该剪还是该留<br><span style="color:#b03a2e">
+         ⚠️ 开了会把<b>转写文本</b>发给你配的 LLM（默认关）；停 2 秒可能是留白，也可能是卡壳</span></label>`;
   $("rcFormStatus").textContent = "";
 }
 
@@ -1145,7 +1614,7 @@ function renderActiveJob(job){
   let bar = "";
   if(job.status === "running" || job.status === "queued"){
     const pct = (typeof p.pct === "number") ? p.pct : null;
-    bar = `<div style="height:6px;background:#eee;border-radius:3px;overflow:hidden;margin:6px 0">
+    bar = `<div style="height:6px;background:#eee;overflow:hidden;margin:6px 0">
              <div style="height:100%;width:${pct === null ? 8 : Math.max(2,pct)}%;
                          background:var(--brand);transition:width .3s"></div></div>`;
   }
@@ -1154,24 +1623,29 @@ function renderActiveJob(job){
   const outs = job.outputs || {};
   const links = Object.entries(outs).map(([k,u])=>
     `<a href="${esc(u)}" target="_blank" rel="noopener" style="margin-right:8px">${esc(k.replace("_url",""))}</a>`).join("");
-  $("rcActive").innerHTML = `<div style="border:1px solid var(--line);border-radius:8px;padding:10px">
+  $("rcActive").innerHTML = `<div style="border:1px solid var(--line);padding:10px">
     <b>任务 #${job.id}</b> · ${esc(label)}${p.stalled ? ' · <span style="color:#b03a2e">疑似卡死</span>' : ""}
-    <div style="font-size:12px;color:var(--sub);margin-top:4px">
+    <div style="color:var(--sub);margin-top:4px">
       ${job.input_name ? "输入：" + esc(job.input_name) + " · " : ""}
       ${p.stage ? "当前阶段：" + esc(p.stage) : ""}${typeof p.pct === "number" ? ` (${p.pct}%)` : ""}
       ${p.last_message ? " · " + esc(p.last_message) : ""}
     </div>
     ${bar}
-    ${done ? `<div style="font-size:11px;color:var(--sub)">已完成：${esc(done)}</div>` : ""}
+    ${done ? `<div style="color:var(--sub)">已完成：${esc(done)}</div>` : ""}
     ${err}
-    ${links ? `<div style="margin-top:6px;font-size:12px">产物：${links}</div>` : ""}
-    ${outs.dedup_url ? `<div id="rcDedup" style="margin-top:8px;font-size:12px"></div>` : ""}
+    ${links ? `<div style="margin-top:6px">产物：${links}</div>` : ""}
+    ${outs.dedup_url ? `<div id="rcDedup" style="margin-top:8px"></div>` : ""}
+    ${job.status === "succeeded" && job.kind === "roughcut"
+        ? `<div style="margin-top:10px"><button class="ghost sm" id="rcCuts">看每一刀的画面</button></div>
+           <div id="rcCutsBox" style="margin-top:8px"></div>` : ""}
     ${job.status === "running" || job.status === "queued"
-        ? `<div style="margin-top:8px"><button class="ghost sm" id="rcStop" style="font-size:11px">取消任务</button></div>` : ""}
+        ? `<div style="margin-top:8px"><button class="ghost sm" id="rcStop" >取消任务</button></div>` : ""}
     ${job.status === "interrupted"
-        ? `<div style="margin-top:8px"><button class="sm" id="rcResume" style="font-size:11px">
+        ? `<div style="margin-top:8px"><button class="sm" id="rcResume" >
              ▶ 继续（跳过已完成的阶段）</button></div>` : ""}
   </div>`;
+  const cutsBtn = $("rcCuts");
+  if(cutsBtn) cutsBtn.onclick = ()=>{ cutsBtn.disabled = true; showCutFrames(job.id, "rcCutsBox"); };
   const stop = $("rcStop");
   if(stop) stop.onclick = async ()=>{
     stop.disabled = true;
@@ -1214,7 +1688,7 @@ function renderActiveJob(job){
       // 错误要显示在**这个面板**里。以前调 alertFallback 是写到 `#genStatus` 的 ——
       // 那是生成面板，用户在这一页根本看不到（实测就踩过：按钮点了没反应，也没报错）。
       $("rcActive").insertAdjacentHTML("beforeend",
-        `<div style="color:#b03a2e;font-size:12px;margin-top:6px">继续失败：${esc(e.message)}</div>`);
+        `<div style="color:#b03a2e;margin-top:6px">继续失败：${esc(e.message)}</div>`);
     }
   };
 }
@@ -1333,8 +1807,8 @@ async function renderScenePlan(job){
   // 缩略图 URL：thumb 是服务器绝对路径，但它的位置可从 plan_url 推出 ——
   // plan_url = /media/<rel>/work/scene-plan.json，thumb 在同一个 work/thumbs/ 里。
   const workBase = planUrl.replace(/work\/scene-plan\.json$/, "");
-  $("sceneActive").innerHTML = `<div style="border:1px solid var(--line);border-radius:8px;padding:10px">
-    <div style="font-size:12px;margin-bottom:8px">共 <b>${segs.length}</b> 段
+  $("sceneActive").innerHTML = `<div style="border:1px solid var(--line);padding:10px">
+    <div style="margin-bottom:8px">共 <b>${segs.length}</b> 段
       （检测器：${esc(plan.detector || "")}，总长 ${fmt(plan.total_sec)}s）
       —— 勾选要切的段：</div>
     <div id="sceneGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px">
@@ -1342,13 +1816,13 @@ async function renderScenePlan(job){
         const thumbUrl = s.thumb ? workBase + "work/thumbs/"
           + esc(String(s.thumb).replace(/\\/g, "/").split("/").pop()) : "";
         return `
-        <label style="border:1px solid var(--line);border-radius:8px;padding:6px;cursor:pointer;display:block">
+        <label style="border:1px solid var(--line);padding:6px;cursor:pointer;display:block">
           <input type="checkbox" data-seg="${s.index}" checked style="vertical-align:middle">
           <b>第${s.index}段</b>
           ${thumbUrl ? `<div><img src="${thumbUrl}" alt="" loading="lazy"
-             style="width:100%;border-radius:6px;margin:4px 0;background:#f3f4f6"
+             style="width:100%;margin:4px 0;background:#f3f4f6"
              onerror="this.remove()"></div>` : ""}
-          <div style="font-size:11px;color:var(--sub)">${fmt(s.start)}–${fmt(s.end)}s · ${fmt(s.duration)}s</div>
+          <div style="color:var(--sub)">${fmt(s.start)}–${fmt(s.end)}s · ${fmt(s.duration)}s</div>
         </label>`;}).join("")}
     </div>
     <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
@@ -1393,12 +1867,12 @@ async function pollSceneJob(id, opt){
                    canceled:"已取消", interrupted:"⏸ 已中断 · 可继续"}[job.status] || job.status;
     const err = job.error ? `<div style="color:#b03a2e;margin-top:6px;white-space:pre-wrap">${esc(job.error)}</div>` : "";
     const bar = (job.status === "running" || job.status === "queued")
-      ? `<div style="height:6px;background:#eee;border-radius:3px;overflow:hidden;margin:6px 0">
+      ? `<div style="height:6px;background:#eee;overflow:hidden;margin:6px 0">
            <div style="height:100%;width:${typeof p.pct === "number" ? Math.max(2,p.pct) : 8}%;
                        background:var(--brand);transition:width .3s"></div></div>` : "";
-    $("sceneActive").innerHTML = `<div style="border:1px solid var(--line);border-radius:8px;padding:10px">
+    $("sceneActive").innerHTML = `<div style="border:1px solid var(--line);padding:10px">
       <b>任务 #${job.id}</b> · ${esc(label)}
-      <div style="font-size:12px;color:var(--sub);margin-top:4px">
+      <div style="color:var(--sub);margin-top:4px">
         ${p.stage ? "当前阶段：" + esc(p.stage) : ""}${typeof p.pct === "number" ? ` (${p.pct}%)` : ""}
         ${p.last_message ? " · " + esc(p.last_message) : ""}
       </div>${bar}${err}</div>`;
@@ -1418,7 +1892,7 @@ async function pollSceneJob(id, opt){
         if(opt && opt.afterCut){
           const n = ((job.result || {}).registered || []).length;
           $("sceneActive").insertAdjacentHTML("beforeend",
-            `<div style="color:#1e8449;font-size:12px;margin-top:6px">
+            `<div style="color:#1e8449;margin-top:6px">
                ✂️ 切出 ${n} 段，已入素材库</div>`);
           $("sceneForm").style.display = "none";
           loadAssets();                 // 新素材出现在素材库
@@ -1502,22 +1976,22 @@ function renderTimeline(){
   $("tlRows").innerHTML = (t.keep || []).map((k, i)=>{
     const s = Number(k[0]), e = Number(k[1]);
     const segs = tlSegsIn(s, e);
-    return `<div class="tl-row" style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px;display:flex;gap:10px;align-items:flex-start">
-      <div style="min-width:22px;color:var(--sub);font-size:12px;padding-top:4px">${i+1}</div>
+    return `<div class="tl-row" style="border:1px solid var(--line);padding:8px;margin-bottom:6px;display:flex;gap:10px;align-items:flex-start">
+      <div style="min-width:22px;color:var(--sub);padding-top:4px">${i+1}</div>
       <div style="flex:0 0 auto">
         ${srcUrl ? `<video class="tl-frame" data-at="${s}" src="${esc(srcUrl)}" preload="metadata"
-             muted playsinline style="width:120px;border-radius:6px;background:#000"></video>` : ""}
+             muted playsinline style="width:120px;background:#000"></video>` : ""}
       </div>
       <div style="flex:1;min-width:0">
-        <div style="font-size:12px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
           <input class="tl-start" data-i="${i}" type="number" step="0.01" value="${s}" style="width:80px">
           <span style="color:var(--sub)">→</span>
           <input class="tl-end" data-i="${i}" type="number" step="0.01" value="${e}" style="width:80px">
           <span style="color:var(--sub)">(<b class="tl-len">${(e-s).toFixed(2)}</b>s)</span>
-          <button class="ghost sm tl-del" data-i="${i}" style="font-size:11px">删除这段</button>
-          ${i > 0 ? `<button class="ghost sm tl-merge" data-i="${i}" style="font-size:11px">与上一段合并</button>` : ""}
+          <button class="ghost sm tl-del" data-i="${i}" >删除这段</button>
+          ${i > 0 ? `<button class="ghost sm tl-merge" data-i="${i}" >与上一段合并</button>` : ""}
         </div>
-        <div style="font-size:11.5px;color:var(--sub);margin-top:4px">
+        <div style="color:var(--sub);margin-top:4px">
           ${segs.length ? segs.map(g=>esc(g.text)).join(" / ") : "<i>（这一段没有字幕）</i>"}
         </div>
       </div>
@@ -1603,9 +2077,9 @@ async function spLoadChildren(){
     if(!kids.length){ $("spStatus").textContent = "这个素材还没拆过"; $("spResult").innerHTML = ""; return; }
     $("spStatus").textContent = `拆出过 ${kids.length} 条`;
     $("spResult").innerHTML = kids.map(k=>`
-      <div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
+      <div style="border:1px solid var(--line);padding:8px;margin-bottom:6px">
         <b>#${k.id}</b> ${esc(k.title || "")}
-        <div style="font-size:11.5px;color:var(--sub);margin-top:2px">
+        <div style="color:var(--sub);margin-top:2px">
           ${k.angle ? "角度：" + esc(k.angle) : ""}${k.angle && k.format ? " · " : ""}${k.format ? "形态：" + esc(k.format) : ""}
         </div>
       </div>`).join("");
@@ -1653,13 +2127,13 @@ async function spStart(){
   const r = job.result || {};
   $("spStatus").textContent = `拆出 ${r.count} 条（都是素材，可以直接去生成）`;
   $("spResult").innerHTML = (r.items||[]).map(x=>`
-    <div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
+    <div style="border:1px solid var(--line);padding:8px;margin-bottom:6px">
       <b>#${x.id}</b> ${esc(x.title || x.core_message || "")}
-      <div style="font-size:11.5px;color:var(--sub);margin-top:2px">
+      <div style="color:var(--sub);margin-top:2px">
         ${x.angle ? "角度：" + esc(x.angle) : ""}${x.angle && x.format ? " · " : ""}${x.format ? "形态：" + esc(x.format) : ""}
         · 事实 ${x.fact_count} 条
       </div>
-      ${(x.facts || []).length ? `<div style="font-size:11px;color:var(--sub);margin-top:3px">
+      ${(x.facts || []).length ? `<div style="color:var(--sub);margin-top:3px">
         事实出处：${x.facts.map(f=>`第${f.from_fact}条`).join("、")}
         （原文：${x.facts.map(f=>esc(f.text)).join(" / ")}）</div>` : ""}
     </div>`).join("");
@@ -1762,12 +2236,12 @@ function mvRenderScenes(){
   const opts = imgs.map(a=>`<option value="${a.id}">${esc(a.name || a.rel_path)}</option>`).join("");
   $("mvMeta").textContent = `${mvScenes.length} 个分镜`;
   $("mvScenes").innerHTML = mvScenes.map((s, i)=>`
-    <div class="mv-row" style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px;display:flex;gap:10px;align-items:flex-start">
-      <div style="min-width:22px;color:var(--sub);font-size:12px;padding-top:4px">${i+1}</div>
+    <div class="mv-row" style="border:1px solid var(--line);padding:8px;margin-bottom:6px;display:flex;gap:10px;align-items:flex-start">
+      <div style="min-width:22px;color:var(--sub);padding-top:4px">${i+1}</div>
       <div style="flex:1;min-width:0">
-        <div style="font-size:12px;font-weight:600">${esc(s.subtitle || s.script || "")}</div>
-        <div style="font-size:11.5px;color:var(--sub);margin-top:2px">配音：${esc(s.script || "")}</div>
-        <div style="font-size:11.5px;color:var(--sub)">画面建议：${esc(s.visual || "—")} · 时长提示 ${esc(s.duration_hint || "—")}</div>
+        <div style="font-weight:600">${esc(s.subtitle || s.script || "")}</div>
+        <div style="color:var(--sub);margin-top:2px">配音：${esc(s.script || "")}</div>
+        <div style="color:var(--sub)">画面建议：${esc(s.visual || "—")} · 时长提示 ${esc(s.duration_hint || "—")}</div>
       </div>
       <select class="mv-img" data-i="${i}" style="width:auto;max-width:190px">
         <option value="">（选图）</option>${opts}
@@ -1851,7 +2325,7 @@ async function refreshRetro(){
     const r = await j("GET","/api/retrospect");
     if(!r.ready){
       box.innerHTML = `<div class="empty">${esc(r.guidance)}</div>
-        <div style="margin-top:10px;font-size:12px;color:var(--sub)">去"成稿审阅"页，对每条稿件点 📈 录入效果 即可开始积累复盘数据。</div>`;
+        <div style="margin-top:10px;color:var(--sub)">去"成稿审阅"页，对每条稿件点 📈 录入效果 即可开始积累复盘数据。</div>`;
       return;
     }
     let html = `<div class="retro-grid">`;
@@ -1863,7 +2337,7 @@ async function refreshRetro(){
     html += `</div>`;
 
     if(r.platform_ranking?.length){
-      html += `<h2 style="margin-top:14px">🏆 平台效果排行</h2><div class="retro-rank">`;
+      html += `<h2 style="margin-top:14px">平台效果排行</h2><div class="retro-rank">`;
       r.platform_ranking.forEach((p,i)=>{
         html += `<div class="row"><span>${i+1}. <b>${esc(p.platform_code)}</b> · ${p.count} 篇</span>
           <span>均播 ${(+p.avg_views).toFixed(0)} · 均赞 ${(+p.avg_likes).toFixed(0)} · 互动 ${(+p.avg_engagement).toFixed(0)}</span></div>`;
@@ -1872,7 +2346,7 @@ async function refreshRetro(){
     }
 
     if(r.top_performers?.length){
-      html += `<h2 style="margin-top:14px">🔥 高表现稿件</h2>`;
+      html += `<h2 style="margin-top:14px">高表现稿件</h2>`;
       r.top_performers.forEach(d=>{
         html += `<div class="retro-card"><h4>${esc(d.platform_name)} · 稿件 #${d.draft_id}</h4>
           <div class="big">互动 ${d.engagement}</div>
@@ -1882,7 +2356,7 @@ async function refreshRetro(){
     }
 
     if(r.underperformers?.length){
-      html += `<h2 style="margin-top:14px">⚠️ 低表现稿件（避雷信号）</h2>`;
+      html += `<h2 style="margin-top:14px">️ 低表现稿件（避雷信号）</h2>`;
       r.underperformers.forEach(d=>{
         html += `<div class="retro-card"><h4>${esc(d.platform_name)} · 稿件 #${d.draft_id}</h4>
           <div class="big" style="color:#9ca3af">互动 ${d.engagement}</div>
@@ -1892,7 +2366,7 @@ async function refreshRetro(){
     }
 
     if(r.insights?.length){
-      html += `<h2 style="margin-top:14px">💡 复盘建议</h2><div class="retro-insights">`;
+      html += `<h2 style="margin-top:14px">复盘建议</h2><div class="retro-insights">`;
       r.insights.forEach(i=>{ html += `<div class="ins ${esc(i.kind)}">${esc(i.insight)}</div>`; });
       html += `</div>`;
     }
@@ -1982,7 +2456,7 @@ function tplItemHtml(t){
     if(!t.builtin) actions += `<button class="ghost sm" data-tpl-act="del" data-id="${t.id}">删除</button>`;
   }
   const hint = isDraft
-    ? `<div style="font-size:11px;color:#854f0b;margin-top:5px">AI 拆解结果，请核对后启用</div>` : "";
+    ? `<div style="color:#854f0b;margin-top:5px">AI 拆解结果，请核对后启用</div>` : "";
   return `<div class="side-item" style="cursor:default">
     <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
       <b>${esc(t.name)}</b><span class="tag">v${t.version}</span>${badge}${draftBadge}
@@ -2001,15 +2475,15 @@ function renderTplList(){
   const mine = templates.filter(t=>!t.builtin && t.status!=="draft");
   let html = "";
   if(drafts.length){
-    html += `<div style="font-size:11px;color:#854f0b;margin:4px 0">草稿（待确认）</div>`;
+    html += `<div style="color:#854f0b;margin:4px 0">草稿（待确认）</div>`;
     drafts.forEach(t=> html += tplItemHtml(t));
   }
   if(builtin.length){
-    html += `<div style="font-size:11px;color:var(--sub);margin:8px 0 4px">内置模板</div>`;
+    html += `<div style="color:var(--sub);margin:8px 0 4px">内置模板</div>`;
     builtin.forEach(t=> html += tplItemHtml(t));
   }
   if(mine.length){
-    html += `<div style="font-size:11px;color:var(--sub);margin:8px 0 4px">我的模板</div>`;
+    html += `<div style="color:var(--sub);margin:8px 0 4px">我的模板</div>`;
     mine.forEach(t=> html += tplItemHtml(t));
   }
   box.innerHTML = html;
@@ -2139,9 +2613,9 @@ async function doImport(payload, strategy){
 function showConflictModal(payload, conflicts){
   pendingImport = payload;
   $("conflictList").innerHTML = conflicts.map(c=>
-    `<div style="padding:6px 9px;border:1px solid var(--line);border-radius:8px;margin-bottom:5px">
+    `<div style="padding:6px 9px;border:1px solid var(--line);margin-bottom:5px">
        <b>${esc(c.name)}</b>
-       <span style="color:var(--sub);font-size:12px">（已存在 #${c.existing_id}${c.existing_builtin?" · 内置":""}）</span>
+       <span style="color:var(--sub)">（已存在 #${c.existing_id}${c.existing_builtin?" · 内置":""}）</span>
      </div>`).join("");
   $("conflictStatus").textContent = "";
   $("modalConflict").style.display = "block";
@@ -2279,7 +2753,9 @@ async function ingestRun(){
     return;
   }
   const btn = $("btnIngest");
+  const busyLabel = btn.textContent;
   btn.disabled = true;
+  btn.textContent = "转写中…";
   $("ingHint").style.display = "none";
   $("ingTextWrap").style.display = "none";
   try{
@@ -2288,6 +2764,8 @@ async function ingestRun(){
       ingStatus("上传中…");
       const up = await ingUpload(file);
       ingMediaId = up.media_id; ingFilename = up.filename;
+      // 上传返回里带真实落盘路径 —— 抽帧要用它（文本框里是空的 ✗）
+      if (up.path) $("ingPath").value = up.path;
       body = { media_id: ingMediaId };
     }else{
       ingMediaId = null;
@@ -2295,6 +2773,23 @@ async function ingestRun(){
       body = { path: rawPath };
     }
 
+    // 图片没有音轨、也没有时长 ✗ —— 直接走"看图"，把描述当素材正文 ✓
+    const effectivePath = ($("ingPath")?.value || rawPath || "").trim();
+    const nameForKind = (effectivePath || ingFilename || "").toLowerCase();
+    if (/\.(png|jpe?g|webp|gif|bmp)$/.test(nameForKind)) {
+      ingStatus("看图…");
+      const d = await j("POST", "/api/describe-image", { path: effectivePath });
+      if (d.text) {
+        window.__pfImagePath = effectivePath;   // 保存素材时带上，生成时看原图
+        $("raw").value = d.text;
+        ingStatus(`✅ 已把图片读成文本（${d.text.length} 字），可编辑后解析`, "var(--ok)");
+      } else {
+        ingStatus("❌ 没读出来：" + (d.error || "未知"), "var(--brand)");
+      }
+      return;
+    }
+
+    window.__pfImagePath = null;
     ingStatus("探测中…");
     const info = await j("POST","/api/ingest/probe", body);
     $("ingInfo").textContent =
@@ -2303,6 +2798,9 @@ async function ingestRun(){
       + ` · 推荐：${ING_MODE_LABEL[info.recommended_mode] || info.recommended_mode}`;
 
     ingStatus(info.recommended_mode === "asr" ? "转写中（较慢，请稍候）…" : "提取中…");
+    // 抽帧与转写**并行**：转写约 100s、看画面十几秒，完全能藏在转写底下 ✓
+    // （实测：串行 6 帧 167s；并行 17s。见 docs/73）
+    const framesJob = autoFrames().catch(() => {});
     const res = await j("POST","/api/ingest/transcribe", body);
 
     if(res.hint){
@@ -2314,6 +2812,9 @@ async function ingestRun(){
       $("ingTextWrap").style.display = "block";
       const label = res.source === "subtitle" ? "字幕提取" : (res.source === "asr" ? "本地转写" : "");
       ingStatus(`✅ ${label}完成（${res.chars} 字）`, "var(--ok)");
+      // **不等看图** ✗ —— 它还要几十秒，等它会让按钮一直灰着（用户以为坏了 ✓）。
+      // 画面结果到了会自己渲染进 #framesBox，不必卡住这次操作 ✓
+      framesJob.catch(() => {});
     }else{
       ingStatus("⚠️ 未取得文字，请见下方提示", "var(--brand)");
     }
@@ -2321,6 +2822,7 @@ async function ingestRun(){
     ingStatus("❌ " + e.message, "var(--brand)");
   }finally{
     btn.disabled = false;
+    btn.textContent = busyLabel;   // 还原按钮文字，否则一直写着"转写中…" ✗
   }
 }
 
@@ -2385,6 +2887,132 @@ paintDraft = function(d){
 };
 
 init();
+
+/* ---- 标签页切换（openspec: 前端重构）----
+   目的：把原来左栏 10 个区块的长列表拆成四件事 ⇢ 写稿 / 素材库 / 后期 / 画像与模板。
+   DOM 不搬家、id 不变 —— 只切显隐，所以既有逻辑一行都不用改 ✓。 */
+function showTab(name){
+  document.body.dataset.tab = name;
+  document.querySelectorAll("#tabBar button").forEach(b=>b.classList.toggle("on", b.dataset.goto === name));
+}
+document.querySelectorAll("#tabBar button").forEach(b=>{ b.onclick = ()=>showTab(b.dataset.goto); });
+showTab("write");
+
+/* 读本地文本文件（.txt/.md）填进素材框 —— openspec: material-keywords-and-search 的顺手补齐。
+   只读、只在本页，不经服务器 ✓。编码先按 UTF-8，失败退 GBK（中文 Windows 常见）。 */
+document.addEventListener("DOMContentLoaded", () => {
+  const inp = document.getElementById("rawFile");
+  if (!inp) return;
+  inp.addEventListener("change", async () => {
+    const f = inp.files && inp.files[0];
+    if (!f) return;
+    const st = document.getElementById("rawFileStatus");
+    const buf = await f.arrayBuffer();
+    let text = new TextDecoder("utf-8").decode(buf);
+    if (text.includes("\uFFFD")) {
+      try { text = new TextDecoder("gbk").decode(buf); } catch (e) { /* 保持 utf-8 结果 */ }
+    }
+    document.getElementById("raw").value = text;
+    document.getElementById("title").value = document.getElementById("title").value
+      || f.name.replace(/\.(txt|md|markdown)$/i, "");
+    if (st) st.textContent = `已读入 ${f.name}（${text.length} 字）`;
+  });
+});
+
+
+/* 抽帧 + 视觉描述：导入后**自动**执行，也支持「重抽画面」手动触发 ✓ */
+async function autoFrames(){
+  const path = (document.getElementById("ingPath")?.value || "").trim();
+  const box = document.getElementById("framesBox");
+  if (!path) return;
+  if (box) { box.style.display = "block"; box.innerHTML = '<span class="status-line">抽帧并看图…（每帧一次模型调用，几十秒）</span>'; }
+  try {
+    const r = await j("POST", "/api/frames", { path, count: 6 });
+    if (!r.frames || !r.frames.length) {
+      if (box) box.innerHTML = '<span class="status-line">没抽到帧</span>';
+      return;
+    }
+    const rows = r.frames.map(f => {
+      const lines = (f.desc || "").split("\n").filter(Boolean);
+      const body = f.desc
+        ? lines.map(x => `<div style="font-size:var(--t-s)">${esc(x.replace(/^\d\)\s*/, ""))}</div>`).join("")
+        : `<div style="font-size:var(--t-xs);color:var(--warn)">这一帧没拿到描述：${esc(f.error || "未知")}</div>`;
+      // 本地质量评分（纯 ffmpeg，不花模型）：糊/暗/过曝直接标出来
+      const q = f.quality || {};
+      const bad = q.verdict && q.verdict !== "ok";
+      const qBadge = q.verdict
+        ? `<span style="font-family:var(--mono);font-size:10px;letter-spacing:.08em;padding:1px 6px;border:1px solid ${bad ? "var(--brand)" : "var(--rule)"};color:${bad ? "var(--brand)" : "var(--muted)"};margin-left:8px">${bad ? esc(q.why || q.verdict) : "质量 ok"}</span>`
+        : "";
+      return `<div style="display:flex;gap:12px;padding:10px 0;border-bottom:1px solid var(--rule-soft)">
+        <div style="flex:0 0 56px;font-family:var(--mono);font-size:var(--t-xs);color:var(--muted)">
+          ${f.t_sec.toFixed(1)}s</div>
+        <div style="flex:1">${body}</div>
+        <div style="flex:0 0 auto">${qBadge}</div></div>`;
+    }).join("");
+    const hint = r.hint ? `<div class="status-line" style="margin-bottom:6px">${esc(r.hint)}</div>` : "";
+    if (box) box.innerHTML = `<div style="font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:6px">
+        画面 · ${r.frames.length} 帧 / ${r.video_sec}s</div>${hint}${rows}`;
+  } catch (e) {
+    if (box) box.innerHTML = `<span class="status-line" style="color:var(--brand)">画面读取失败：${esc(e.message)}</span>`;
+  }
+}
+document.addEventListener("DOMContentLoaded", () => {
+  const btn = document.getElementById("btnFrames");
+  if (btn) btn.onclick = (e) => { e.preventDefault(); autoFrames(); };
+});
+
+/* 粗剪每一刀取一帧（剪辑联动）：cut 中间点 + 本地质量评分 + 视觉描述 */
+async function showCutFrames(jobId, boxId) {
+  const box = document.getElementById(boxId);
+  if (!box) return;
+  box.innerHTML = '<span class="status-line">读取剪点…</span>';
+  try {
+    const c = await j("GET", `/api/jobs/${jobId}/cuts`);
+    if (!c.ready || !(c.segments || []).length) {
+      box.innerHTML = `<span class="status-line">还没有剪点${c.error ? "：" + esc(c.error) : ""}</span>`;
+      return;
+    }
+    const segs = c.segments.slice(0, 8);          // 最多 8 段，再多页面太长
+    const times = segs.map(s => s.mid);
+    box.innerHTML = `<span class="status-line">抽 ${times.length} 帧并看图…（约十几秒）</span>`;
+    const r = await j("POST", "/api/frames", { path: c.input_path, times, count: times.length });
+    const rows = (r.frames || []).map((f, i) => {
+      const seg = segs[i] || {};
+      const q = f.quality || {};
+      const bad = q.verdict && q.verdict !== "ok";
+      const badge = q.verdict
+        ? `<span style="font-family:var(--mono);font-size:10px;padding:1px 6px;border:1px solid ${bad ? "var(--brand)" : "var(--rule)"};color:${bad ? "var(--brand)" : "var(--muted)"};margin-left:6px">${bad ? esc(q.why || q.verdict) : "质量 ok"}</span>` : "";
+      const desc = (f.desc || "").split("\n").filter(Boolean).slice(0, 2).map(x => esc(x.replace(/^\d\)\s*/, ""))).join(" · ");
+      return `<div style="display:flex;gap:12px;padding:10px 0;border-bottom:1px solid var(--rule-soft);align-items:flex-start">
+        <img src="/api/media/${esc(f.rel_path)}" alt="" style="width:96px;height:54px;object-fit:cover;border:1px solid var(--rule)">
+        <div style="flex:1;min-width:0">
+          <div style="font-family:var(--mono);font-size:11px;color:var(--muted)">
+            第 ${i + 1} 段 · ${seg.start?.toFixed?.(1)}–${seg.end?.toFixed?.(1)}s${badge}</div>
+          <div style="font-size:var(--t-s);margin-top:2px">${desc || '<span style="color:var(--warn)">这一帧没拿到描述</span>'}</div>
+          <div style="font-size:var(--t-xs);color:var(--muted);margin-top:2px">${esc((seg.text || "").slice(0, 40))}</div>
+        </div></div>`;
+    }).join("");
+    box.innerHTML = `<div style="font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:6px">
+        每一刀 · ${segs.length} 段 / ${(c.total || 0).toFixed(1)}s</div>${rows}`;
+  } catch (e) {
+    box.innerHTML = `<span class="status-line" style="color:var(--brand)">失败：${esc(e.message)}</span>`;
+  }
+}
+
+/* 选完文件**只给提示，不自动开始** ✓ —— 做转写/看图是显式动作，不能替你决定 ✗ */
+document.addEventListener("DOMContentLoaded", () => {
+  const f = document.getElementById("ingFile");
+  if (!f) return;
+  f.addEventListener("change", () => {
+    if (!f.files || !f.files.length) return;
+    const name = f.files[0].name;
+    const st = document.getElementById("ingStatus");
+    if (st) {
+      st.textContent = `已选择「${name}」→ 点「导入（转写 / 看图）」开始`;
+      st.style.color = "var(--ink)";
+    }
+  });
+});
 </script>
 </body>
 </html>

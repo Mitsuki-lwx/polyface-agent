@@ -48,6 +48,26 @@ def _mock_understand(req: AnalyzeRequest) -> StructuredMaterial:
     )
 
 
+
+def _parse_keywords(raw) -> list[str]:
+    """解析模型给的关键词候选（openspec: material-keywords-and-search）。
+
+    **手工拼 StructuredMaterial 时最容易漏就是这个** —— 2026-11-07 实测：
+    schema 和 prompt 都改了，但这里没取，模型吐了关键词也被丢掉 ✗。
+    归一规则与 Java 侧 `MaterialController.writeTags` 保持一致：去 #、去空白、去重、保序。
+    """
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        v = item.strip().lstrip("#").strip()
+        if v and v not in out:
+            out.append(v)
+    return out[:8]          # 上限 8：与 prompt 里的要求一致，防止模型凑数
+
+
 def _coerce_type(raw: str) -> str:
     t = (raw or "").strip().lower()
     return t if t in {"data", "story", "opinion"} else "opinion"
@@ -77,5 +97,6 @@ def run_understand(req: AnalyzeRequest) -> tuple[StructuredMaterial, bool]:
         tone=str(data.get("tone", "")).strip() or "中性",
         audience=str(data.get("audience", "")).strip() or "大众读者",
         facts=facts,
+        keywords=_parse_keywords(data.get("keywords")),
     )
     return structured, False

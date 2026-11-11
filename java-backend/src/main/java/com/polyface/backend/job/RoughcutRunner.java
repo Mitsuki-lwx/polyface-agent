@@ -265,10 +265,13 @@ public class RoughcutRunner {
         // 时，CLI 会如实报告并**正常退出**、不产文件。这种"跑完但什么都没有"必须记成失败，
         // 否则工作台上会出现一个"✅ 完成"却没有任何产物的任务（实测踩过）。
         if (!Files.isRegularFile(out)) {
-            store.finishJob(jobId, Store.JOB_FAILED,
-                    "没有产出成片（通常是素材里没找到足够长的停顿）。" + tail(errText, 300),
+            // **不是错误** ✗ —— 素材里没有足够长的停顿（比如一镜到底的口播），
+            // 粗剪本来就"无可剪"。用 skipped 表示"跑完了、但无需产出" ✓：
+            // 既不会显示成红色失败，也不会伪造一个"✅ 完成"的空任务 ✗。
+            store.finishJob(jobId, Store.JOB_SKIPPED,
+                    "无需粗剪：素材里没有找到足够长的停顿（也可能整段有背景音乐）。" + tail(errText, 200),
                     null, null, null);
-            log.warn("job {} 正常退出但没有产出：{}", jobId, tail(errText, 200));
+            log.info("job {} 跳过（无停顿可剪）：{}", jobId, tail(errText, 200));
             return;
         }
         // 产物登记进素材库，并挂到源视频上 —— **登记失败不影响任务成功**
@@ -342,6 +345,12 @@ public class RoughcutRunner {
             if (Boolean.TRUE.equals(params.get("dedup_review"))) {
                 cmd.add("--dedup-review");
             }
+        }
+        // 停顿复核（openspec/changes/pause-review-cuts）：同样**只有显式打开才传**
+        if (Boolean.TRUE.equals(params.get("pause_review"))) {
+            cmd.add("--pause-review");
+            putIf(cmd, params, "pause_review_min_sec", "--pause-review-min");
+            putIf(cmd, params, "pause_review_max", "--pause-review-max");
         }
         return cmd;
     }
@@ -535,8 +544,33 @@ public class RoughcutRunner {
     // ---------------- 路径与工具 ----------------
 
     /** venv 的 python 在不同平台位置不同：Windows 是 `Scripts/`，POSIX 是 `bin/`。 */
+    /**
+     * 项目根：从**当前工作目录**往上找到含 `python-service/` 或 `scripts/` 的那层。
+     *
+     * 为什么需要：本进程的 cwd 不稳定 —— 从仓库根跑 jar 时是根，从
+     * `start.sh` 跑时是 `java-backend/target`。配置里的 `python-service/.venv/...`
+     * 是**相对仓库根**写的，按 cwd 解析会在后者直接"找不到可执行文件" ✗
+     * （2026-11-09 实测：任务 7 启动即失败 `Cannot run program ... (in directory ".")`）。
+     */
+    private static Path projectRoot() {
+        Path p = Path.of("").toAbsolutePath();
+        for (int i = 0; i < 6 && p != null; i++) {
+            if (Files.isDirectory(p.resolve("python-service")) || Files.isDirectory(p.resolve("scripts"))) {
+                return p;
+            }
+            p = p.getParent();
+        }
+        return Path.of("").toAbsolutePath();
+    }
+
+    /** 相对路径按**项目根**解析；已经是绝对路径就原样返回 ✓。 */
+    private static Path abs(String maybeRelative) {
+        Path p = Path.of(maybeRelative);
+        return p.isAbsolute() ? p : projectRoot().resolve(p);
+    }
+
     private String resolvePython() {
-        Path p = Path.of(python);
+        Path p = abs(python);
         if (Files.isRegularFile(p)) {
             return p.toString();
         }
@@ -547,7 +581,8 @@ public class RoughcutRunner {
     }
 
     private String resolveScript() {
-        return Files.isRegularFile(Path.of(script)) ? script : script;
+        Path p = abs(script);
+        return Files.isRegularFile(p) ? p.toString() : script;
     }
 
     /** 渲染脚本与粗剪脚本**同目录** —— 跟着配置走，不写死路径。 */

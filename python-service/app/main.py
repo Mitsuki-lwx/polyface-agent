@@ -1,4 +1,5 @@
 """Polyface LLM 服务入口：素材解析 / 多平台成稿等 LLM 计算能力（FastAPI :8000）。"""
+import os
 import logging
 
 from fastapi import FastAPI, HTTPException
@@ -6,6 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import dna, guard, lifecycle as _lifecycle, llm, observability, trace, usage
 from .guard import RequestGuard
+from pathlib import Path
+
 from .config import get_settings, parse_cors_origins, service_version
 from .pipeline.cover import CoverInvalid, CoverToolMissing, compose_cover
 from .pipeline.generate import generate
@@ -25,6 +28,8 @@ from .schemas import (
     TranscribeResponse,
 )
 from .schemas_gen import (
+    FrameItem, FramesRequest, FramesResponse, ReferenceRequest,
+    DescribeImageRequest, DescribeImageResponse,
     GenerateRequest,
     GenerateResponse,
     LearnRequest,
@@ -237,6 +242,120 @@ def do_probe(req: ProbeRequest) -> ProbeResponse:
 def do_transcribe(req: TranscribeRequest) -> TranscribeResponse:
     """音视频 → 文字：字幕优先，ASR 可选，失败降级 needs_manual（不抛 5xx）。"""
     return run_transcribe(req.path, req.mode)
+
+
+# ============================================================ 视频关键帧(video-frame-understanding)
+
+def _safe_quality(path: str) -> dict | None:
+    """质量评分的容错包装：ffmpeg 抽风时**不给结论**，别让整批 500 ✗。"""
+    from .pipeline import frames as _fr
+    try:
+        return _fr.frame_quality(path)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("画面质量评分失败（忽略）：%s", e)
+        return None
+
+
+def media_root() -> Path:
+    """media 根：与 Java 侧 `polyface.media.dir` 同一约定（缺省 `{data_dir}/media`）。"""
+    base = Path(os.getenv("POLYFACE_DATA_DIR", "../data")).resolve()
+    return Path(os.getenv("POLYFACE_MEDIA_DIR", str(base / "media"))).resolve()
+
+
+@app.post("/frames", response_model=FramesResponse)
+def do_frames(req: FramesRequest) -> FramesResponse:
+    """视频 → 关键帧 + 视觉描述。
+
+    帧落到 `{DATA_DIR}/media/frames/<stem>/`（与封面/资产同一片目录），
+    返回相对路径，所以剪辑与封面能直接复用 ✓。
+
+    工具缺失/视频读不出 → 400（不是 5xx：这是入参问题 ✗）。
+    单帧描述失败 → 该帧 `desc` 为空 + `error`，**不编造** ✗。
+    """
+    from pathlib import Path as _P
+    from .pipeline import frames as fr
+    from .pipeline import vision as vis
+
+    video = _P(req.path)
+    try:
+        secs = fr.duration_sec(video)
+        out_dir = media_root() / "frames" / video.stem
+        if req.times:
+            # 剪辑联动：只抽给定时刻（通常是每一刀保留段的中间点）
+            picked = fr.extract_at(video, out_dir, req.times)
+        else:
+            picked = fr.extract_keyframes(video, out_dir, count=req.count)
+    except fr.FrameError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    described = vis.describe_frames(picked) if req.describe else [
+        {"t_sec": f["t_sec"], "path": f["path"], "desc": "", "error": None} for f in picked]
+    items = []
+    for d in described:
+        rel = _P(d["path"])
+        try:
+            rel = rel.relative_to(media_root())
+        except ValueError:
+            rel = _P("frames") / rel.name
+        items.append(FrameItem(t_sec=d["t_sec"], rel_path=str(rel).replace("\\", "/"),
+                               desc=d["desc"], error=d["error"],
+                               # 质量是本地算的 ✓ —— 失败也不影响描述（给 None 不编 ✗）
+                               quality=_safe_quality(d["path"])))
+    changed = len(picked) < req.count
+    return FramesResponse(
+        frames=items, video_sec=round(secs, 2),
+        hint=("画面变化较少，已用等距补足" if changed else ""),
+    )
+
+
+# ============================================================ 参考视频分析
+
+@app.post("/analyze-reference")
+def do_analyze_reference(req: ReferenceRequest) -> dict:
+    """别人的视频 → 结构 / 节奏 / 钩子分析（不落库，返回即用 ✓）。"""
+    from .pipeline import reference as ref
+    try:
+        return ref.analyze_reference(req.path, frame_count=req.frame_count)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("参考视频分析失败")
+        raise HTTPException(status_code=502, detail=f"分析失败：{type(e).__name__}: {str(e)[:200]}") from e
+
+
+# ============================================================ 图片 → 文本
+
+IMAGE_DESCRIBE_PROMPT = (
+    "这是一张图片。用 120 字以内说清：画面里是什么（具体物体/人物/场景）、"
+    "有没有可读的文字（原样抄，最多 20 字）、整体风格或用途（封面/截图/示意图/照片）。"
+    "只写事实，不要评价好不好看 ✗。"
+)
+
+
+@app.post("/describe-image", response_model=DescribeImageResponse)
+def do_describe_image(req: DescribeImageRequest) -> DescribeImageResponse:
+    """图片 → 描述文本（作为素材母体）。
+
+    图片本身没有文字 ✗，但视觉描述有 ✓ —— 这样"我拍了张照片想写点什么"也能走完整链路。
+    失败**不抛 5xx**：`text` 为空 + `error` 说原因（不编造 ✗）。
+    """
+    from pathlib import Path as _P
+    from .pipeline import vision as vis
+
+    path = _P(req.path)
+    if not path.is_file():
+        raise HTTPException(status_code=400, detail=f"图片不存在：{path}")
+    prompt = IMAGE_DESCRIBE_PROMPT + (("\n补充要求：" + req.hint) if req.hint else "")
+    try:
+        text = vis.describe_frame(path, prompt, max_tokens=1500)
+    except vis.VisionError as e:
+        return DescribeImageResponse(text="", error=str(e)[:200])
+    rel = ""
+    try:
+        rel = str(path.relative_to(media_root())).replace("\\", "/")
+    except ValueError:
+        pass
+    return DescribeImageResponse(text=text, rel_path=rel)
 
 
 # ============================================================ 封面成图(M6-1)

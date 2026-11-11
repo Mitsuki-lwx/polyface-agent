@@ -27,6 +27,8 @@ import sys
 from dataclasses import fields
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python-service"))
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "python-service"))
 
@@ -124,6 +126,16 @@ def build_parser(base: rc.RoughcutParams) -> argparse.ArgumentParser:
     g.add_argument("--dedup-review", action="store_true", default=S, dest="dedup_review",
                    help="让模型复核可疑段（**开了转写文本会发给你配的 LLM**）")
 
+    g = p.add_argument_group("停顿复核（openspec/changes/pause-review-cuts）")
+    g.add_argument("--pause-review", action="store_true", default=S, dest="pause_review",
+                   help="让模型判断停顿该剪还是该留（**开了转写文本会发给你配的 LLM**）")
+    g.add_argument("--pause-review-min", type=float, default=S, dest="pause_review_min_sec",
+                   help=f"多长的停顿才送模型（默认 {base.pause_review_min_sec}s）")
+    g.add_argument("--pause-review-max", type=int, default=S, dest="pause_review_max",
+                   help=f"一次最多送多少条候选（默认 {base.pause_review_max}，超出取最长的）")
+    g.add_argument("--no-pause-prosody", action="store_true", default=S, dest="no_pause_prosody",
+                   help="不算停顿前后的能量/音高（默认算；只发数字，音频不出本机）")
+
     g = p.add_argument_group("可观测（docs/spec_observability.md）")
     g.add_argument("--level", choices=("quiet", "normal", "verbose"), default=S,
                    help="输出级别：quiet 只要结果 / normal 阶段+进度+心跳 / verbose 再加底层输出"
@@ -206,6 +218,55 @@ _STAGE_DEPS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _apply_pause_review(params, src, work, pauses, pause_cuts, segs, total, log):
+    """停顿复核（`openspec/changes/pause-review-cuts`）：模型判"留白"还是"卡壳"。
+
+    返回 `(新剪点, 结果 dict 或 None)`。默认关 → 原样返回、**零调用**。
+    时间戳全部来自候选边界 —— 模型只投票（它看不到音频）。
+    """
+    if not params.pause_review:
+        return pause_cuts, None
+    from app.pipeline import pausereview as pr
+
+    orig_wav = work / "original.wav"
+    if segs is None:
+        if not orig_wav.is_file():
+            work.mkdir(parents=True, exist_ok=True)
+            rc.extract_wav(src, orig_wav, on_raw=log.raw)
+        try:
+            segs = asr.transcribe_words(str(orig_wav))
+        except RuntimeError as e:
+            raise rc.AsrMissing(str(e)) from e
+    sentences = df.split_sentences(segs)
+
+    with log.stage("停顿复核") as r:
+        cands = pr.build_candidates(pauses, pause_cuts, sentences,
+                                    margin=params.keep_margin_sec,
+                                    min_sec=params.pause_review_min_sec,
+                                    max_candidates=params.pause_review_max,
+                                    total=total)
+        # 声学特征（openspec/changes/pause-prosody）：**只算候选的**，只发数字
+        if params.pause_review_prosody and cands:
+            if not orig_wav.is_file():
+                rc.extract_wav(src, orig_wav, on_raw=log.raw)
+            from app.pipeline import prosody as _pro
+            feats = _pro.analyze_pauses(orig_wav, pauses,
+                                        indices=[c.pause_index for c in cands])
+            pr.attach_prosody(cands, {c.pause_index: f for c, f in zip(cands, feats)})
+            print(_pro.summarize(next((f for f in feats if f), None)))
+        verdicts, skipped = pr.review_candidates(cands, enabled=True)
+        new_cuts, applied = pr.apply_verdicts(pause_cuts, cands, verdicts,
+                                              margin=params.keep_margin_sec, total=total)
+        result = {
+            "candidates": [{**c.as_prompt(), "pause_index": c.pause_index,
+                            "start": c.start, "end": c.end} for c in cands],
+            "verdicts": verdicts, "llm_skipped": skipped, "applied": applied,
+        }
+        r.done(pr.format_report(result))
+    print(pr.format_report(result))
+    return new_cuts, result
+
+
 def _find_pauses(src, work, params, log) -> tuple[list, str]:
     """找停顿：**VAD 优先，音量门限兜底**（`docs/spec_bgm.md`）。
 
@@ -281,7 +342,11 @@ def main(argv: list[str] | None = None) -> int:
         dedup_self_correct=False if given.get("no_dedup_self_correct") else None,
         dedup_similarity=given.get("dedup_similarity"),
         dedup_min_cut_sec=given.get("dedup_min_cut_sec"),
-        dedup_review=True if given.get("dedup_review") else None)
+        dedup_review=True if given.get("dedup_review") else None,
+        pause_review=True if given.get("pause_review") else None,
+        pause_review_min_sec=given.get("pause_review_min_sec"),
+        pause_review_max=given.get("pause_review_max"),
+        pause_review_prosody=False if given.get("no_pause_prosody") else None)
 
     # 参数来源：命令行 > 配置文件 > 默认
     sources = {f.name: ("命令行" if f.name in given else
@@ -328,6 +393,7 @@ def main(argv: list[str] | None = None) -> int:
     # 换来的是省掉"时间戳重映射"那块易错逻辑。
     dedup_cuts: list = []
     dedup_result: dict = {}
+    segs: list | None = None      # 词级转写：去冗余与停顿复核共用（复核开启时也用它）
     if params.dedup_enabled:
         _du = res.get("去冗余")
         if _du is not None:
@@ -354,8 +420,12 @@ def main(argv: list[str] | None = None) -> int:
     _pause = res.get("找停顿")
     if _pause is not None:
         pauses, cuts = _pause["pauses"], _pause["cuts"]
+        pause_review = _pause.get("pause_review")
         after = info["duration"] - rc.cut_seconds(cuts)
         print(f"[续跑] 跳过找停顿（已完成：{len(pauses)} 段静音，剪掉 {rc.cut_seconds(cuts):.2f}s）")
+        if pause_review:
+            from app.pipeline import pausereview as pr
+            print(pr.format_report(pause_review))
         print(rc.summarize(cuts, info["duration"], after, params))
     else:
         while True:
@@ -364,7 +434,21 @@ def main(argv: list[str] | None = None) -> int:
                 r.done(f"{len(pauses)} 段停顿（{pause_source}）")
                 if pause_source != "vad":
                     print(f"  （找停顿走的是 {pause_source} —— 不是 VAD）")
-            pause_cuts = rc.plan_cuts(pauses, params.keep_margin_sec, info["duration"])
+            # 场景过滤（业界默认）：只在"镜头切了"或"停得够久"处剪 ✓
+            # 一句话中间的换气若镜头没变就不剪 ✗ —— 旧版"见静音就剪"会切碎句子。
+            scenes = None
+            if params.scene_filter:
+                from app.pipeline import frames as _fr
+                with log.stage("找画面切换") as r:
+                    scenes = _fr.scene_times(src, params.scene_threshold)
+                    r.done(f"{len(scenes)} 个切换点" if scenes else "没检测到切换（按纯静音处理）")
+            pause_cuts = rc.plan_cuts(pauses, params.keep_margin_sec, info["duration"],
+                                      scenes=scenes,
+                                      scene_window=params.scene_window_sec,
+                                      long_pause=params.long_pause_sec)
+            # 停顿复核：模型只在这一步投票（默认关）。时间仍取候选边界。
+            pause_cuts, pause_review = _apply_pause_review(
+                params, src, work, pauses, pause_cuts, segs, info["duration"], log)
             # **合并**：停顿剪点和冗余剪点会挨着（先停一下再重说一句），
             # 不合并的话中间会留一小截画面。回退一步，宁少剪（spec 关键决定四）。
             dedup_trimmed = rc.shrink_cuts(dedup_cuts, params.keep_margin_sec, info["duration"])
@@ -379,6 +463,14 @@ def main(argv: list[str] | None = None) -> int:
             if not cuts:
                 # 没找到停顿不是失败 —— 可能素材本来就没长停顿，也可能里面有背景音乐
                 # （BGM 会让"静音"不存在）。如实说明并退出，**绝不产出一个空视频**。
+                # 另一种情况：规则找到了，是**停顿复核**把它们全判成"该留"
+                # —— 这时说"未找到停顿"会误导，必须说清是谁决定了不剪。
+                _dropped = (pause_review or {}).get("applied", {}).get("dropped", 0)
+                if _dropped and len(pauses) >= _dropped:
+                    print(f"\n停顿 {len(pauses)} 段，但模型复核认为都应保留"
+                          f"（去掉 {_dropped} 刀）—— 没有可剪的点。未产出任何文件。"
+                          f"\n不想让模型否决，可去掉 --pause-review。")
+                    return EXIT_OK
                 print(f"\n未找到停顿（阈值 {params.pause_sec}s / 门限 {params.noise_db}dB）。"
                       f"若素材里有背景音乐，本版不处理。未产出任何文件。")
                 return EXIT_OK
@@ -411,7 +503,7 @@ def main(argv: list[str] | None = None) -> int:
                 print("没听懂，请输入一个数字（秒）或直接回车。")
             print()
         res.params = params        # 交互循环可能改过 pause_sec —— 判据要用**最终**值
-        res.put("找停顿", pauses=pauses, cuts=cuts)
+        res.put("找停顿", pauses=pauses, cuts=cuts, pause_review=pause_review)
     # ---------- 执行 ----------
     work.mkdir(parents=True, exist_ok=True)
 

@@ -153,7 +153,10 @@ def test_single_platform_has_no_cross_checks():
 def test_xhs_requires_five_tags():
     assert dc.count_tags("内容。#复用 #效率") == 2
     assert dc.format_issues("xhs", "内容。#复用 #效率"), "2 个标签应当报缺"
-    assert dc.format_issues("xhs", "内容。", ["a", "b", "c", "d", "e"]) == [], "tags 字段也算"
+    # 2026-11-09：小红书还要求 AI 标注，所以"只给满标签"不再等于全过 ✓
+    assert dc.format_issues("xhs", "内容。", ["a", "b", "c", "d", "e"]) == ["小红书未标注 AI 辅助创作（社区公约 2.0 要求）"]
+    assert dc.format_issues("xhs", "内容。本文由 AI 辅助创作，观点由本人负责。",
+                            ["a", "b", "c", "d", "e"]) == [], "tags 字段也算"
 
 
 def test_gzh_requires_headings():
@@ -302,3 +305,232 @@ def test_build_diff_rewrite_feedback():
 
 
 
+
+
+# ---------------------------------------------------------------- 素材关键词（material-keywords-and-search）
+
+def test_keywords_are_parsed_and_normalized():
+    """模型给了关键词，解析必须接住 —— 2026-11-07 实测漏过一次（schema/prompt 改了，解析没改 ✗）。"""
+    from app.pipeline.understand import _parse_keywords
+
+    assert _parse_keywords(["#AI写作", " 内容复用 ", "AI写作", "周报"]) == ["AI写作", "内容复用", "周报"]
+
+
+def test_keywords_are_capped_at_eight():
+    from app.pipeline.understand import _parse_keywords
+
+    out = _parse_keywords([f"词{i}" for i in range(20)])
+    assert len(out) == 8, "上限必须与 prompt 要求一致（8），否则模型会凑数"
+
+
+def test_keywords_tolerate_bad_shapes():
+    from app.pipeline.understand import _parse_keywords
+
+    assert _parse_keywords(None) == []
+    assert _parse_keywords("不是列表") == []
+    assert _parse_keywords([None, 123, ""]) == []
+
+
+def test_understand_keeps_keywords_from_model(monkeypatch):
+    """端到端的一小段：模型返回里有关键词，最终 StructuredMaterial 必须带上。"""
+    from app import llm
+    from app.pipeline import understand
+
+    class FakeLLM:
+        @staticmethod
+        def is_mock():
+            return False
+
+        @staticmethod
+        def chat_json(*a, **k):
+            return {
+                "core_message": "复用要换形态",
+                "tone": "理性",
+                "audience": "博主",
+                "facts": [{"text": "我拿一篇3000字长文做了测试", "type": "story"}],
+                "keywords": ["内容复用", "#番茄钟", "重复了", "重复了"],
+            }
+
+    monkeypatch.setattr(understand, "llm", FakeLLM)
+    from app.schemas import AnalyzeRequest
+
+    structured, mock = understand.run_understand(
+        AnalyzeRequest(raw_text="随便一段足够长的素材正文，用来触发解析。"))
+    assert mock is False
+    assert structured.keywords == ["内容复用", "番茄钟", "重复了"]
+
+
+def test_split_returns_keywords_per_child(monkeypatch):
+    """拆分产出的子素材必须带自己的关键词（任务 3.3）。"""
+    from app import llm
+    from app.pipeline import split as split_mod
+    from app.schemas import Fact, StructuredMaterial
+
+    mat = StructuredMaterial(
+        core_message="复用要换形态", tone="理性", audience="博主",
+        facts=[Fact(text="我拿一篇3000字长文做了测试", type="story"),
+               Fact(text="拆成10条内容，2小时完成", type="data")],
+    )
+
+    class FakeLLM:
+        @staticmethod
+        def chat_json(*a, **k):
+            return {"items": [
+                {"angle": "从钱的视角", "format": "", "title": "省钱",
+                 "core_message": "省时间就是省钱", "fact_ids": [1],
+                 "keywords": ["内容复用", "副业", "效率"]},
+                {"angle": "从时间的视角", "format": "", "title": "省时",
+                 "core_message": "2小时一轮", "fact_ids": [2],
+                 "keywords": ["番茄钟", "工作流"]},
+            ]}
+
+    monkeypatch.setattr(split_mod, "llm", FakeLLM)
+    out = split_mod.split_material(mat, "素材正文", angles=["从钱的视角", "从时间的视角"])
+    assert out[0]["keywords"] == ["内容复用", "副业", "效率"]
+    assert out[1]["keywords"] == ["番茄钟", "工作流"]
+
+
+def test_split_keywords_default_empty_when_model_omits(monkeypatch):
+    from app import llm
+    from app.pipeline import split as split_mod
+    from app.schemas import Fact, StructuredMaterial
+
+    mat = StructuredMaterial(core_message="m", tone="t", audience="a",
+                             facts=[Fact(text="事实一", type="opinion")])
+
+    class FakeLLM:
+        @staticmethod
+        def chat_json(*a, **k):
+            return {"items": [{"angle": "从钱的视角", "format": "", "title": "t",
+                               "core_message": "c", "fact_ids": [1]}]}
+
+    monkeypatch.setattr(split_mod, "llm", FakeLLM)
+    out = split_mod.split_material(mat, "正文", angles=["从钱的视角"])
+    assert out[0]["keywords"] == [], "模型没给就是空数组，由 Java 侧继承父素材"
+
+
+# ---------------------------------------------------------------- 关联本地素材库（library-context-generation）
+
+def _prompt_with(lib):
+    from app import dna as dna_lib
+    from app.pipeline import prompts
+    from app.schemas import StructuredMaterial
+    from app.schemas_gen import Brief
+
+    dna = dna_lib.load_dna("xhs")
+    mat = StructuredMaterial(core_message="m", tone="t", audience="a", facts=[])
+    brief = Brief(platform_code="xhs", angle="a", hooks=["h"], structure_plan="s", tag_direction=[])
+    return prompts.build_draft_skeleton_prompt(dna, mat, brief, library_context=lib)
+
+
+def test_no_library_context_leaves_prompt_unchanged():
+    """未勾选 MUST 与改动前一致 —— 这是"默认关闭"的硬证据。"""
+    p1 = _prompt_with(None)
+    assert "reference_materials" not in p1
+    assert "参考素材" not in p1
+
+
+def test_library_context_is_injected_with_fact_isolation():
+    lib = [{"id": 7, "title": "内容复用", "snippet": "母体内容…", "keywords": ["复用"]}]
+    p = _prompt_with(lib)
+    assert '"reference_materials"' in p
+    assert '"id": 7' in p or '"id":7' in p
+    # 必须写死"事实不得取自参考素材"，否则模型会把别人的数字搬进来 ✗
+    assert "事实、数字、案例、人名一律不得取自参考素材" in p
+    assert "material_facts" in p
+
+
+def test_library_context_is_capped_at_three():
+    lib = [{"id": i, "title": f"t{i}", "snippet": "s", "keywords": []} for i in range(10)]
+    p = _prompt_with(lib)
+    assert "t2" in p and "t3" not in p, "超过 3 条必须截断（spec：不许把整库传过去 ✗）"
+
+
+# ---------------------------------------------------------------- 素材原句排除（platform-differentiation 修订）
+
+def test_source_sentences_are_excluded_from_overlap():
+    """三篇都保留作者的金句，不该被算成"偷懒"重复 ✓。"""
+    src = "内容复用不是偷懒，是让好内容多活几次。拆成10条内容。"
+    a = "内容复用不是偷懒，是让好内容多活几次。第一句很长的独立观点在这里。"
+    b = "内容复用不是偷懒，是让好内容多活几次。第二句完全不同的表述在这里。"
+
+    with_src = dc.evaluate({"x": a, "y": b}, source_text=src)
+    without = dc.evaluate({"x": a, "y": b})
+
+    assert without["overlap"]["x∩y"] == 0.5
+    assert with_src["overlap"]["x∩y"] == 0.0, "素材原句必须被排除"
+    assert with_src["excluded_from_source"] == 2
+
+
+def test_source_exclusion_handles_prefix_and_suffix():
+    """**踩过的坑**：素材是「记住：内容复用不是偷懒…」，稿子里被剪成「内容复用不是偷懒…」✗
+
+    逐字相等判不出来（实测漏掉，导致 40% 重合里全是不该罚的素材金句）。
+    子串判定才能抓住"掐头去尾复用素材"。
+    """
+    src = "记住：内容复用不是偷懒，是让好内容多活几次。"
+    draft = "内容复用不是偷懒，是让好内容多活几次。这里还有一句原创的很长的话。"
+
+    r = dc.evaluate({"x": draft}, source_text=src)
+    assert r["excluded_from_source"] == 1, "掐头后的素材句也必须被排除"
+    assert "内容复用不是偷懒" not in " ".join(r["shared_by_all"])
+
+
+def test_model_own_repetition_is_still_flagged():
+    """模型**自己**造出来的重复，仍然要罚 —— 不能因为排除素材句就把检查弄钝 ✗。"""
+    src = "素材里完全没提这句话。"
+    same = "这是模型自己编的一句很长的话，三篇都一模一样。"
+    r = dc.evaluate({"x": same, "y": same, "z": same}, source_text=src)
+    assert r["overlap"]["x∩y"] == 1.0
+    assert r["shared_by_all"], "模型自己的重复必须仍被报出"
+
+
+def test_zhihu_also_requires_headings():
+    """作者评审指出：知乎 1183 字全是长段落、无小标题 ✗ —— 现在纳入检查。"""
+    flat = "结论先行的一句话。\n\n第一段很长的论述没有小标题。\n\n第二段也是很长的论述。"
+    issues = dc.format_issues("zhihu", flat)
+    assert any("知乎分段小标题" in i for i in issues), issues
+    # 平台名不能写死成"公众号" ✗（实测报错过）
+    assert not any("公众号" in i for i in issues)
+
+    with_h = "结论先行的一句话。\n\n## 一、母体\n正文\n\n## 二、分工\n正文\n\n## 三、公式\n正文"
+    assert dc.format_issues("zhihu", with_h) == []
+
+
+def test_author_review_rules_reach_the_prompt():
+    """作者评审的三条（完整性 / 反同义反复 / 反绝对化）必须真的进到 prompt 里。"""
+    from app import dna as dna_lib
+    from app.pipeline import prompts
+    from app.schemas import StructuredMaterial
+    from app.schemas_gen import Brief
+
+    d = dna_lib.load_dna("gzh")
+    m = StructuredMaterial(core_message="m", tone="t", audience="a", facts=[])
+    b = Brief(platform_code="gzh", angle="a", hooks=["h"], structure_plan="s", tag_direction=[])
+    p = prompts.build_draft_skeleton_prompt(d, m, b)
+
+    sys_text = prompts.DRAFT_SYSTEM
+    assert "完整性优先于精简" in sys_text
+    assert "同一篇内禁止同义反复" in sys_text
+    assert "不许绝对化" in sys_text
+    assert p  # 组装不炸
+
+
+def test_ai_disclosure_is_checked_and_only_matches_real_disclosure():
+    """作者评审第 7 条：小红书缺 AI 标注。只认明确说明，"用 AI 写周报"不算 ✗。"""
+    assert dc.mentions_ai_disclosure("本文由 AI 辅助创作，观点由本人负责。")
+    assert dc.mentions_ai_disclosure("部分内容由 AI 生成，已人工校对。")
+    assert not dc.mentions_ai_disclosure("用 AI 写周报只要 15 分钟。")
+
+    issues = dc.format_issues("xhs", "正文 #a #b #c #d #e")
+    assert any("AI 辅助创作" in i for i in issues), issues
+
+    ok = "正文 #a #b #c #d #e\n\n本文由 AI 辅助创作，观点由本人负责。"
+    assert not any("AI 辅助创作" in i for i in dc.format_issues("xhs", ok))
+
+
+def test_ai_disclosure_rule_reaches_the_prompt():
+    from app.pipeline import prompts
+
+    assert "AI 辅助创作需主动标明" in prompts.DRAFT_SYSTEM
+    assert "7e" in prompts.DRAFT_SYSTEM

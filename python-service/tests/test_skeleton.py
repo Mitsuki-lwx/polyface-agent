@@ -90,10 +90,17 @@ def test_g1_slot_out_of_range():
 
 
 def test_g1_slot_not_in_para_declaration():
+    """2026-11-09 改：**回填 + 软提醒**，不再整篇判死 ✓。
+
+    原来这里断言硬违规 → 实测导致 1/3 平台因"残留 {{n:...}}" 整篇被退 ✗。
+    事实值来自素材，不是幻觉；该段没声明属于"证据没挂全"，提醒即可 ✓。
+    """
     facts = _facts("第一条。", "第二条。")
     sk = _sk(paras=[({1}, "引用了{{n:2|第二条}}")])
     res = assemble_skeleton(sk, facts)
-    assert any("不在该段声明" in h for h in res.hard)
+    assert not any("不在该段声明" in h for h in res.hard), res.hard
+    assert any("未在本段声明" in w for w in res.soft), res.soft
+    assert "第二条" in res.draft.body, "槽位应被回填"
 
 
 def test_g1_declaration_out_of_range():
@@ -121,11 +128,16 @@ def test_g2_proper_noun_passes():
 
 
 def test_g2_true_hallucination_rejected():
-    """真幻觉：表层值在该条事实里不存在 → 硬违规。"""
+    """真幻觉仍然拦得住 —— 只是**拦在数字门（G3）**而不是槽位门 ✓。
+
+    槽位改成回填后，"199 不在事实里"这件事由 `_gate_numbers` 复核 ✓ ——
+    这是最后一道防线，不能因为槽位放宽而丢掉 ✗。
+    """
     facts = _facts("卡里就剩两万三。")
     sk = _sk(paras=[({1}, "亏了{{n:1|199}}")])
     res = assemble_skeleton(sk, facts)
-    assert any("找不到依据" in h and "199" in h for h in res.hard)
+    assert any("数字「199」" in h for h in res.hard), res.hard
+    assert any("找不到逐字依据" in w for w in res.soft), res.soft
 
 
 # ================================================================ G3 裸数字/年份门
@@ -374,3 +386,38 @@ def test_mock_titles_never_contain_partial_number():
             for tok in numbers_in(title).values():
                 assert tok in mat.core_message, f"{tok!r} 不是完整数字（{title!r}）"
             assert not re.search(r"\d…", title), f"省略号紧贴数字（{title!r}）"
+
+
+# ---------------------------------------------------------------- 槽位容错回填（2026-11-09）
+
+def test_slot_is_filled_even_when_not_declared_in_paragraph():
+    """事实序号存在、但该段没声明它 → **回填 + 软提醒**，不再整篇丢弃 ✓。
+
+    回归：实测 1/3 平台因"残留 {{n:...}}" 被整篇退回 ✗（xhs 段1~5 全中）。
+    事实值来自素材，不是幻觉 —— 让它活下来，比丢一篇更值 ✗。
+    """
+    from app.pipeline.skeleton import _assemble_unit
+    from app.schemas import Fact
+
+    facts = [Fact(text="对方报价286块", type="data"),
+             Fact(text="我当年月入两千", type="data")]
+    hard: list[str] = []
+    soft: list[str] = []
+    out = _assemble_unit("段1", "那条图文报价{{n:2|两千}}。", {1}, facts, [], hard, soft)
+
+    assert out == "那条图文报价两千。", f"槽位应被回填，实际：{out!r}"
+    assert not hard, f"不该判硬违规：{hard}"
+    assert any("未在本段声明" in x for x in soft), soft
+
+
+def test_unknown_fact_index_still_fails():
+    """序号确实不存在 → 仍然是硬违规（这才是真幻觉 ✗）。"""
+    from app.pipeline.skeleton import _assemble_unit
+    from app.schemas import Fact
+
+    facts = [Fact(text="只有一条事实", type="opinion")]
+    hard: list[str] = []
+    soft: list[str] = []
+    out = _assemble_unit("段1", "引用{{n:9|某个值}}。", {1}, facts, [], hard, soft)
+    assert "{{" in out, "无法回填时保留原文（由上层判失败）"
+    assert any("不存在的事实序号" in h for h in hard), hard

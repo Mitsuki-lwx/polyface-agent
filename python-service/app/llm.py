@@ -126,7 +126,11 @@ def classify(exc: Exception) -> LLMError:
 
     # 额度/不可用类特征优先于限流（二者都可能返回 429）
     # 注：实测网关会返回 "model is not found"(404) —— 该模型不可用，应换模型而非重试
-    if ("insufficient_quota" in low or "route not found" in low
+    # 402 = 余额耗尽（实测网关：`insufficient_credits` + `current_balance`）。
+    # 必须归到"换模型"的桶：重试同一个模型只会再失败三次 —— 2026-11-10 在 Langfuse 里抓到过。
+    if ("insufficient_quota" in low or "insufficient_credits" in low
+            or status == 402
+            or "route not found" in low
             or "model is not found" in low or "not_found_error" in low):
         return QuotaExhausted(msg[:200])
     if status == 429 or "429" in low or "rate_limit" in low or "tpm/rpm" in low:
@@ -162,8 +166,17 @@ def model_chain(explicit: str | None = None) -> list[str]:
 
 
 def backoff_seconds(attempt_index: int) -> float:
-    """退避序列：1s, 2s, 4s ... 上限 8s，附加 0~0.5s 抖动。"""
-    return min(2 ** attempt_index, 8) + random.uniform(0, 0.5)
+    """退避序列：1s, 2s, 4s, 8s, 15s（上限可配），附加 0~0.5s 抖动。"""
+    cap = get_settings().llm_backoff_cap_sec
+    return min(2 ** attempt_index, cap) + random.uniform(0, 0.5)
+
+
+def timeout_for_scene(scene: str | None) -> float:
+    """每个场景的超时。`draft` 单独放宽（实测平均 103s / p95 210s）。"""
+    s = get_settings()
+    if (scene or "").startswith("draft"):
+        return float(s.llm_timeout_draft_sec)
+    return float(s.llm_timeout_sec)
 
 
 # ============================================================ 模式判定
@@ -206,7 +219,7 @@ def chat(prompt: str, system: str | None = None, *, temperature: float = 0.4,
     for mdl in chain:
         # 启用 Langfuse 时返回 drop-in 包装客户端（自动捕获 model/token）
         client = observability.openai_client(s.llm_base_url, s.llm_api_key,
-                                             float(s.llm_timeout_sec), _http_client())
+                                             timeout_for_scene(scene), _http_client())
         for attempt in range(1, max(1, s.llm_max_attempts) + 1):
             started = time.time()
             try:

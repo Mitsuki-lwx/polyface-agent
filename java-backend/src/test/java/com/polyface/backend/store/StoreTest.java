@@ -400,4 +400,126 @@ class StoreTest {
         assertThat(Store.JOB_INTERRUPTED).isNotEqualTo(Store.JOB_CANCELED);
         assertThat(Store.JOB_INTERRUPTED).isNotEqualTo(Store.JOB_PARTIAL);
     }
+
+    // ---------------- 素材关键词与检索（openspec: material-keywords-and-search）
+
+    private long materialWith(Store store, String title, String text, String tagsJson) {
+        long id = store.insertMaterial(text, "长文", title, null, null, null, "[]");
+        store.updateMaterialTags(id, tagsJson);
+        return id;
+    }
+
+    @Test
+    void tagsRoundTrip() {
+        Store store = newStore();
+        long id = materialWith(store, "周报", "我让Kimi读周报", "[\"AI\",\"周报\"]");
+        assertThat(store.getMaterial(id).orElseThrow().tagsJson()).isEqualTo("[\"AI\",\"周报\"]");
+    }
+
+    @Test
+    void tagsDefaultIsEmptyArrayNotNull() {
+        Store store = newStore();
+        long id = store.insertMaterial("正文", "长文", "无关键词", null, null, null, "[]");
+        assertThat(store.getMaterial(id).orElseThrow().tagsJson())
+                .as("新素材的关键词必须是 [] 而不是 null —— 前端拿到 null 会崩 ✗")
+                .isEqualTo("[]");
+    }
+
+    @Test
+    void searchByFullTextMatchesTitleAndBody() {
+        Store store = newStore();
+        long a = materialWith(store, "AI 周报", "完全无关的正文", "[\"AI\"]");
+        long b = materialWith(store, "别的标题", "正文里提到了番茄钟", "[]");
+
+        assertThat(store.searchMaterials("周报", List.of())).extracting(Store.MaterialRow::id).contains(a);
+        assertThat(store.searchMaterials("番茄钟", List.of())).extracting(Store.MaterialRow::id).contains(b);
+        assertThat(store.searchMaterials("不存在的东西", List.of())).isEmpty();
+    }
+
+    @Test
+    void searchByTagsIsIntersection() {
+        Store store = newStore();
+        long both = materialWith(store, "两词都有", "x", "[\"AI\",\"周报\"]");
+        long onlyAi = materialWith(store, "只有一个", "y", "[\"AI\"]");
+
+        assertThat(store.searchMaterials(null, List.of("AI", "周报")))
+                .extracting(Store.MaterialRow::id).containsExactly(both);
+        assertThat(store.searchMaterials(null, List.of("AI")))
+                .extracting(Store.MaterialRow::id).containsExactlyInAnyOrder(both, onlyAi);
+    }
+
+    @Test
+    void tagMatchDoesNotHitLongerWord() {
+        // 存的是 JSON 数组，匹配要带引号 —— 否则 "AI" 会命中 "AIGC" ✗
+        Store store = newStore();
+        materialWith(store, "只是 AIGC", "x", "[\"AIGC\"]");
+        assertThat(store.searchMaterials(null, List.of("AI"))).isEmpty();
+    }
+
+    @Test
+    void searchCombinesFullTextAndTags() {
+        Store store = newStore();
+        long hit = materialWith(store, "AI 周报", "正文提到复盘", "[\"AI\"]");
+        materialWith(store, "AI 周报", "正文没提那个词", "[\"AI\"]");
+
+        assertThat(store.searchMaterials("复盘", List.of("AI")))
+                .extracting(Store.MaterialRow::id).containsExactly(hit);
+    }
+
+    @Test
+    void childMaterialKeepsItsOwnKeywords() {
+        // 任务 3.3：子素材不能是"关键词为空的孤儿" —— 否则拆完之后一条都搜不到 ✗
+        Store store = newStore();
+        long parent = materialWith(store, "母体", "正文", "[\"内容复用\"]");
+        long child = store.insertChildMaterial("正文", "子标题", "子观点", "t", "a", "[]",
+                parent, "从钱的视角", "", "[\"副业\",\"效率\"]");
+
+        assertThat(store.getMaterial(child).orElseThrow().tagsJson()).isEqualTo("[\"副业\",\"效率\"]");
+        assertThat(store.searchMaterials(null, List.of("副业")))
+                .extracting(Store.MaterialRow::id).contains(child);
+    }
+
+    @Test
+    void childMaterialWithoutKeywordsIsEmptyArray() {
+        Store store = newStore();
+        long parent = materialWith(store, "母体", "正文", "[\"内容复用\"]");
+        long child = store.insertChildMaterial("正文", "子", "观点", "t", "a", "[]",
+                parent, "角度", "", null);
+        assertThat(store.getMaterial(child).orElseThrow().tagsJson()).isEqualTo("[]");
+    }
+
+    @Test
+    void relatedMaterialsRanksByMatchedTagsAndExcludesSelf() {
+        // library-context-generation：只取命中最多的几条，且**排除自身与子素材** ✗
+        Store store = newStore();
+        long self = materialWith(store, "当前", "正文", "[\"AI\",\"周报\",\"复盘\"]");
+        long twoHits = materialWith(store, "两条命中", "x", "[\"AI\",\"周报\"]");
+        long oneHit = materialWith(store, "一条命中", "x", "[\"AI\"]");
+        long none = materialWith(store, "无关", "x", "[\"烘焙\"]");
+        // 子素材不算"历史素材"
+        long child = store.insertChildMaterial("x", "子", "c", "t", "a", "[]", self, "角度", "", "[\"AI\"]");
+
+        List<Store.MaterialRow> out = store.relatedMaterials(self, List.of("AI", "周报"), 3);
+        List<Long> ids = out.stream().map(Store.MaterialRow::id).toList();
+        assertThat(ids).containsExactly(twoHits, oneHit);
+        assertThat(ids).doesNotContain(self, none, child);
+    }
+
+    @Test
+    void relatedMaterialsRespectsLimit() {
+        Store store = newStore();
+        long self = materialWith(store, "当前", "正文", "[\"AI\"]");
+        for (int i = 0; i < 5; i++) {
+            materialWith(store, "历史" + i, "x", "[\"AI\"]");
+        }
+        assertThat(store.relatedMaterials(self, List.of("AI"), 3)).hasSize(3);
+    }
+
+    @Test
+    void relatedMaterialsEmptyWhenNoTags() {
+        Store store = newStore();
+        long self = materialWith(store, "当前", "正文", "[]");
+        assertThat(store.relatedMaterials(self, List.of(), 3)).isEmpty();
+        assertThat(store.relatedMaterials(self, null, 3)).isEmpty();
+    }
 }

@@ -52,6 +52,12 @@ class RoughcutParams:
     pause_sec: float = 0.8          # 多长的静音算"停顿"。实测：0.3 会连逗号停顿一起剪
     noise_db: int = -30             # 静音判定门限。实测不敏感（-20~-40 结果几乎相同）
     keep_margin_sec: float = 0.08   # 剪点两端保留的气口，否则切口生硬
+    # 场景过滤（默认按业界做法）：**只在"画面切了"或"停得够久"的地方剪** ✓
+    # 一句话中间的换气（0.8~1.5s）如果镜头没变，多半是同一句话在喘气，剪了就断句 ✗。
+    scene_filter: bool = True       # 关掉 = 退回"只看静音"（旧行为 ✓）
+    scene_threshold: float = 0.30   # 与抽帧用同一个检测器阈值
+    scene_window_sec: float = 0.60  # 停顿的起/止离切换点这么近，就算"自然剪点"
+    long_pause_sec: float = 1.50    # 停顿超过这个长度，无论有没有切换都剪
     # 字幕
     burn_subs: bool = True
     font: str = "Microsoft YaHei"
@@ -78,6 +84,12 @@ class RoughcutParams:
     # 用 0.72 去筛，模型就永远看不到它（而那正是模型这一层存在的理由）。
     dedup_review_gate: float = 0.30
     dedup_min_restart_chars: int = 4    # 半句重起：短句至少这么多字才算
+    # 停顿复核（openspec/changes/pause-review-cuts）：模型判"留白"还是"卡壳"。
+    # 规则只看静音多久，这两种声学上一样 —— 语义只能交出去，但要认成本。
+    pause_review: bool = False          # **默认关**：开了会把转写文本发给你配的 LLM（数据边界）
+    pause_review_min_sec: float = 0.60  # 低于它不送模型（没有判断价值）
+    pause_review_max: int = 80          # 候选上限：超出取最长的 N 条（一次调用的 token 才可预测）
+    pause_review_prosody: bool = True   # 算停顿前后的能量/音高（本地算，只发数字，音频不出本机）
     # 找停顿的判据（docs/spec_bgm.md）
     # **默认走 VAD**：判据是"有没有人声"，不是"音量低不低" ——
     # 所以带 BGM 也能找出停顿（实测带 BGM 8/9 段，而音量门限是 0 段）。
@@ -122,7 +134,8 @@ class RoughcutParams:
                                      ("半句重起", self.dedup_restart),
                                      ("自我纠正", self.dedup_self_correct)) if on]) or ""
                    if self.dedup_enabled else " · 去冗余：关")
-                + ("（含模型复核）" if self.dedup_enabled and self.dedup_review else ""))
+                + ("（含模型复核）" if self.dedup_enabled and self.dedup_review else "")
+                + (" · 停顿复核：开（转写会出本机）" if self.pause_review else ""))
 
 
 DEFAULT_CONFIG_NAME = "roughcut.json"
@@ -246,15 +259,51 @@ def detect_pauses(path: str | Path, noise_db: int, min_sec: float, *, on_raw=Non
 
 
 def plan_cuts(pauses: list[tuple[float, float]], keep_margin: float,
-              total: float) -> list[tuple[float, float]]:
-    """静音段 → 实际要剪掉的区间（两端各留一点气口；过短的丢弃）。"""
+              total: float, scenes: list[float] | None = None,
+              scene_window: float = 0.60,
+              long_pause: float = 1.50) -> list[tuple[float, float]]:
+    """静音段 → 实际要剪掉的区间。
+
+    `scenes` 给了就启用**场景过滤**（默认路径 ✓）：
+      · 停顿 ≥ `long_pause` → 一定剪（说完一段的明确结束 ✓）
+      · 否则只有**贴着画面切换**（起/止距切换点 ≤ `scene_window`）才剪 ✓
+      · 镜头没变的中等停顿 → **不剪** ✗（多半是同一句话在换气）
+    不给 `scenes` → 退回旧行为（只看静音 ✓，测试与老配置照常）。
+    """
+    use_scene = scenes is not None
     cuts = []
     for start, end in pauses:
         s, e = start + keep_margin, end - keep_margin
         if e - s <= 0:
             continue
+        dur = end - start
+        if use_scene and dur < long_pause:
+            near = any(min(abs(s - t), abs(e - t)) <= scene_window for t in scenes)
+            if not near:
+                continue      # 镜头没变、停得也不久 → 这是换气，不是剪点 ✗
         cuts.append((round(s, 3), min(round(e, 3), total)))
     return cuts
+
+
+def kept_segments(cuts: list[tuple[float, float]], total: float) -> list[tuple[float, float]]:
+    """剪掉区间 → **保留**区间（粗剪真正出片的那些段）。
+
+    剪辑联动要用它：每一段取中间点抽一帧，就能看到"这一刀保留下来的画面是什么" ✓。
+    """
+    kept: list[tuple[float, float]] = []
+    pos = 0.0
+    for s, e in sorted(cuts):
+        if s > pos:
+            kept.append((round(pos, 3), round(s, 3)))
+        pos = max(pos, e)
+    if pos < total:
+        kept.append((round(pos, 3), round(total, 3)))
+    return [(s, e) for s, e in kept if e - s > 0.05]
+
+
+def segment_midpoints(segs: list[tuple[float, float]]) -> list[float]:
+    """每段的中间点（抽帧用）。"""
+    return [round((s + e) / 2, 3) for s, e in segs]
 
 
 def cut_seconds(cuts: list[tuple[float, float]]) -> float:

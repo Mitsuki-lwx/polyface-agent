@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import contextlib
+import tempfile
 import json
 import logging
 import re
@@ -47,6 +48,9 @@ from .prompts import (
     build_brief_prompt,
     build_clip_prompt,
     build_draft_skeleton_prompt,
+    build_draft_outline_prompt,
+    build_draft_section_prompt,
+    DRAFT_SECTION_SYSTEM,
     build_qa_prompt,
 )
 from .skeleton import (
@@ -226,6 +230,8 @@ def run_draft(
     creator_profile: dict | None = None,
     retrospect_hints: list[str] | None = None,
     avoid: list[str] | None = None,
+    library_context: list[dict] | None = None,
+    image_notes: str | None = None,
 ) -> tuple[DraftPayload, list[str]]:
     """成稿 = 骨架 → 装配 → 机械门（ADR-025）。返回 `(成稿, 软违规)`。
 
@@ -246,26 +252,135 @@ def run_draft(
     extra = _extra_evidence(template, creator_profile)
     tpl = template.model_dump() if template else None
 
+    # draft 可以单独指定模型（空 = 全局模型）：换模型做 A/B 不改代码
+    draft_model = (get_settings().llm_draft_model or "").strip() or None
+
+    _cfg = get_settings()
+    split_draft = bool(getattr(_cfg, "llm_draft_split", False))
+    section_workers = max(1, int(getattr(_cfg, "llm_draft_section_workers", 2) or 2))
+
+    last_data: dict | None = None
+
     def _call_once(fb: str | None) -> AssembleResult:
-        data = llm.chat_json(
-            build_draft_skeleton_prompt(dna, mat, brief, fb, tpl,
-                                        creator_profile, retrospect_hints,
-                                        avoid_sentences=avoid),
-            system=DRAFT_SYSTEM, temperature=0.8,
-            scene="draft", platform=dna.get("code"),
-        )
+        nonlocal last_data
+        if split_draft:
+            data = _split_draft(dna, mat, brief, fb, tpl, creator_profile,
+                                retrospect_hints, avoid=avoid,
+                                library_context=library_context,
+                                image_notes=image_notes, model=draft_model,
+                                workers=section_workers, previous=last_data)
+            last_data = data
+        else:
+            data = llm.chat_json(
+                build_draft_skeleton_prompt(dna, mat, brief, fb, tpl,
+                                            creator_profile, retrospect_hints,
+                                            avoid_sentences=avoid,
+                                            library_context=library_context,
+                                            image_notes=image_notes),
+                system=DRAFT_SYSTEM, temperature=0.8,
+                scene="draft", platform=dna.get("code"), model=draft_model,
+            )
         return assemble_skeleton(parse_skeleton(data), mat.facts, extra_evidence=extra)
 
     res = _call_once(None)
+    logger.info("骨架首轮：hard=%d soft=%d%s", len(res.hard), len(res.soft),
+                ("：" + "；".join(res.hard[:3])) if res.hard else "")
+    # 骨架闸门失败要**多给几轮**：实测 1/3 的平台会因"槽位没填完"被退回 ✗
+    # （2026-11-08：xhs 段1~5 残留 `{{n:序号|表层}}`，一轮修复后仍不合格 → 整篇丢弃）
+    feedback: str | None = None
+    for attempt in range(1, SKELETON_REPAIR_ROUNDS + 1):
+        if not res.hard:
+            break
+        feedback = _build_skeleton_repair(res.hard)
+        logger.info("骨架机械门未通过（%d 项），第 %d 轮修复：%s",
+                    len(res.hard), attempt, res.hard[:3])
+        res = _call_once(feedback)
     if res.hard:
-        repair = ("机械校验未通过，逐条修复：\n"
-                  + "\n".join(f"- {v}" for v in res.hard)
-                  + "\n重新输出**完整**骨架 JSON（含全部字段）。")
-        logger.info("骨架机械门未通过（%d 项），修复一轮：%s", len(res.hard), res.hard)
-        res = _call_once(repair)
-        if res.hard:
-            raise SkeletonGateError(res.hard)
+        raise SkeletonGateError(res.hard)
     return res.draft, res.soft
+
+
+# 骨架闸门最多再试几轮（首轮之外）。实测：多数失败是"槽位没填完"，多给一轮就能过 ✓
+SKELETON_REPAIR_ROUNDS = 3
+
+
+def _split_draft(dna, mat, brief, feedback, tpl, creator_profile, retrospect_hints, *,
+                 avoid, library_context, image_notes, model, workers=2,
+                 previous: dict | None = None) -> dict:
+    """骨架拆步（`llm_draft_split`）：提纲 → 逐段写 → 拼回**同形状**的骨架 JSON。
+
+    形状不变是关键：下游的闸门、装配、质检一行都不用改。
+    段间并行（默认 2 路）—— 串行拆步只会把总耗时拆得更长。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    outline = llm.chat_json(
+        build_draft_outline_prompt(dna, mat, brief, feedback, tpl,
+                                   creator_profile, retrospect_hints,
+                                   avoid_sentences=avoid,
+                                   library_context=library_context,
+                                   image_notes=image_notes),
+        system=DRAFT_SYSTEM, temperature=0.8,
+        scene="draft_outline", platform=dna.get("code"), model=model,
+    )
+    secs = outline.get("outline") if isinstance(outline, dict) else None
+    if not isinstance(secs, list) or not secs:
+        return {**(outline or {}), "paras": []}      # 空提纲交给闸门报，别在这里抛
+
+    # 修复轮只重写**被点名的段**（硬违规形如「段5 残留未回填的槽位…」），
+    # 否则一次闸门失败就把全部段重跑一遍 —— 实测 2 条素材跑了 325 次调用。
+    import re as _re
+    bad = {int(x) for x in _re.findall(r"段\s*(\d+)", feedback or "")}
+    prev_texts = {i: (p.get("text") or "")
+                  for i, p in enumerate((previous or {}).get("paras") or [], 1)}
+
+    def _one(item):
+        i, sec = item
+        if bad and i not in bad and prev_texts.get(i):
+            return i, prev_texts[i]
+        d = llm.chat_json(
+            build_draft_section_prompt(dna, mat, brief, sec, i, len(secs), tpl,
+                                       creator_profile, retrospect_hints,
+                                       avoid_sentences=avoid,
+                                       library_context=library_context,
+                                       image_notes=image_notes,
+                                       feedback=feedback),
+            system=DRAFT_SECTION_SYSTEM, temperature=0.8,
+            scene="draft_section", platform=dna.get("code"), model=model,
+        )
+        return i, ((d or {}).get("text") or "")
+
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(secs)))) as ex:
+        texts = dict(ex.map(_one, list(enumerate(secs, 1))))
+
+    paras = [{"role": (sec.get("role") or "body"),
+              "facts": sec.get("facts") or [],
+              "text": texts.get(i, "")}
+             for i, sec in enumerate(secs, 1)]
+    return {**outline, "paras": paras}
+
+
+def _build_skeleton_repair(hard: list[str]) -> str:
+    """把机械违规翻译成**可执行**的修复指令。
+
+    原来的提示只有"逐条修复"✗ —— 模型会照抄那句话，然后**继续留着花括号** ✓。
+    所以这里把两类最常见的失败**点名说透**：
+      · 槽位 `{{n:序号|表层}}` 必须替换成真实正文，**禁止保留任何花括号** ✗
+      · 数字/年份只能取自事实清单，清单里没有就不许写 ✗
+    """
+    lines = ["机械校验未通过。请**只改这几处**，其余保持原样，重新输出完整骨架 JSON："]
+    slot_problem = any("槽位" in v for v in hard)
+    num_problem = any("数字" in v or "年份" in v for v in hard)
+    for v in hard:
+        lines.append(f"- {v}")
+    lines.append("")
+    if slot_problem:
+        lines.append("【槽位】`{{n:序号|表层}}` 是**占位符**，输出前必须全部替换成真实内容。")
+        lines.append("        正文里**不允许出现任何 `{` `}` 字符**。请逐个检查每一段的 text。")
+    if num_problem:
+        lines.append("【数字】所有数字/年份只能来自 `material_facts`。清单里没有的，改写掉或删除。")
+    lines.append("输出前自查一遍：全文没有花括号、没有清单外的数字。")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------- clip_sheet（FR-50, A阶段）
@@ -618,7 +733,9 @@ def _generate_one(code: str, mat: StructuredMaterial, tone_override: str | None,
                   creator_profile: dict | None = None,
                   retrospect_hints: list[str] | None = None,
                   log=None, source_text: str = "",
-                  avoid: list[str] | None = None) -> PlatformDraft:
+                  avoid: list[str] | None = None,
+                  library_context: list[dict] | None = None,
+                  image_notes: str | None = None) -> PlatformDraft:
     dna = dna_lib.load_dna(code)
     with _stage(log, f"平台:{code}:策略") as r:
         brief = run_brief(code, dna, mat, tone_override, template, creator_profile, retrospect_hints)
@@ -627,7 +744,8 @@ def _generate_one(code: str, mat: StructuredMaterial, tone_override: str | None,
     with _stage(log, f"平台:{code}:成稿") as r:
         draft, gate_soft = run_draft(code, dna, mat, brief, template=template,
                                      creator_profile=creator_profile,
-                                     retrospect_hints=retrospect_hints, avoid=avoid)
+                                     retrospect_hints=retrospect_hints, avoid=avoid,
+                                     library_context=library_context)
         r.done("成稿完成" if not gate_soft else f"成稿完成（{len(gate_soft)} 项软提醒）")
     with _stage(log, f"平台:{code}:质检") as r:
         qa = run_qa(dna, draft, mat, source_text)
@@ -722,6 +840,44 @@ def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
         with _stage(log, "续跑") as r:
             r.done(f"跳过 {len(skipped)} 个已完成平台 {skipped}；只跑 {len(todo)} 个 {todo}")
 
+    # ---- 视频素材：抽 3 帧 → 视觉观察（video-frame-understanding 的延伸）----
+    # 为什么抽帧而不是把整段视频给模型：模型只吃图片 ✓，而且 3 帧足够判断
+    # "什么人在什么场景讲什么" ✓ —— 全片每帧都看是浪费（也不改变产出 ✗）。
+    video_notes = None
+    if req.source_video:
+        try:
+            from ..pipeline import frames as _fr, vision as _vis
+            _dir = Path(req.events_path).parent / "gen-frames" if req.events_path else None
+            _dir = _dir or Path(tempfile.mkdtemp(prefix="gen-frames-"))
+            _total = _fr.duration_sec(req.source_video)
+            _pts = [_total * r for r in (0.15, 0.5, 0.85)]      # 头 / 中 / 尾
+            _frames = _fr.extract_at(req.source_video, _dir, _pts)
+            _descs = _vis.describe_frames(_frames)
+            _lines = [f"第{i+1}帧（{d['t_sec']:.1f}s）：{d['desc']}"
+                      for i, d in enumerate(_descs) if d.get("desc")]
+            if _lines:
+                video_notes = "\n".join(_lines)
+            logger.info("视频素材观察：%d/%d 帧有描述", len(_lines), len(_frames))
+        except Exception as e:  # noqa: BLE001 — 观察失败不阻断生成 ✓
+            logger.warning("视频素材观察失败（继续生成）：%s", e)
+
+    # ---- 图片素材：生成前单独做一次视觉观察（image-as-material-source）----
+    image_notes = None
+    if req.source_image:
+        try:
+            from ..pipeline import vision as _vis
+            # 走 describe_frames 而不是 describe_frame：它自带**空正文/断连重试** ✓
+            _shot = _vis.describe_frames([{"t_sec": 0, "path": req.source_image}])
+            if _shot and _shot[0].get("desc"):
+                image_notes = _shot[0]["desc"]
+            elif _shot and _shot[0].get("error"):
+                raise RuntimeError(_shot[0]["error"])
+            logger.info("图片素材观察完成：%d 字", len(image_notes or ""))
+        except Exception as e:  # noqa: BLE001 — 观察失败不阻断生成 ✓
+            logger.warning("图片素材观察失败（继续生成）：%s", e)
+    if video_notes and not image_notes:
+        image_notes = video_notes
+
     def _remember(code: str, draft: PlatformDraft) -> None:
         """一个平台一完成就落盘 —— 不等整批返回，否则中断即全丢。"""
         done_by_code[code] = draft
@@ -753,7 +909,9 @@ def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
         """**串行**调用（同一线程，上下文天然继承，不需要绑定）。"""
         return _generate_one(code, structured, req.tone_override, req.template,
                              req.creator_profile, req.retrospect_hints, log, req.raw_text,
-                             avoid=_used_sentences())
+                             avoid=_used_sentences(),
+                             library_context=(req.library_context or None),
+                             image_notes=image_notes)
 
     def _bound(code: str):
         """**并行**用：在调用方线程把上下文绑好，返回可在子线程执行的可调用。
@@ -767,7 +925,8 @@ def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
         return trace.bind_in_context(_generate_one, code, structured,
                                      req.tone_override, req.template,
                                      req.creator_profile, req.retrospect_hints, log,
-                                     req.raw_text, None)
+                                     req.raw_text, None,
+                                     image_notes=image_notes)
 
     def _record_failure(code: str, exc: Exception) -> None:
         """单平台失败不致命：记录原因后继续，已完成平台的产物必须交付。"""
@@ -800,6 +959,15 @@ def generate(req: GenerateRequest) -> tuple[dict, list[PlatformDraft], bool]:
 
     # 按请求顺序返回**完整**集合（已完成 + 本次新跑）——调用方分不出续跑与一次跑完
     results = [done_by_code[c] for c in req.platforms if c in done_by_code]
+
+    # ---- 可追溯：参考了哪几条（openspec: library-context-generation）----
+    # 用户勾了"关联素材库"，就必须能看见它到底拿谁当参考了 —— 否则无法解释两次产出的差异 ✗
+    if req.library_context:
+        refs = "、".join(f"#{r.get('id')} {str(r.get('title') or '')[:14]}"
+                        for r in req.library_context[:3])
+        msg = f"【参考素材】{refs}（仅借鉴角度；事实仍来自本次素材）"
+        results = [d.model_copy(update={"qa": d.qa.model_copy(
+            update={"warnings": list(d.qa.warnings) + [msg]})}) for d in results]
 
     # ---- 跨平台差异化检查（openspec: platform-differentiation）----
     # 只在**多平台**时做（单篇没有可比对象，不制造无谓的改写 ✗）。

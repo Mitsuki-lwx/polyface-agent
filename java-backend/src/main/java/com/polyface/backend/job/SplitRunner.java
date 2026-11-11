@@ -236,10 +236,14 @@ public class SplitRunner {
                 String core = item.path("core_message").asText("");
                 String angle = item.path("angle").asText("");
                 String format = item.path("format").asText("");
+                // 子素材的关键词：用拆分自己产出的；模型没给就**继承父素材**（同一主题的子集）
+                String childTags = item.path("keywords").isArray() && item.path("keywords").size() > 0
+                        ? item.path("keywords").toString()
+                        : m.tagsJson();
                 long childId = store.insertChildMaterial(
                         m.rawText(), title.isBlank() ? core : title, core,
                         m.tone(), m.audience(), item.path("facts").toString(),
-                        materialId, angle, format);
+                        materialId, angle, format, childTags);
                 ObjectNode one = items.addObject();
                 one.put("id", childId);
                 one.put("angle", angle);

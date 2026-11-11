@@ -124,6 +124,16 @@ class GenerateRequest(BaseModel):
     # 传入时**跳过理解阶段**（省一次 LLM 调用，且保证「所见即所用」）
     confirmed_facts: StructuredMaterial | None = Field(
         default=None, description="已确认事实(core_message/tone/audience/facts)；有则跳过 understand")
+    # 关联本地素材库（openspec: library-context-generation）——
+    # 只在用户**勾选**时出现；每条 {id,title,snippet,keywords}，最多 3 条。
+    # 用途：借鉴**角度与表达**；事实**仍只能来自本次素材** ✗（prompt 里写死）。
+    library_context: list[dict] = Field(default_factory=list, description="参考素材(仅借鉴角度)")
+    # 图片素材（image-as-material-source）：原图路径。生成前会**单独**做一次视觉观察，
+    # 产出"画面观察"提示模型；**它不进事实清单** ✗（事实必须来自素材正文/已确认事实）。
+    source_image: str | None = Field(None, description="素材原图路径（图片素材才有）")
+    # 视频素材（video-frame-understanding 的延伸）：生成前抽 3 帧做一次画面观察，
+    # 与图片素材同样**只作参考**（事实仍以素材正文/已确认事实为准 ✗）
+    source_video: str | None = Field(None, description="素材原视频路径（视频素材才有）")
     # M8 第二片：阶段事件出口。给了就写（带 version 的 JSONL），不给就**什么都不写**（向后兼容）。
     # 用途：Java 侧的任务编排靠读这个文件算进度（见 docs/spec_async_generate.md §5）。
     events_path: str | None = Field(
@@ -171,3 +181,46 @@ class LearnedTemplate(BaseModel):
 class LearnResponse(BaseModel):
     template: LearnedTemplate
     used_mock: bool
+
+
+# ============================================================ 视频关键帧（video-frame-understanding）
+class FramesRequest(BaseModel):
+    """抽关键帧 + 视觉描述。`path` 是本机视频路径（与 /probe、/transcribe 同一约定）。"""
+    path: str = Field(..., description="本机视频文件路径")
+    count: int = Field(8, ge=1, le=20, description="最多抽多少张")
+    describe: bool = Field(True, description="是否送模型做视觉描述（关掉可只抽帧）")
+    # 剪辑联动（roughcut-with-visuals）：给了就**只抽这些时刻**，
+    # 一般是"每一刀保留段的中间点"，这样每段都能看到画面 ✓
+    times: list[float] | None = Field(None, description="指定时刻（秒）；给了就不做场景检测")
+
+
+class FrameItem(BaseModel):
+    t_sec: float = Field(..., description="该帧在视频里的时刻（秒）")
+    quality: dict | None = Field(None, description="技术质量（本地 ffmpeg 算）：blur/yavg/verdict/why")
+    rel_path: str = Field(..., description="帧文件相对 media 根的路径，供剪辑/封面复用")
+    desc: str = Field("", description="视觉描述；为空表示这一帧没拿到（见 error）")
+    error: str | None = Field(None, description="失败原因；**不编造描述** ✗")
+
+
+class FramesResponse(BaseModel):
+    frames: list[FrameItem]
+    video_sec: float = Field(0, description="视频时长")
+    hint: str = Field("", description="给用户的说明（例如：画面变化少，已用等距补足）")
+
+
+class DescribeImageRequest(BaseModel):
+    """图片 → 文本。图片不能当母体（没有文字）✗，但**视觉描述可以** ✓。"""
+    path: str = Field(..., description="本机图片路径")
+    hint: str = Field("", description="额外指示（例如：这是封面，想看构图）")
+
+
+class DescribeImageResponse(BaseModel):
+    text: str = Field("", description="描述文本；为空说明模型没给（见 error）")
+    error: str | None = Field(None, description="失败原因")
+    rel_path: str = Field("", description="图片相对 media 根的路径（若在 media 下）")
+
+
+class ReferenceRequest(BaseModel):
+    """参考视频分析（reference-video-analysis）。`path` 是本机视频路径。"""
+    path: str = Field(..., description="本机视频文件路径")
+    frame_count: int = Field(6, ge=1, le=12, description="抽几帧做画面分析")

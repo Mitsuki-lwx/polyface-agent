@@ -71,3 +71,6 @@ python-service/.venv-kokoro/
 
 # ===== agent tooling artifacts (not project source) =====
 .omp/
+
+# 项目讲解页（用户要求不提交）
+docs/polyface-explained.html

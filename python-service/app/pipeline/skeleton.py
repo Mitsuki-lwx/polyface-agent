@@ -126,7 +126,8 @@ def surface_grounded(surface: str, fact_text: str) -> bool:
 
 # ---------------------------------------------------------------- 单元装配（段/标题共用）
 def _assemble_unit(kind: str, text: str, allowed_idx: set[int], facts: list[Fact],
-                   extra: list[str], hard: list[str]) -> str:
+                   extra: list[str], hard: list[str],
+                   soft: list[str] | None = None) -> str:
     """处理一个文本单元（一段 / 一个标题）：槽位校验+回填，返回回填后的文本。
 
     `allowed_idx`：该单元槽位可引用的事实序号集合（段=其声明；标题=全部）。
@@ -139,16 +140,23 @@ def _assemble_unit(kind: str, text: str, allowed_idx: set[int], facts: list[Fact
         n = int(m.group(1))
         surface = m.group(2).strip()
         where = f"{kind}"
+        # ---- 分级处理（2026-11-09 改）----
+        # 原来只要有一点不完美就**留白** → `{{` 残留 → 整篇丢弃 ✗（实测 1/3 平台死在这）。
+        # 现在：**事实序号存在**的一律回填（真值来自素材，不是幻觉 ✗），
+        # 只把"该段没声明它 / 表层措辞对不上"降级成**软提醒** ✓ —— 让稿子活下来。
         if not (1 <= n <= len(facts)):
+            # 序号确实不存在 → 无法回填，保留硬违规（这是真正的幻觉 ✗）
             hard.append(f"{where} 槽位引用了不存在的事实序号 n={n}（共 {len(facts)} 条）")
-        elif n not in allowed_idx:
-            hard.append(f"{where} 槽位引用 n={n}，但它不在该段声明的事实 {sorted(allowed_idx)} 内")
         elif not surface:
             hard.append(f"{where} 槽位表层为空：{m.group(0)}")
-        elif not surface_grounded(surface, facts[n - 1].text):
-            hard.append(f"{where} 槽位 {m.group(0)} 的表层「{surface}」"
-                        f"在第 {n} 条事实里找不到依据")
         else:
+            if n not in allowed_idx:
+                (soft if soft is not None else hard).append(
+                    f"{where} 槽位引用 n={n}，但未在本段声明 {sorted(allowed_idx)} 内（已回填，证据来自素材）")
+            if not surface_grounded(surface, facts[n - 1].text):
+                (soft if soft is not None else hard).append(
+                    f"{where} 槽位 {m.group(0)} 的表层「{surface}」在第 {n} 条事实里找不到逐字依据"
+                    f"（已回填；数字仍由 G3 复核）")
             out.append(text[pos:m.start()])
             out.append(surface)          # 表层原样回填 —— 表述归模型，依据归代码
             pos = m.end()
@@ -232,7 +240,7 @@ def assemble_skeleton(sk: DraftSkeleton, facts: list[Fact],
             hard.append(f"段{i} 声明了不存在的事实序号 {bad}（共 {len(facts)} 条）")
         facts_used |= legal
 
-        filled = _assemble_unit(f"段{i}", p.text, legal, facts, extra, hard)
+        filled = _assemble_unit(f"段{i}", p.text, legal, facts, extra, hard, soft)
         if "{{" in filled:
             hard.append(f"段{i} 残留未回填的槽位写法（格式不对或未通过校验：检查 {{{{n:序号|表层}}}}）")
         evidence = [facts[n - 1].text for n in sorted(legal)] + extra
@@ -244,7 +252,7 @@ def assemble_skeleton(sk: DraftSkeleton, facts: list[Fact],
     titles: list[str] = []
     title_evidence = [f.text for f in facts] + extra
     for i, t in enumerate(sk.titles[:3], 1):
-        filled = _assemble_unit(f"标题{i}", t, set(range(1, len(facts) + 1)), facts, extra, hard)
+        filled = _assemble_unit(f"标题{i}", t, set(range(1, len(facts) + 1)), facts, extra, hard, soft)
         if "{{" in filled:
             hard.append(f"标题{i} 残留未回填的槽位写法（格式不对或未通过校验）")
         _gate_numbers(f"标题{i}", filled, title_evidence, hard, soft,

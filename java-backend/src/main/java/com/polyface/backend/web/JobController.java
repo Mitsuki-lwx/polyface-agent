@@ -1,5 +1,6 @@
 package com.polyface.backend.web;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -140,8 +141,10 @@ public class JobController {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "素材不存在"));
         List<String> platforms = body.platforms() == null || body.platforms().isEmpty()
                 ? List.of("xhs") : body.platforms();
+        boolean useLibrary = body.params() != null
+                && Boolean.TRUE.equals(body.params().get("use_library"));
         return generate.submit(body.material_id(), platforms, body.template_id(),
-                body.template(), body.tone_override());
+                body.template(), body.tone_override(), useLibrary);
     }
 
     /**
@@ -346,8 +349,13 @@ public class JobController {
      * <p>为什么必须新建：原任务记录的是"上次跑了什么、结果如何" —— 就地改它，
      * 那段历史就查不到了（`docs/checklist_async_generate.md` §5）。
      */
+    /** 重试请求体：`platforms` 为空 = 重试全部失败平台（保持旧行为）。 */
+    public record RetryBody(List<String> platforms) {
+    }
+
     @PostMapping(value = "/api/jobs/{id}/retry", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ObjectNode retry(@PathVariable long id) {
+    public ObjectNode retry(@PathVariable long id,
+                            @RequestBody(required = false) RetryBody body) {
         Store.JobRow j = store.getJob(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "任务不存在"));
         if (!KIND_GENERATE.equals(j.kind())) {
@@ -364,12 +372,16 @@ public class JobController {
         if (failed.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "这个任务没有失败的平台");
         }
+        // 单平台重试：界面里点某个失败格只重跑它，不连带其它失败平台（省钱也省时间）
+        failed = retryTargets(failed, body == null ? null : body.platforms());
         ObjectNode params = readJson(j.paramsJson());
         long materialId = params.path("material_id").asLong(0);
         Long templateId = params.has("template_id") ? params.path("template_id").asLong() : null;
         String tone = params.path("tone_override").asText(null);
         JsonNode inlineTpl = params.has("template") ? params.path("template") : null;
-        long newId = generate.submit(materialId, failed, templateId, inlineTpl, tone);
+        // 重试沿用原任务的 use_library ✓（用户勾过的决定不该被静默丢掉）
+        long newId = generate.submit(materialId, failed, templateId, inlineTpl, tone,
+                params.path("use_library").asBoolean(false));
 
         ObjectNode out = mapper.createObjectNode();
         out.put("job_id", newId);
@@ -377,6 +389,24 @@ public class JobController {
         ArrayNode arr = out.putArray("platforms");
         failed.forEach(arr::add);
         return out;
+    }
+
+    /**
+     * 单平台重试的目标：**只允许失败列表里的平台**。
+     *
+     * <p>为什么单独抽出来并单测：传错一个平台名就会重跑一个**已经成功**的平台，
+     * 用户白花一次额度，而且从结果上看不出异常（稿子被覆盖成新版）。
+     */
+    static List<String> retryTargets(List<String> failed, List<String> want) {
+        if (want == null || want.isEmpty()) {
+            return failed;                     // 不传 = 全部失败平台（旧行为）
+        }
+        List<String> pick = want.stream().filter(failed::contains).distinct().toList();
+        if (pick.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "指定的平台不在失败列表里：" + want);
+        }
+        return pick;
     }
 
     /** 从任务结果里取出失败的平台列表。 */
@@ -520,6 +550,24 @@ public class JobController {
             ObjectNode params = readJson(j.paramsJson());
             n.put("material_id", params.path("material_id").asLong(0));
             n.set("platforms", params.path("platforms"));
+            // 平台级状态：让界面**边跑边显示已完成的平台**，不用等整批结束。
+            // 来源是 Java 自己写的「平台」事件（fields.platform + start/end/fail）。
+            ArrayNode states = n.putArray("platform_states");
+            java.util.Map<String, JobProgress.PlatformState> seen = JobProgress.readPlatforms(
+                    j.eventsPath() == null ? null : Path.of(j.eventsPath()));
+            params.path("platforms").forEach(code -> {
+                String c = code.asText("");
+                if (c.isBlank()) {
+                    return;
+                }
+                ObjectNode x = states.addObject();
+                JobProgress.PlatformState st = seen.get(c);
+                x.put("code", c);
+                x.put("state", st == null ? JobProgress.PENDING : st.state());
+                if (st != null && st.error() != null && !st.error().isBlank()) {
+                    x.put("error", st.error());
+                }
+            });
             store.getMaterial(params.path("material_id").asLong(0))
                     .ifPresent(m -> n.put("input_name", m.title() == null ? m.coreMessage() : m.title()));
         }
@@ -620,5 +668,50 @@ public class JobController {
         } catch (Exception e) {
             return mapper.createObjectNode();
         }
+    }
+
+    /** 粗剪的保留段（剪辑联动）：给界面算"每一刀取哪一帧"用 ✓。 */
+    @GetMapping(value = "/api/jobs/{id}/cuts", produces = MediaType.APPLICATION_JSON_VALUE)
+    public JsonNode jobCuts(@PathVariable long id) {
+        var job = store.getJob(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "任务不存在"));
+        Path cutsFile = Path.of(job.workdir() == null ? "" : job.workdir())
+                .resolve("work").resolve("cuts.json");
+        ObjectNode out = mapper.createObjectNode();
+        out.put("job_id", id);
+        // 抽帧需要原始视频路径 —— 一并给出，界面不用再查一次 ✓
+        if (job.inputPath() != null) {
+            out.put("input_path", job.inputPath());
+        }
+        if (!Files.isRegularFile(cutsFile)) {
+            // 任务还没跑完、或不是粗剪 —— 不编数据 ✗
+            out.put("ready", false);
+            return out;
+        }
+        try {
+            JsonNode data = mapper.readTree(cutsFile.toFile());
+            out.put("ready", true);
+            out.put("total", data.path("before").asDouble(0));
+            ArrayNode segs = out.putArray("segments");
+            for (JsonNode seg : data.path("segments")) {
+                double s0 = seg.path("start").asDouble();
+                double e0 = seg.path("end").asDouble();
+                ObjectNode n = segs.addObject();
+                n.put("start", round3(s0));
+                n.put("end", round3(e0));
+                // 中间点就是抽帧位置 —— 切点两侧有气口，中间最不容易切到糊帧 ✓
+                n.put("mid", round3((s0 + e0) / 2));
+                n.put("text", seg.path("text").asText(""));
+            }
+            return out;
+        } catch (Exception e) {
+            out.put("ready", false);
+            out.put("error", "cuts.json 读不出来：" + e.getMessage());
+            return out;
+        }
+    }
+
+    private static double round3(double v) {
+        return Math.round(v * 1000d) / 1000d;
     }
 }

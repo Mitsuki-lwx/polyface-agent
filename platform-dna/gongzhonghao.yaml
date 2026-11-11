@@ -122,5 +122,5 @@ verify:
 # 供跨平台差异化检查（openspec: platform-differentiation）使用：
 # 篇幅按平台分配，且禁止"长文平台反而最短"（跨篇约束见 diffcheck.inversion_issue）。
 body_chars:
-  min: 800
+  min: 1200
   max: 3000

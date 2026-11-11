@@ -126,6 +126,39 @@ public class PythonClient {
     }
 
     /** 音视频 → 文字（FR-51）：字幕优先，ASR 可选，失败降级 needs_manual。 */
+    /** 参考视频分析（reference-video-analysis）：别人的视频 → 结构/节奏/钩子。 */
+    public JsonNode analyzeReference(String path, int frameCount) {
+        ObjectNode body = mapper.createObjectNode();
+        body.put("path", path);
+        body.put("frame_count", frameCount);
+        return post(genClient, "/analyze-reference", body);
+    }
+
+    /** 图片 → 描述文本（图片当素材母体：没有文字，但描述有）。 */
+    public JsonNode describeImage(String path, String hint) {
+        ObjectNode body = mapper.createObjectNode();
+        body.put("path", path);
+        if (hint != null && !hint.isBlank()) {
+            body.put("hint", hint);
+        }
+        return post(genClient, "/describe-image", body);
+    }
+
+    /** 抽关键帧 + 视觉描述（video-frame-understanding）。走长超时：每帧一次视觉调用。 */
+    public JsonNode frames(String path, int count, boolean describe,
+                           java.util.List<Double> times) {
+        ObjectNode body = mapper.createObjectNode();
+        body.put("path", path);
+        body.put("count", count);
+        body.put("describe", describe);
+        // 剪辑联动：只抽这些时刻（每一刀保留段的中间点）✓
+        if (times != null && !times.isEmpty()) {
+            var arr = body.putArray("times");
+            times.forEach(arr::add);
+        }
+        return post(genClient, "/frames", body);
+    }
+
     public JsonNode transcribe(String path, String mode) {
         ObjectNode body = mapper.createObjectNode();
         body.put("path", path);

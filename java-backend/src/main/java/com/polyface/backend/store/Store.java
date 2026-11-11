@@ -31,7 +31,11 @@ public class Store {
                               String factsJson, String createdAt,
                               boolean factsConfirmed, String factsConfirmedAt,
                               /** 素材拆分：从哪个父素材拆出来的；普通素材为 null */
-                              Long parentId, String angle, String format) {
+                              Long parentId, String angle, String format,
+                              /** 关键词 JSON 数组；历史素材为 "[]" */
+                              String tagsJson,
+                              /** 图片素材的原图路径（相对 media 根）；非图片为 null */
+                              String imagePath) {
     }
 
     public record DraftRow(long id, long materialId, String platformCode, String platformName,
@@ -129,7 +133,12 @@ public class Store {
                         + "raw_text TEXT NOT NULL, source_kind TEXT, title TEXT,"
                         + "core_message TEXT, tone TEXT, audience TEXT, facts_json TEXT, created_at TEXT,"
                         // 素材拆分（docs/spec_split.md）：从哪个父素材拆的 + 这一条的选题角度/形态
-                        + "parent_id INTEGER, angle TEXT, format TEXT)",
+                        + "parent_id INTEGER, angle TEXT, format TEXT,"
+                        // 关键词索引（openspec: material-keywords-and-search）
+                        // 与 asset.tags_json 同一形态：JSON 数组字符串，省得再造种表示法 ✗
+                        + "tags_json TEXT DEFAULT '[]',"
+                        // 图片素材（image-as-material-source）：原图相对 media 根的路径；非图片素材为 NULL
+                        + "image_path TEXT)",
                 "CREATE TABLE IF NOT EXISTS draft ("
                         + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
                         + "material_id INTEGER NOT NULL, platform_code TEXT NOT NULL, platform_name TEXT,"
@@ -306,6 +315,10 @@ public class Store {
         addColumnIfMissing(c, "material", "facts_confirmed", "INTEGER DEFAULT 0");
         addColumnIfMissing(c, "material", "facts_confirmed_at", "TEXT");
         addColumnIfMissing(c, "draft", "edited_at", "TEXT");
+        // 素材关键词（openspec: material-keywords-and-search）。历史素材为 '[]' ——
+        // 空索引就是空索引，不猜 ✗（猜出来的词比没有更坏）。
+        addColumnIfMissing(c, "material", "tags_json", "TEXT DEFAULT '[]'");
+        addColumnIfMissing(c, "material", "image_path", "TEXT");
     }
 
     /** 幂等加列助手：集中 PRAGMA 检查，避免重复样板代码。 */
@@ -367,6 +380,131 @@ public class Store {
         }
     }
 
+    /** 写入图片素材的原图路径（image-as-material-source）。 */
+    public void updateMaterialImage(long id, String imagePath) {
+        try (Connection c = open(); PreparedStatement ps =
+                     c.prepareStatement("UPDATE material SET image_path=? WHERE id=?")) {
+            ps.setString(1, imagePath);
+            ps.setLong(2, id);
+            ps.executeUpdate();
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("updateMaterialImage failed", e);
+        }
+    }
+
+    /** 写入关键词（JSON 数组字符串）。空列表也要写成 "[]"，不要写成 null ✗。 */
+    public void updateMaterialTags(long id, String tagsJson) {
+        String sql = "UPDATE material SET tags_json=? WHERE id=?";
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, (tagsJson == null || tagsJson.isBlank()) ? "[]" : tagsJson);
+            ps.setLong(2, id);
+            ps.executeUpdate();
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("updateMaterialTags failed", e);
+        }
+    }
+
+    /**
+     * 素材检索：关键词（交集）+ 全文（子串），两档可叠加。
+     *
+     * <p>为什么用 `LIKE` 而不是 FTS5：**实测**（`SqliteFts5CapabilityTest`）默认分词器把整句
+     * 当一个 token、`trigram` 又要求查询 ≥3 字 —— 而中文最常搜的是两字词（复用/周报）✗。
+     * 一万条素材的全表扫描只有几 MB，性能差异可忽略 ✓。
+     *
+     * @param q    全文关键词（匹配 title / raw_text / core_message），空则不筛
+     * @param tags 关键词交集；每个都要在 tags_json 里出现，空则不过滤
+     */
+    public List<MaterialRow> searchMaterials(String q, List<String> tags) {
+        StringBuilder sql = new StringBuilder("SELECT * FROM material WHERE 1=1");
+        List<String> args = new ArrayList<>();
+        if (q != null && !q.isBlank()) {
+            String like = "%" + q.trim() + "%";
+            sql.append(" AND (title LIKE ? OR raw_text LIKE ? OR core_message LIKE ?)");
+            args.add(like); args.add(like); args.add(like);
+        }
+        for (String tag : tags == null ? List.<String>of() : tags) {
+            if (tag == null || tag.isBlank()) {
+                continue;
+            }
+            // 关键词存在 JSON 数组里：用带引号的子串匹配，避免 "AI" 命中 "AIGC" ✗
+            sql.append(" AND tags_json LIKE ?");
+            args.add("%\"" + tag.trim() + "\"%");
+        }
+        sql.append(" ORDER BY id DESC");
+        List<MaterialRow> out = new ArrayList<>();
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql.toString())) {
+            for (int i = 0; i < args.size(); i++) {
+                ps.setString(i + 1, args.get(i));
+            }
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(mapMaterial(rs));
+                }
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("searchMaterials failed", e);
+        }
+        return out;
+    }
+
+    /**
+     * 与某条素材"相关"的历史素材（openspec: library-context-generation）。
+     *
+     * <p>**排除自身与子素材**（同一篇拆出来的不算历史 ✗），按**命中关键词数**排序，
+     * 取前 `limit` 条。命中数在 Java 侧算 —— 候选量很小（几个关键词的 OR），
+     * 用 SQL 做多字段计数只会更难读 ✗。
+     */
+    public List<MaterialRow> relatedMaterials(long excludeId, List<String> tags, int limit) {
+        List<String> clean = new ArrayList<>();
+        for (String t : tags == null ? List.<String>of() : tags) {
+            if (t != null && !t.isBlank()) {
+                clean.add(t.trim());
+            }
+        }
+        if (clean.isEmpty() || limit <= 0) {
+            return List.of();
+        }
+        StringBuilder sql = new StringBuilder("SELECT * FROM material WHERE id <> ? AND parent_id IS NULL AND (");
+        List<String> args = new ArrayList<>();
+        args.add(String.valueOf(excludeId));
+        for (int i = 0; i < clean.size(); i++) {
+            if (i > 0) {
+                sql.append(" OR ");
+            }
+            sql.append("tags_json LIKE ?");
+            args.add("%\"" + clean.get(i) + "\"%");
+        }
+        sql.append(") ORDER BY id DESC LIMIT 200");   // 先粗筛，再在内存里按命中数排序
+        List<MaterialRow> candidates = new ArrayList<>();
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql.toString())) {
+            for (int i = 0; i < args.size(); i++) {
+                ps.setString(i + 1, args.get(i));
+            }
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    candidates.add(mapMaterial(rs));
+                }
+            }
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException("relatedMaterials failed", e);
+        }
+        candidates.sort((a, b) -> Integer.compare(score(b.tagsJson(), clean), score(a.tagsJson(), clean)));
+        return candidates.size() > limit ? candidates.subList(0, limit) : candidates;
+    }
+
+    private static int score(String tagsJson, List<String> tags) {
+        if (tagsJson == null) {
+            return 0;
+        }
+        int n = 0;
+        for (String t : tags) {
+            if (tagsJson.contains("\"" + t + "\"")) {
+                n++;
+            }
+        }
+        return n;
+    }
+
     public List<MaterialRow> listMaterials() {
         String sql = "SELECT * FROM material ORDER BY id DESC";   // 同上：别用显式列名
         List<MaterialRow> out = new ArrayList<>();
@@ -386,7 +524,8 @@ public class Store {
                 rs.getString("title"), rs.getString("core_message"), rs.getString("tone"),
                 rs.getString("audience"), rs.getString("facts_json"), rs.getString("created_at"),
                 rs.getInt("facts_confirmed") == 1, rs.getString("facts_confirmed_at"),
-                readLongOrNull(rs, "parent_id"), rs.getString("angle"), rs.getString("format"));
+                readLongOrNull(rs, "parent_id"), rs.getString("angle"), rs.getString("format"),
+                rs.getString("tags_json"), rs.getString("image_path"));
     }
 
     /**
@@ -397,13 +536,14 @@ public class Store {
      */
     public long insertChildMaterial(String rawText, String title, String coreMessage,
                                     String tone, String audience, String factsJson,
-                                    long parentId, String angle, String format) {
+                                    long parentId, String angle, String format,
+                                    String tagsJson) {
         String sql = "INSERT INTO material(raw_text, source_kind, title, core_message, tone, "
                 + "audience, facts_json, created_at, parent_id, angle, format, "
                 // **子素材的事实是"已确认"的**：它们逐条来自父素材已确认的事实（拆分时校验过）。
                 // 不标的话，生成时会拿全文**重新理解一遍** —— 那会把"这个角度精选的那几条"丢掉，
                 // 等于拆分的意义没了（实测踩到：子素材只留了 3 条事实，出的稿却引用了父素材的 6 条）。
-                + "facts_confirmed, facts_confirmed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?)";
+                + "facts_confirmed, facts_confirmed_at, tags_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,?)";
         try (Connection c = open();
              PreparedStatement ps = c.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
             ps.setString(1, rawText); ps.setString(2, "split"); ps.setString(3, title);
@@ -411,6 +551,7 @@ public class Store {
             ps.setString(7, factsJson); ps.setString(8, LocalDateTime.now().toString());
             ps.setLong(9, parentId); ps.setString(10, angle); ps.setString(11, format);
             ps.setString(12, LocalDateTime.now().toString());
+            ps.setString(13, (tagsJson == null || tagsJson.isBlank()) ? "[]" : tagsJson);
             ps.executeUpdate();
             try (ResultSet rs = ps.getGeneratedKeys()) {
                 return rs.next() ? rs.getLong(1) : -1L;
@@ -1154,6 +1295,8 @@ public class Store {
     public static final String JOB_RUNNING = "running";
     public static final String JOB_SUCCEEDED = "succeeded";
     public static final String JOB_FAILED = "failed";
+    /** 跑完了、但**没有产出**（例如素材里没有足够长的停顿，无需粗剪）。不是错误 ✗ */
+    public static final String JOB_SKIPPED = "skipped";
     public static final String JOB_CANCELED = "canceled";
     /**
      * **部分失败**：多平台任务里有的成了、有的没成。

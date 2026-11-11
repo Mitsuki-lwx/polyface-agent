@@ -77,6 +77,10 @@ def _http_err(msg: str, status: int | None = None) -> Exception:
     (_http_err("429 insufficient_quota"), llm.QuotaExhausted),
     (_http_err("model route not found"), llm.QuotaExhausted),
     (_http_err("model is not found"), llm.QuotaExhausted),
+    # 实测报文（2026-11-10，Langfuse 里抓到）：余额耗尽应该是"换模型"，不是重试
+    (_http_err("402 - {'error': {'code': 'insufficient_credits', 'message': 'Insufficient balance'}}",
+               status=402), llm.QuotaExhausted),
+    (_http_err("Error code: 402 - insufficient_credits"), llm.QuotaExhausted),
     (_http_err("upstream exploded", status=503), llm.LLMNetworkError),
 ])
 def test_classify_buckets(exc, expect):
@@ -100,13 +104,29 @@ def test_retryable_flags_match_the_policy():
 
 # ---------------------------------------------------------------- A. 退避
 
-def test_backoff_series_is_capped_at_8s_plus_jitter():
-    """A6：`min(2^n, 8) + jitter`。抖动在 [0, 0.5)，所以每一档是一个区间。"""
+def test_backoff_series_is_capped_by_config_plus_jitter(monkeypatch):
+    """A6：`min(2^n, cap) + jitter`，cap 可配（2026-11-10 从 8 提到 15）。
+
+    为什么要测 cap：连接错误实测 5~9%，8 秒顶不住网关抖动。
+    """
+    _settings(monkeypatch, llm_backoff_cap_sec=15)
     for n in range(0, 6):
-        base = min(2 ** n, 8)
+        base = min(2 ** n, 15)
         for _ in range(20):
             v = llm.backoff_seconds(n)
             assert base <= v < base + 0.5, f"第 {n} 档应为 [{base}, {base + 0.5})，实际 {v}"
+
+    _settings(monkeypatch, llm_backoff_cap_sec=2)          # 配置能改，行为跟着变
+    for _ in range(10):
+        assert 2 <= llm.backoff_seconds(5) < 2.5
+
+
+def test_draft_gets_a_longer_timeout(monkeypatch):
+    """draft 实测 p95 210s —— 用全局 240s 一次慢调用就顶边。"""
+    _settings(monkeypatch, llm_timeout_sec=240, llm_timeout_draft_sec=300)
+    assert llm.timeout_for_scene("draft") == 300.0
+    assert llm.timeout_for_scene("generate:xhs") == 240.0
+    assert llm.timeout_for_scene("") == 240.0
 
 
 # ---------------------------------------------------------------- A. 重试上限 / 换模型

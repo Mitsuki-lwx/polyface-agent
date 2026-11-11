@@ -124,6 +124,16 @@ def count_headings(text: str) -> int:
     return len(_HEADING_RE.findall(text or ""))
 
 
+# 只认"明确说明"，不认顺带一提 —— 「用 AI 写周报」不算标注 ✗
+_AI_DISCLOSURE_RE = re.compile(
+    r"(AI\s*(辅助|生成|参与|协助|工具)|由\s*AI|使用\s*AI\s*(辅助|协助)|部分内容由\s*AI)")
+
+
+def mentions_ai_disclosure(text: str) -> bool:
+    """成稿里是否**明确标注**了 AI 辅助创作。"""
+    return bool(_AI_DISCLOSURE_RE.search(text or ""))
+
+
 def opens_with_conclusion(text: str, max_chars: int = 60) -> bool:
     """首句是否"结论先行"（知乎体）：够短、且不以铺垫词开头。"""
     ss = sentences(text or "", min_len=1)
@@ -141,9 +151,10 @@ _PLATFORM_ALIASES: dict[str, str] = {
 
 # 平台必备项（阈值来自 spec，允许后续在 DNA 里覆盖）
 PLATFORM_REQUIREMENTS: dict[str, dict] = {
-    "xhs": {"min_tags": 5},
+    # 小红书社区公约 2.0（2026-01）明确要求 AI 辅助创作主动标明 —— 作者评审也点了这条 ✗
+    "xhs": {"min_tags": 5, "require_ai_disclosure": True},
     "gzh": {"min_headings": 3},
-    "zhihu": {"conclusion_first": True},
+    "zhihu": {"conclusion_first": True, "min_headings": 3},
 }
 
 
@@ -159,7 +170,11 @@ def format_issues(code: str, text: str, tags: list[str] | None = None) -> list[s
     if "min_headings" in req:
         n = count_headings(text)
         if n < req["min_headings"]:
-            issues.append(f"公众号分段小标题只有 {n} 个，至少需要 {req['min_headings']} 个")
+            # 平台名不能写死成"公众号"——知乎现在也要小标题 ✗（实测报错过）
+            _label = {"gzh": "公众号", "zhihu": "知乎"}.get(code, code)
+            issues.append(f"{_label}分段小标题只有 {n} 个，至少需要 {req['min_headings']} 个")
+    if req.get("require_ai_disclosure") and not mentions_ai_disclosure(text):
+        issues.append("小红书未标注 AI 辅助创作（社区公约 2.0 要求）")
     if req.get("conclusion_first") and not opens_with_conclusion(text):
         issues.append("知乎首句不是结论先行（开头 60 字内没给结论，或以铺垫词开头）")
     return issues
@@ -206,7 +221,8 @@ def inversion_issue(long_code: str, long_chars: int, short_code: str, short_char
 
 def evaluate(drafts: dict[str, str], codes: dict[str, list[str]] | None = None,
              max_overlap: float = 0.10, length_ratio: float = 1.5,
-             required_overlap: float | None = None) -> dict:
+             required_overlap: float | None = None,
+             source_text: str | None = None) -> dict:
     """对一批成稿做**整批**评估，返回可直接放进响应的 dict。
 
     `drafts`: `{platform_code: body_text}`
@@ -215,10 +231,24 @@ def evaluate(drafts: dict[str, str], codes: dict[str, list[str]] | None = None,
     if required_overlap is not None:
         length_ratio = required_overlap
     codes = codes or {}
+    # 素材原句排除：模型保留作者自己的金句不该算"偷懒" ✗
+    # ⚠️ 必须用**子串**判定，不能逐字相等：
+    # 素材是「记住：内容复用不是偷懒，…」，稿子里常被剪成「内容复用不是偷懒，…」✗
+    # 逐字相等会漏掉这种"掐头去尾复用素材金句"的情形（2026-11-08 实测踩到）。
+    _src_blob = normalize(source_text or "")
+
+    def _own(text: str) -> str:
+        if not _src_blob:
+            return text
+        return "\n".join(x for x in sentences(text) if normalize(x) not in _src_blob)
+
+    own = {k: _own(v) for k, v in drafts.items()}
+    excluded = sum(len(sentences(v)) - len(sentences(own[k])) for k, v in drafts.items())
     result: dict = {
-        "overlap": pairwise_overlaps(drafts),
-        "overlap_sentences": pairwise_overlap_sentences(drafts),
-        "shared_by_all": shared_by_all(drafts),
+        "overlap": pairwise_overlaps(own),
+        "overlap_sentences": pairwise_overlap_sentences(own),
+        "shared_by_all": shared_by_all(own),
+        "excluded_from_source": excluded,
         "length": {k: body_chars(v) for k, v in drafts.items()},
         "issues": [],
         "platform_issues": {k: [] for k in drafts},

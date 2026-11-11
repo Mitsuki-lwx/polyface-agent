@@ -200,4 +200,61 @@ public class IngestController {
         int dot = filename.lastIndexOf('.');
         return dot < 0 ? "" : filename.substring(dot + 1).toLowerCase();
     }
+
+    /** 视频关键帧（video-frame-understanding）：抽帧 + 视觉描述。 */
+    @PostMapping(value = "/api/frames", produces = MediaType.APPLICATION_JSON_VALUE)
+    public JsonNode frames(@RequestBody FramesBody body) {
+        int count = body.count() == null ? 6 : Math.max(1, Math.min(20, body.count()));
+        boolean describe = body.describe() == null || body.describe();
+        return python.frames(body.path(), count, describe, body.times());
+    }
+
+    /** `times` 非空时只抽这些时刻（剪辑联动用）。 */
+    public record FramesBody(String path, Integer count, Boolean describe,
+                             java.util.List<Double> times) {
+    }
+
+    /** 图片 → 描述文本：图片没有文字，但视觉描述可以当素材母体 ✓ */
+    @PostMapping(value = "/api/describe-image", produces = MediaType.APPLICATION_JSON_VALUE)
+    public JsonNode describeImage(@RequestBody DescribeImageBody body) {
+        return python.describeImage(body.path(), body.hint());
+    }
+
+    public record DescribeImageBody(String path, String hint) {
+    }
+
+    /** 参考视频分析：只读、不落库 ✓ */
+    @PostMapping(value = "/api/reference/analyze", produces = MediaType.APPLICATION_JSON_VALUE)
+    public JsonNode analyzeReference(@RequestBody ReferenceBody body) {
+        int n = body.frame_count() == null ? 6 : Math.max(1, Math.min(12, body.frame_count()));
+        return python.analyzeReference(body.path(), n);
+    }
+
+    public record ReferenceBody(String path, Integer frame_count) {
+    }
+
+    /** 参考视频分析（按**资产 id**）：给界面用 —— 前端只知道资产，不知道绝对路径。 */
+    @PostMapping(value = "/api/reference/analyze-asset", produces = MediaType.APPLICATION_JSON_VALUE)
+    public JsonNode analyzeReferenceAsset(@RequestBody ReferenceAssetBody body) {
+        if (body == null || body.asset_id() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "缺少 asset_id");
+        }
+        var asset = assetService.get(body.asset_id())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "资产不存在"));
+        if (!"video".equals(asset.kind())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "只有视频资产可以分析");
+        }
+        Path p = mediaDir.resolve(asset.relPath()).normalize();
+        if (!p.startsWith(mediaDir)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "非法的媒体路径");
+        }
+        if (!Files.isRegularFile(p)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "资产文件不在磁盘上");
+        }
+        int n = body.frame_count() == null ? 6 : Math.max(1, Math.min(12, body.frame_count()));
+        return python.analyzeReference(p.toString(), n);
+    }
+
+    public record ReferenceAssetBody(Long asset_id, Integer frame_count) {
+    }
 }

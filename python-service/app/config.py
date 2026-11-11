@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = "sensenova-6.8-flash-lite"
     llm_qa_model: str = "sensenova-6.8-flash-lite"
+    # `draft` 单独指定模型（空 = 跟随 llm_model）。
+    # 存在的理由：draft 实测平均 103s / p95 210s，大半是思考 token ——
+    # 需要一个**不改代码就能换模型做 A/B** 的旋钮（去掉思考型模型很可能是最快的提速）。
+    llm_draft_model: str = ""
+    # 骨架拆步（docs/79）：提纲 → 逐段写。默认关 —— 没经过评测集验证前不动线上行为。
+    llm_draft_split: bool = False
+    # 拆步时段间并行数（与平台并行相乘，别开太大：上游 tpm/rpm 紧）
+    llm_draft_section_workers: int = 2
     # true=mock 离线模式（无 Key 也可跑）；false=走真实模型（需 llm_api_key）
     llm_mock: bool = True
 
@@ -43,7 +51,12 @@ class Settings(BaseSettings):
     # 单次请求超时（秒）
     llm_timeout_sec: int = 60
     # 单模型最大尝试次数（含首次）
-    llm_max_attempts: int = 3
+    # 2026-11-10 从 3 提到 5：Langfuse 实测连接错误 5~9%，3 次会连续挂掉（有两次全量测试因此变红）
+    llm_max_attempts: int = 5
+    # 退避上限（秒）。序列 1,2,4,8,15…：网关抖动常在 10s 量级，8s 顶不住
+    llm_backoff_cap_sec: int = 15
+    # `draft` 单独的超时：实测平均 103s / p95 210s，全局 240s 一次慢调用就顶到边
+    llm_timeout_draft_sec: int = 300
     # **JSON 解析失败**的重试次数（在 llm_max_attempts 之外另算，含首次）。
     # 为什么需要：模型偶发返回坏 JSON 是常态（实测冒烟 4 次草稿调用里中 2 次），
     # 而 `chat()` 的重试只管网络/限流 —— 解析发生在它返回**之后**，

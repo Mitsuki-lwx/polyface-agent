@@ -51,13 +51,24 @@ public class MaterialController {
 
     // ---------------- DTO ----------------
     public record CreateMaterialRequest(
-            @NotBlank String raw_text, String source_kind, String title) {
+            @NotBlank String raw_text, String source_kind, String title,
+            /** 关键词（可选）。不传则用解析出来的候选；两者都没有就存 [] ✗ 不猜。 */
+            java.util.List<String> tags,
+            /**
+             * 已解析结果（可选）。前端走「解析 → 确认 → 保存」时带上来，
+             * **跳过重复解析**（否则确认这一步会再调一次模型：多花钱，还可能和用户看到的不一致 ✗）。
+             */
+            JsonNode structured,
+            /** 图片素材的原图路径（image-as-material-source）；非图片不传 ✓ */
+            String image_path) {
     }
 
     public record GenerateRequest(
             @NotEmpty List<String> platforms, String tone_override,
             Long template_id,
-            com.fasterxml.jackson.databind.JsonNode template) {
+            com.fasterxml.jackson.databind.JsonNode template,
+            /** 是否关联本地素材库；不传 = 不关联 ✓ */
+            Boolean use_library) {
     }
 
     @GetMapping(value = "/api/platforms", produces = MediaType.APPLICATION_JSON_VALUE)
@@ -80,9 +91,18 @@ public class MaterialController {
     @PostMapping(value = "/api/materials", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<JsonNode> createMaterial(@Valid @RequestBody CreateMaterialRequest req) {
         try {
-            JsonNode analyzeResp = python.analyze(req.raw_text(), req.source_kind(), req.title());
-            JsonNode structured = analyzeResp.path("structured");
-            boolean mock = analyzeResp.path("used_mock").asBoolean(false);
+            // 前端已经解析过（用户在确认界面改过事实/关键词）→ 直接用它，**不再调模型** ✓
+            JsonNode analyzeResp;
+            JsonNode structured;
+            boolean mock;
+            if (req.structured() != null && req.structured().isObject() && !req.structured().isEmpty()) {
+                structured = req.structured();
+                mock = false;
+            } else {
+                analyzeResp = python.analyze(req.raw_text(), req.source_kind(), req.title());
+                structured = analyzeResp.path("structured");
+                mock = analyzeResp.path("used_mock").asBoolean(false);
+            }
 
             long id = store.insertMaterial(
                     req.raw_text(),
@@ -92,6 +112,16 @@ public class MaterialController {
                     structured.path("tone").asText(""),
                     structured.path("audience").asText(""),
                     structured.path("facts").toString());
+
+            // 关键词：用户确认过的优先；否则用解析产出的候选（可为空 —— 不编造 ✗）
+            List<String> tags = req.tags() != null && !req.tags().isEmpty()
+                    ? req.tags()
+                    : mapper.convertValue(structured.path("keywords"),
+                            mapper.getTypeFactory().constructCollectionType(List.class, String.class));
+            store.updateMaterialTags(id, writeTags(tags));
+            if (req.image_path() != null && !req.image_path().isBlank()) {
+                store.updateMaterialImage(id, req.image_path());
+            }
 
             ObjectNode out = mapper.createObjectNode();
             out.put("id", id);
@@ -105,6 +135,7 @@ public class MaterialController {
             // 事实确认闭环（FR-34）：新素材默认未确认
             out.put("facts_confirmed", false);
             out.putNull("facts_confirmed_at");
+            out.set("tags", readTags(store.getMaterial(id).orElseThrow().tagsJson()));
             log.info("material created id={}", id);
             return ResponseEntity.ok(out);
         } catch (Exception ex) {
@@ -147,10 +178,36 @@ public class MaterialController {
         return out;
     }
 
+    /**
+     * 素材列表 / 检索（openspec: material-keywords-and-search）。
+     *
+     * <p>`q` = 全文子串（标题/正文/核心观点），`tags` = 关键词**交集**（逗号分隔）。
+     * 两者可叠加。用 LIKE 而非 FTS5 的实测理由见 `Store.searchMaterials` 的注释。
+     */
+    /** 解析关键词 JSON；坏数据退化为空数组（**列表页不能因为一条脏数据 500** ✗）。 */
+    private ArrayNode readTags(String tagsJson) {
+        try {
+            JsonNode n = mapper.readTree(tagsJson == null || tagsJson.isBlank() ? "[]" : tagsJson);
+            return n.isArray() ? (ArrayNode) n : mapper.createArrayNode();
+        } catch (Exception e) {
+            log.warn("material.tags_json 解析失败，按空处理: {}", e.toString());
+            return mapper.createArrayNode();
+        }
+    }
+
     @GetMapping(value = "/api/materials", produces = MediaType.APPLICATION_JSON_VALUE)
-    public JsonNode listMaterials() {
+    public JsonNode listMaterials(@RequestParam(required = false) String q,
+                                  @RequestParam(required = false) String tags) {
         ArrayNode out = mapper.createArrayNode();
-        for (Store.MaterialRow m : store.listMaterials()) {
+        List<String> tagList = tags == null || tags.isBlank()
+                ? List.of()
+                : java.util.Arrays.stream(tags.split(","))
+                        .map(String::trim).filter(t -> !t.isEmpty()).toList();
+        boolean filtering = (q != null && !q.isBlank()) || !tagList.isEmpty();
+        List<Store.MaterialRow> rows = filtering
+                ? store.searchMaterials(q, tagList)
+                : store.listMaterials();
+        for (Store.MaterialRow m : rows) {
             ObjectNode n = mapper.createObjectNode();
             n.put("id", m.id());
             n.put("core_message", m.coreMessage());
@@ -159,6 +216,7 @@ public class MaterialController {
                 n.put("title", m.title());
             }
             n.put("created_at", m.createdAt());
+            n.set("tags", readTags(m.tagsJson()));
             n.put("draft_count", store.draftsByMaterial(m.id()).size());
             out.add(n);
         }
@@ -173,6 +231,7 @@ public class MaterialController {
         out.put("id", m.id());
         out.put("raw_text", m.rawText());
         out.put("source_kind", m.sourceKind());
+        out.set("tags", readTags(m.tagsJson()));
         if (m.title() != null) {
             out.put("title", m.title());
         }
@@ -198,6 +257,40 @@ public class MaterialController {
         out.set("structured", structured);
         out.set("drafts", draftsJson(m.id()));
         return out;
+    }
+
+    /** 关键词的写入形态：纯数组，别套一层对象 ✗（前端直接 `fetch(url, {body: JSON.stringify([...])})`）。 */
+    public record TagsBody(List<String> tags) {
+    }
+
+    /** 覆盖某素材的关键词（用户增删改后调用）。 */
+    @PutMapping(value = "/api/materials/{id}/tags", produces = MediaType.APPLICATION_JSON_VALUE)
+    public JsonNode updateTags(@PathVariable long id, @RequestBody TagsBody body) {
+        store.getMaterial(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "material not found"));
+        store.updateMaterialTags(id, writeTags(body.tags()));
+        return readTags(store.getMaterial(id).orElseThrow().tagsJson());
+    }
+
+    /** 归一：去空白、去重、去 `#` 前缀、保序；空值写成 `[]` 而不是 null ✗。 */
+    static String writeTags(List<String> tags) {
+        if (tags == null) {
+            return "[]";
+        }
+        java.util.LinkedHashSet<String> cleaned = new java.util.LinkedHashSet<>();
+        for (String t : tags) {
+            if (t == null) {
+                continue;
+            }
+            String v = t.trim().replaceAll("^#+", "").trim();
+            if (!v.isEmpty()) {
+                cleaned.add(v);
+            }
+        }
+        com.fasterxml.jackson.databind.node.ArrayNode arr =
+                com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.arrayNode();
+        cleaned.forEach(arr::add);
+        return arr.toString();
     }
 
     // ---------------- 成稿生成 ----------------
@@ -227,7 +320,7 @@ public class MaterialController {
             // 组装请求体交给共用服务（M8 第二片）：同一份逻辑也给异步任务用，
             // 抄两份必然漂移（画像/复盘/已确认事实这几块最容易漏一处）
             ObjectNode pyBody = generateService.buildBody(m, req.platforms(), effectiveTemplate,
-                    req.tone_override(), null);
+                    req.tone_override(), null, Boolean.TRUE.equals(req.use_library()));
             JsonNode genResp = generateService.callPython(pyBody);
             boolean mock = genResp.path("used_mock").asBoolean(false);
 

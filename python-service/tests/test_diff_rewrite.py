@@ -50,7 +50,8 @@ def test_auto_rewrite_triggers_and_adopts_improved_draft(monkeypatch):
 
     rewrite_calls = []
 
-    def mock_generate_one(code, mat, tone, template, profile, hints, log, text, avoid=None):
+    def mock_generate_one(code, mat, tone, template, profile, hints, log, text,
+                          avoid=None, library_context=None, image_notes=None):
         if code == "gzh":
             d = _draft_with_body(gzh_body)
         else:

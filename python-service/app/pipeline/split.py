@@ -18,6 +18,7 @@ import logging
 
 from .. import llm
 from ..schemas import StructuredMaterial
+from .understand import _parse_keywords
 
 logger = logging.getLogger(__name__)
 
@@ -107,9 +108,13 @@ def _prompt(mat: StructuredMaterial, raw_text: str, targets: list[tuple[str, str
 {{"items": [{{"angle": "对应哪个角度（原样抄；没有角度就留空）",
             "format": "对应哪个形态（原样抄；没有形态就留空）",
             "title": "能当标题的一句话",
-            "core_message": "这条的核心观点（一句话）", "fact_ids": [1, 3]}}]}}
+            "core_message": "这条的核心观点（一句话）", "fact_ids": [1, 3],
+            "keywords": ["索引关键词1", "索引关键词2", "索引关键词3"]}}]}}
 
-`fact_ids` 是**上面事实清单的序号**（1-based）。没有可用事实就填空数组。"""
+`fact_ids` 是**上面事实清单的序号**（1-based）。没有可用事实就填空数组。
+
+`keywords` 是**这条子素材**将来被检索到用的 3~5 个短词（名词优先、≤8 字、不带 # 与标点）。
+要能区分开不同角度 —— 几条子素材关键词一模一样，等于没做索引 ✗。"""
 
 
 def split_material(mat: StructuredMaterial, raw_text: str,
@@ -182,6 +187,8 @@ def split_material(mat: StructuredMaterial, raw_text: str,
             "title": str(item.get("title") or "").strip(),
             "core_message": str(item.get("core_message") or "").strip(),
             "facts": facts,
+            # 子素材也挂关键词（openspec: material-keywords-and-search 任务 3.3）
+            "keywords": _parse_keywords(item.get("keywords")),
         })
     logger.info("拆分完成：%d 个目标 → %d 条", len(targets), len(out))
     return out

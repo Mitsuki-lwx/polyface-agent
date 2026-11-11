@@ -41,7 +41,7 @@ def stub_media(monkeypatch):
     monkeypatch.setattr(rc, "probe", lambda p, **kw: {"width": 1080, "height": 1920,
                                                       "duration": 10.0})
     monkeypatch.setattr(rc, "detect_pauses", lambda *a, **kw: [(1.0, 2.0)])
-    monkeypatch.setattr(rc, "plan_cuts", lambda pauses, margin, total: [(1.08, 1.92)])
+    monkeypatch.setattr(rc, "plan_cuts", lambda pauses, margin, total, **kw: [(1.08, 1.92)])
 
     def fake_cut(src, dst, cuts, **kw):
         calls.append("剪裁")
@@ -169,7 +169,7 @@ def test_failed_stage_is_not_persisted(tmp_path, media, monkeypatch):
     """失败的阶段**不落盘** —— 否则下次续跑会拿它当"已完成"。"""
     monkeypatch.setattr(rc, "probe", lambda p, **kw: {"width": 1, "height": 1, "duration": 10.0})
     monkeypatch.setattr(rc, "detect_pauses", lambda *a, **kw: [(1.0, 2.0)])
-    monkeypatch.setattr(rc, "plan_cuts", lambda pauses, margin, total: [(1.08, 1.92)])
+    monkeypatch.setattr(rc, "plan_cuts", lambda pauses, margin, total, **kw: [(1.08, 1.92)])
     monkeypatch.setattr(rc, "cut_video", lambda src, dst, cuts, **kw: Path(dst).write_bytes(b"c"))
     monkeypatch.setattr(rc, "extract_wav", lambda src, dst, **kw: Path(dst).write_bytes(b"w"))
 

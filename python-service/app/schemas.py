@@ -23,6 +23,9 @@ class StructuredMaterial(BaseModel):
     tone: str = Field(..., description="素材的语气基调")
     audience: str = Field(..., description="目标受众画像")
     facts: list[Fact] = Field(default_factory=list, description="事实清单(防幻觉依据)")
+    # 素材索引关键词（openspec: material-keywords-and-search）。
+    # 3~8 个**候选**：落库前须经用户确认可删可改 —— 自动产出 ≠ 直接写进库 ✗。
+    keywords: list[str] = Field(default_factory=list, description="索引关键词候选(3~8)")
 
 
 class AnalyzeResponse(BaseModel):

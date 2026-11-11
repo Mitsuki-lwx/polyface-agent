@@ -213,7 +213,7 @@ def test_roughcut_writes_timeline_whose_segments_roundtrip(tmp_path, monkeypatch
             {"start": 1.5, "end": 3.0, "text": "第二句"}]
     monkeypatch.setattr(rc, "probe", lambda p, **kw: {"width": 1, "height": 1, "duration": 10.0})
     monkeypatch.setattr(rc, "detect_pauses", lambda *a, **kw: [(4.0, 6.0)])
-    monkeypatch.setattr(rc, "plan_cuts", lambda pauses, margin, total: [(4.0, 6.0)])
+    monkeypatch.setattr(rc, "plan_cuts", lambda pauses, margin, total, **kw: [(4.0, 6.0)])
     monkeypatch.setattr(rc, "cut_video", lambda src, dst, cuts, **kw: Path(dst).write_bytes(b"c"))
     monkeypatch.setattr(rc, "extract_wav", lambda src, dst, **kw: Path(dst).write_bytes(b"w"))
     monkeypatch.setattr(asr, "transcribe_segments", lambda path, **kw: list(segs))

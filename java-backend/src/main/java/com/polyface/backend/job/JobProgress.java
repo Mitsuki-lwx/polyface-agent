@@ -35,6 +35,66 @@ public record JobProgress(String stage, Double pct, String pctStage, List<String
         return new JobProgress("", null, "", List.of(), "", false);
     }
 
+    /** 一个平台的执行状态（生成任务的"先出已完成"用的就是这个）。 */
+    public record PlatformState(String code, String state, String error) {
+    }
+
+    /** 状态取值；未知一律按 pending 处理，界面不需要认识更多。 */
+    public static final String PENDING = "pending";
+    public static final String RUNNING = "running";
+    public static final String DONE = "done";
+    public static final String FAILED = "failed";
+
+    /**
+     * 从事件文件里读出**平台级**状态（`stage="平台"` 的 start/end/fail）。
+     *
+     * <p>为什么单独一个方法：`read()` 算的是"阶段进度"，平台状态是另一条维度 ——
+     * 生成任务要能边跑边把已完成的平台显示出来，而不是等整批结束。
+     * 同一个文件、同一套容错（半行 JSON 跳过）。
+     */
+    public static java.util.Map<String, PlatformState> readPlatforms(Path eventsPath) {
+        java.util.Map<String, PlatformState> out = new java.util.LinkedHashMap<>();
+        if (eventsPath == null || !Files.isRegularFile(eventsPath)) {
+            return out;
+        }
+        try {
+            for (String line : Files.readAllLines(eventsPath, StandardCharsets.UTF_8)) {
+                if (line.isBlank()) {
+                    continue;
+                }
+                JsonNode ev;
+                try {
+                    ev = MAPPER.readTree(line);
+                } catch (Exception bad) {
+                    continue;                       // 半行 JSON：跳过
+                }
+                if (!"平台".equals(ev.path("stage").asText(""))) {
+                    continue;
+                }
+                String code = ev.path("fields").path("platform").asText("");
+                if (code.isBlank()) {
+                    continue;
+                }
+                String kind = ev.path("kind").asText("");
+                String state = switch (kind) {
+                    case "start" -> RUNNING;
+                    case "end" -> DONE;
+                    case "fail" -> FAILED;
+                    default -> null;
+                };
+                if (state != null) {
+                    // 失败原因跟着状态一起出去：用户不该等到整批结束才知道为什么失败
+                    String error = kind.equals("fail")
+                            ? ev.path("fields").path("error").asText("") : "";
+                    out.put(code, new PlatformState(code, state, error));   // 后写覆盖先写
+                }
+            }
+        } catch (IOException e) {
+            log.warn("读平台事件失败（按没有处理）：{}", e.getMessage());
+        }
+        return out;
+    }
+
     /**
      * @param running  任务是否还在跑（只有还在跑才谈得上"卡死"）
      * @param stallSec 多久没有新事件算疑似卡死

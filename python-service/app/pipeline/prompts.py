@@ -27,8 +27,15 @@ UNDERSTAND_SYSTEM = (
     '  "core_message": "核心观点/卖点，一句话概括（不超过80字）",\n'
     '  "tone": "语气基调，例如：理性干货/真诚种草/犀利观点/温暖故事",\n'
     '  "audience": "目标受众画像，例如：职场新人/宝妈/数码爱好者/自由职业者",\n'
-    '  "facts": [{"text": "事实原文摘录", "type": "data|story|opinion"}]\n'
+    '  "facts": [{"text": "事实原文摘录", "type": "data|story|opinion"}],\n'
+    '  "keywords": ["索引关键词1", "索引关键词2"]\n'
     "}\n"
+    "keywords 规则：\n"
+    "1. 3~8 个，供**以后检索这篇素材**用 —— 不是概括全文，而是别人会用什么词来找它。\n"
+    "2. 优先名词/短词（≤8 字），例如：AI写作、内容复用、周报、番茄钟、副业。\n"
+    "3. 不要带 # 号，不要标点，不要泛词（内容、方法、技巧这种搜出来等于没搜 ✗）。\n"
+    "4. 至少覆盖两个维度：**主题**（讲什么）+ **场景/对象**（谁、什么场合）。\n"
+    "5. 宁可少而准，不要凑数。\n"
     "facts 规则：\n"
     "1. type 三选一：data=客观数据/事实；story=经历/故事；opinion=观点/感受。\n"
     "2. facts[].text 必须逐字或近乎逐字来自素材原文，禁止改写、禁止添加素材中不存在的信息。\n"
@@ -99,6 +106,21 @@ def build_brief_prompt(dna: dict, structured, tone_override: str | None,
 
 
 # ============================================================ 成稿(draft · 骨架式, ADR-025)
+DRAFT_SECTION_SYSTEM = (
+    "你是某平台的资深博主，正在**按已定好的提纲写其中一段**。\n"
+    "要求：\n"
+    "1. 只写这一段的正文，不要标题、不要解释、不要写别的段。\n"
+    "2. **槽位写法**：`{{n:序号|表层}}` 是**格式占位**，不是要你原样输出的字。\n"
+    "   例：第 3 条事实是「月入286块」，段里要写 286 时写成 `{{n:3|286块}}` ——\n"
+    "   **`序号` 换成该事实的编号、`表层` 换成原文里的那个数值**。\n"
+    "   **绝对不要**输出 `{{n:序号|表层}}` 这种带中文标签的写法（那说明你在照抄示例）。\n"
+    "   没有事实依据的普通叙述直接写文字，**不要**加槽位。\n"
+    "3. 只能使用 material_facts（或 section.fact_texts）里的事实与数字；素材里没有的不许写。\n"
+    "4. 遵守 platform_dna 的风格与格式必备项；正文总字数见 section.char_budget，"
+    "**这一段只写自己的预算，不要替别的段写**。\n"
+    '5. 只输出 {"text": "..."} 这一个 JSON 对象。\n'
+)
+
 DRAFT_SYSTEM = (
     "你是某平台的资深博主，正在把一份素材改写为该平台的原创内容。\n"
     "你输出的不是正文，而是**段落级骨架** —— 系统会逐槽校验事实依据、回填、装配正文。\n"
@@ -107,7 +129,12 @@ DRAFT_SYSTEM = (
     "1b. **标题字数上限是硬约束**：见 platform_dna.title_chars_max。"
     "每个标题（主标题与备选）都必须 ≤ 该值，**包括标点与数字**。"
     "超了会在平台被截断/折叠，等于白写。宁可少塞一个数字，也不要超。\n"
-    "2. 只输出一个 JSON 对象（骨架）：\n"
+    "2. **槽位写法**：`{{n:序号|表层}}` 是**格式占位**，不是要你原样输出的字 ✗。\n"
+    "   例：第 3 条事实是「月入286块」，段里要写 286 时写成 `{{n:3|286块}}` ——\n"
+    "   **`序号` 换成该事实的编号、`表层` 换成原文里的那个数值**。\n"
+    "   **绝对不要**输出 `{{n:序号|表层}}` 这种带中文标签的写法（那说明你在照抄示例）。\n"
+    "   没有事实依据的普通叙述直接写文字，**不要**加槽位。\n"
+    "3. 只输出一个 JSON 对象（骨架）：\n"
     "{\n"
     '  "titles": ["主标题", "备选2", "备选3"],\n'
     '  "paras": [\n'
@@ -142,17 +169,33 @@ DRAFT_SYSTEM = (
     "6. **表述自由，内容不自由**：改语气、改结构、埋钩子、换人称 —— 随便；"
     "但**不许出现素材里没有的内容**（见 3b）。被钉死的是两件事：事实值，和「哪段依据哪条事实」。"
     "这不是翻译/搬运，而是按平台调性重写。\n"
+    # ---- 以下两条来自真实作者评审（docs/74 §八）----
+    "7b. **完整性优先于精简**：素材里已经给出的**具体例子、工具名、数字、步骤**必须保留。"
+    "小标题写了「示例」就必须真的给一个具体例子（只列公式不举例 = 名不副实 ✗）；"
+    "平台若是「收藏型」（如小红书），**关键工具名不得省略** —— 省掉收藏价值就没了。\n"
+    "7c. **同一篇内禁止同义反复**：同一个意思（例如「不是一稿多投」「母体最好是3000字长文」"
+    "「10条不是10篇新文章」）只在一处说透；换段换个说法再讲一遍，读者会当成凑字数 ✗。\n"
+    "7d. **不许绝对化**：用「往往 / 多数 / 通常 / 不少人」，不要用「从来 / 永远 / 一定 / 全部」——"
+    "除非素材原话如此；绝对化表述既失真，也会被质检判成新增断言 ✗。\n"
+    "7e. **AI 标注**：平台 DNA 里若写了「AI 辅助创作需主动标明」（小红书就是这样），"
+    "成稿**文末最后一段**必须有一句明确说明，例如「本文由 AI 辅助创作，观点与修改由本人完成」。"
+    "这句用「AI 辅助 / 由 AI 协助」这类字样，不要只写「用 AI 写」—— 那不算标注 ✗。\n"
     "7. 若输入带 user_template：其 opening / closing **原样**放入首段/末段的 text，"
     "不用槽位（系统对模板文本豁免数字校验）；structure 与 voice 按模板执行。\n"
     "role 取 hook|body|evidence|close（提示段落用途，不影响顺序）。\n"
 )
 
 
-def build_draft_skeleton_prompt(dna: dict, structured, brief, feedback: str | None = None,
-                                template: dict | None = None,
-                                creator_profile: dict | None = None,
-                                retrospect_hints: list[str] | None = None,
-                                avoid_sentences: list[str] | None = None) -> str:
+def _draft_payload(dna: dict, structured, brief, template: dict | None = None,
+                   creator_profile: dict | None = None,
+                   retrospect_hints: list[str] | None = None,
+                   avoid_sentences: list[str] | None = None,
+                   library_context: list[dict] | None = None,
+                   image_notes: str | None = None) -> dict:
+    """三种草稿提示词共用的**材料与规则**（骨架 / 提纲 / 单段）。
+
+    只此一份：分段拆步时如果各写一套，两边的平台规则会慢慢不一致。
+    """
     payload = {
         "platform": {"code": dna["code"], "name": dna["name"]},
         "platform_dna": {
@@ -213,10 +256,116 @@ def build_draft_skeleton_prompt(dna: dict, structured, brief, feedback: str | No
             "严禁直接照搬 `already_used_sentences` 中的原话（必须改写为符合本平台调性的表达）；"
             "**事实与数据要保留**（数字、步骤、结论不能因为去重而丢），变的是表达与组织结构。"
         )
+    if library_context:
+        # 参考资料：只能学"怎么写"，不能拿它的**事实** ✗
+        # 为什么必须写死：参考素材和本次素材主题相近，模型极易把参考里的数字/案例搬过来，
+        # 而质检的事实核对只认**本次素材** —— 搬过来就会被判"新增断言"。
+        payload["reference_materials"] = [
+            {"id": r.get("id"), "title": r.get("title", ""),
+             "snippet": r.get("snippet", ""), "keywords": r.get("keywords", [])}
+            for r in library_context[:3]
+        ]
+        rules.append(
+            "【参考素材】`reference_materials` 是作者过去写过的相关内容，**只能借鉴**它们的"
+            "切入角度、句式与结构；**事实、数字、案例、人名一律不得取自参考素材** —— "
+            "成稿里的每一个事实都必须能在 `material_facts` 里找到依据。"
+            "可以完全不用它们（不相关时忽略 ✓）。"
+        )
+    if image_notes:
+        # 图片/视频素材的**额外观察**：模型看过原图或关键帧后记下的细节
+        payload["image_notes"] = image_notes
+        rules.append(
+            "【画面观察】`image_notes` 是对素材原图的描述，可作为**细节与氛围**参考；"
+            "但**事实与数字仍以 material_facts 为准** —— 画面里没有量化信息时不补 ✗。"
+        )
     payload["writing_rules"] = rules
+    return payload
+
+
+def build_draft_skeleton_prompt(dna: dict, structured, brief, feedback: str | None = None,
+                                template: dict | None = None,
+                                creator_profile: dict | None = None,
+                                retrospect_hints: list[str] | None = None,
+                                avoid_sentences: list[str] | None = None,
+                                library_context: list[dict] | None = None,
+                                image_notes: str | None = None) -> str:
+    payload = _draft_payload(dna, structured, brief, template, creator_profile,
+                             retrospect_hints, avoid_sentences, library_context, image_notes)
     prompt = json.dumps(payload, ensure_ascii=False, indent=1)
     if feedback:
         prompt += f"\n\n【上一轮产出未通过校验，请针对性修复后重新输出完整骨架 JSON】\n{feedback}"
+    return prompt
+
+
+# ---------------------------------------------------------------- 骨架拆步（llm_draft_split）
+#
+# 为什么拆（docs/79）：一次让模型写完整篇多段正文，思考 token 能到 3 万+，
+# 单次 p95 210 秒。拆成「提纲 → 逐段写」后每次只思考一小块，段间还能并行。
+# **形状保持不变**：产出的骨架 JSON 与不拆时一样，下游闸门/装配一行不用改。
+
+def build_draft_outline_prompt(dna: dict, structured, brief, feedback: str | None = None,
+                               template: dict | None = None,
+                               creator_profile: dict | None = None,
+                               retrospect_hints: list[str] | None = None,
+                               avoid_sentences: list[str] | None = None,
+                               library_context: list[dict] | None = None,
+                               image_notes: str | None = None) -> str:
+    """第一步：只出提纲（标题/标签/每段用哪几条事实），**不写正文**。"""
+    payload = _draft_payload(dna, structured, brief, template, creator_profile,
+                             retrospect_hints, avoid_sentences, library_context, image_notes)
+    payload["task"] = "只输出提纲，不写正文"
+    payload["output_schema"] = {
+        "titles": ["主标题", "备选标题"],
+        "tags": ["#标签"],
+        "cover_suggestion": "封面建议（一句话）",
+        "interaction_line": "结尾互动句",
+        "rationale": "为什么这样排（给作者看）",
+        "outline": [{"role": "hook|body|cta", "facts": [1, 2], "point": "这一段要说什么（一句话）"}],
+    }
+    payload["output"] = ("严格按 output_schema 返回 JSON。`outline` 的段数按平台 structure_template 与 "
+                         "body_chars 定；`point` 一句话，★不要写正文★，不要占位符。")
+    prompt = json.dumps(payload, ensure_ascii=False, indent=1)
+    if feedback:
+        prompt += f"\n\n【上一轮产出未通过校验，请针对性调整提纲】\n{feedback}"
+    return prompt
+
+
+def build_draft_section_prompt(dna: dict, structured, brief, section: dict,
+                               index: int, total: int,
+                               template: dict | None = None,
+                               creator_profile: dict | None = None,
+                               retrospect_hints: list[str] | None = None,
+                               avoid_sentences: list[str] | None = None,
+                               library_context: list[dict] | None = None,
+                               image_notes: str | None = None,
+                               feedback: str | None = None) -> str:
+    """第二步：只写这一段正文（数字仍用占位符）。"""
+    payload = _draft_payload(dna, structured, brief, template, creator_profile,
+                             retrospect_hints, avoid_sentences, library_context, image_notes)
+    payload["task"] = f"只写第 {index}/{total} 段正文"
+    payload["section"] = {
+        "role": section.get("role") or "body",
+        "facts": section.get("facts") or [],
+        # 把这一段声明的事实原文直接摆出来，免得它去翻整份清单
+        "fact_texts": [{"n": n, "text": structured.facts[n - 1].text}
+                       for n in (section.get("facts") or [])
+                       if isinstance(n, int) and 1 <= n <= len(structured.facts)],
+        "point": section.get("point") or "",
+    }
+    # 每段预算 = 平台正文窗口上界 / 段数。不给预算，模型会按"写满"来写（实测 2396 字 vs 上限 1000）。
+    budget = None
+    bmax = (dna.get("body_chars") or {}).get("max")
+    if isinstance(bmax, (int, float)) and total > 0:
+        per = max(40, int(bmax / total))
+        budget = {"min": int(per * 0.6), "max": per}
+        payload["section"]["char_budget"] = budget
+    payload["output_schema"] = {"text": "这一段正文；数字写成 {{n:序号|表层}}"}
+    limit = f"（{budget['min']}~{budget['max']} 字）" if budget else ""
+    payload["output"] = (f"严格按 output_schema 返回 JSON，只写这一段{limit}。"
+                         "★不要写标题、不要解释、不要输出其它段★。")
+    prompt = json.dumps(payload, ensure_ascii=False, indent=1)
+    if feedback:
+        prompt += f"\n\n【上一轮这一段未通过校验，请针对性修复】\n{feedback}"
     return prompt
 
 
@@ -383,6 +532,50 @@ def build_disfluency_prompt(pairs: list[dict]) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=1)
 
 
+# ---------------------------------------------------------------- 停顿复核（pause-review-cuts）
+
+def build_pause_review_prompt(candidates: list[dict]) -> str:
+    """停顿复核（`openspec/changes/pause-review-cuts`）。
+
+    给模型的**只有候选停顿 + 前后两句**，不是全文 —— 输入受控、成本可预测、
+    也不会整体跑偏去改写别的地方。
+
+    模型**不给时间**：候选自带 id，时间戳一律由程序取（它看不到音频）。
+    """
+    payload = {
+        "task": "判断口播视频里每个停顿点该剪掉还是保留",
+        "rules": [
+            "只回答 id + action(cut/keep) + why；**不要给任何时间或秒数**",
+            "cut = 卡壳/犹豫/想下一句：剪掉更紧凑",
+            "keep = 故意留白/强调/情绪/段落之间的呼吸",
+            "一句话没说完就停顿 → keep（后半句还接着这句话）",
+            "换了话题/新段落前的停顿 → keep（那是呼吸，不是卡壳）",
+            "语速慢、语气重、重复关键词 → 多半在强调 → keep",
+            "拿不准就 keep —— 宁可多留半秒，不可剪断语气",
+            "讲自己的经历、说到动情处 → keep",
+            "机械重复的口头填充（嗯、啊、这个那个）后接停顿 → cut",
+            "有 prosody 字段时**必须参考**：rms_slope 明显为负（渐弱收尾）多判 keep；"
+            "rms_slope 接近 0 或为正、且前句带口头填充，多判 cut；"
+            "pitch_delta 明显升高（后面起势）说明要开新段落 → keep",
+            "prosody 只是参考：它说明**怎么说的**，不说明**说了什么重要不重要**",
+        ],
+        "candidates": candidates,
+        "field_help": {
+            "gap_sec": "停顿长度（秒，程序算的）",
+            "rule_would_cut": "规则原本会不会剪（你是在复核它）",
+            "prosody": "本地算的声学特征：rms_slope=停顿前能量走势（负=渐弱，正=渐强），"
+                       "pitch_delta=停顿后音高减停顿前（Hz，正=后面更高）",
+        },
+        "output_schema": {
+            "verdicts": [
+                {"id": 0, "action": "keep", "why": "一句话说清理由（给用户看）"}
+            ]
+        },
+        "output": "严格按 output_schema 返回 JSON，verdicts 要覆盖每一个候选 id",
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=1)
+
+
 # ---------------------------------------------------------------- 提示词版本化（M9）
 #
 # 为什么要有这一块（`docs/spec_promptver.md`）：改了 prompt 之后，历史记录里
@@ -400,13 +593,19 @@ SCENE_BUILDERS: dict[str, str] = {
     "understand": "app.pipeline.prompts.build_understand_prompt",
     "brief": "app.pipeline.prompts.build_brief_prompt",
     "draft": "app.pipeline.prompts.build_draft_skeleton_prompt",
+    "draft_outline": "app.pipeline.prompts.build_draft_outline_prompt",
+    "draft_section": "app.pipeline.prompts.build_draft_section_prompt",
     "qa": "app.pipeline.prompts.build_qa_prompt",
     "qa_verify": "app.pipeline.prompts.build_qa_prompt",      # 同一个构造函数
     "clip": "app.pipeline.prompts.build_clip_prompt",
     "learn": "app.pipeline.prompts.build_learn_prompt",
     "split": "app.pipeline.split._prompt",
     "disfluency": "app.pipeline.prompts.build_disfluency_prompt",
+    "pause_review": "app.pipeline.prompts.build_pause_review_prompt",
     "eval_corpus": "app.pipeline.prompts.build_understand_prompt",   # 语料走理解提示词
+    # 参考视频分析（reference-video-analysis）：提示词在 reference.py 里，
+    # 登记进这张表才能被"版本号"这一层管住 ✓（测试会抓漏网的 ✗）
+    "reference": "app.pipeline.reference.system_prompt",
 }
 
 _FP_CACHE: dict[str, tuple[str, str]] = {}          # name → (fp, source)

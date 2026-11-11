@@ -108,7 +108,7 @@ public class GenerateRunner {
 
     /** 发起一次生成任务。`platforms` 为空则按全部可用平台。 */
     public long submit(long materialId, List<String> platforms, Long templateId,
-                       JsonNode inlineTemplate, String toneOverride) {
+                       JsonNode inlineTemplate, String toneOverride, boolean useLibrary) {
         Path dir = jobsDir.resolve("job-" + System.nanoTime());
         try {
             Files.createDirectories(dir);
@@ -129,6 +129,10 @@ public class GenerateRunner {
         if (toneOverride != null) {
             params.put("tone_override", toneOverride);
         }
+        // 只有为 true 才写 —— 未勾选时 params 里没有这个键 ✓
+        if (useLibrary) {
+            params.put("use_library", true);
+        }
         long jobId = store.insertJob("generate", params.toString(), null,
                 String.valueOf(materialId), dir.toString(), dir.resolve("events.jsonl").toString());
         store.pruneJobs(keepJobs);
@@ -141,6 +145,11 @@ public class GenerateRunner {
                          JsonNode inlineTemplate, String toneOverride, Path dir) {
         store.markJobRunning(jobId);
         active.put(jobId, Boolean.TRUE);
+        // 是否关联本地素材库（openspec: library-context-generation）。
+        // 从任务参数里读 —— 未传就是 false，请求体因此**不会**出现 library_context ✓
+        boolean useLibrary = store.getJob(jobId)
+                .map(j -> readJson(j.paramsJson()).path("use_library").asBoolean(false))
+                .orElse(false);
         Path events = dir.resolve("events.jsonl");
         ObjectNode result = mapper.createObjectNode();
         ArrayNode okArr = result.putArray("ok");
@@ -189,7 +198,7 @@ public class GenerateRunner {
                             Map.of("index", i + 1, "total", platforms.size(), "platform", code));
                     try {
                         ObjectNode body = generateService.buildBody(m, List.of(code), template,
-                                toneOverride, events.toString());
+                                toneOverride, events.toString(), useLibrary);
                         if (facts != null) {
                             body.set("confirmed_facts", facts);   // 复用同一份事实
                         }

@@ -77,6 +77,11 @@ def _get_client():
     return _client
 
 
+# Cline 网关要求：不带这个头时，非流式响应会被套进 `data` 字段；
+# **带图片的请求甚至会直接返回空** ✗（实测 2026-11-08：同一模型加头后正常识图）。
+_GATEWAY_HEADERS = {"X-Response-Format": "openai"}
+
+
 def openai_client(base_url: str, api_key: str, timeout: float, http_client=None):
     """返回 OpenAI 客户端；启用观测时返回 Langfuse 包装版（自动埋点）。
 
@@ -87,12 +92,12 @@ def openai_client(base_url: str, api_key: str, timeout: float, http_client=None)
         try:
             from langfuse.openai import OpenAI as LfOpenAI
             return LfOpenAI(base_url=base_url, api_key=api_key, timeout=timeout,
-                            http_client=http_client)
+                            http_client=http_client, default_headers=_GATEWAY_HEADERS)
         except Exception as e:  # noqa: BLE001
             logger.warning("Langfuse OpenAI 集成不可用，回退原生客户端：%s", e)
     from openai import OpenAI
     return OpenAI(base_url=base_url, api_key=api_key, timeout=timeout, max_retries=0,
-                  http_client=http_client)
+                  http_client=http_client, default_headers=_GATEWAY_HEADERS)
 
 
 @contextlib.contextmanager
